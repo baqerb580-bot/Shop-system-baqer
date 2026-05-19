@@ -178,6 +178,7 @@ const SETTINGS_DEFAULTS = {
     absentDeductionAmount: 50000,
     autoCalculatePayroll: true,
     autoDeductionEnabled: true,
+    yearlyLeaveAllowance: 24,
   },
 };
 
@@ -451,10 +452,58 @@ export async function OPTIONS() { return ok({}); }
 
 async function getJsonBody(request) { try { return await request.json(); } catch { return {}; } }
 
+// ============ GLOBAL HELPERS ============
+async function logActivity(db, { action, entity, entityId, user, userId, details, ip }) {
+  try {
+    await db.collection('activity_logs').insertOne({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      action, entity, entityId, user: user || 'system', userId: userId || null,
+      details: details || '', ip: ip || null,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e) { console.error('logActivity failed', e); }
+}
+
+async function sendTelegram(db, text) {
+  try {
+    const s = await db.collection('settings').findOne({ id: 'system' });
+    const tg = s?.telegram || {};
+    if (!tg.enabled || !tg.botToken || !tg.managerChatId) return { ok: false, skipped: true };
+    const r = await fetch(`https://api.telegram.org/bot${tg.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: tg.managerChatId, text, parse_mode: 'HTML' }),
+    });
+    const d = await r.json();
+    return { ok: d.ok === true, response: d };
+  } catch (e) {
+    console.error('Telegram error', e);
+    return { ok: false, error: e.message };
+  }
+}
+
+async function notifyManager(db, { title, message, type, taskId, employeeId }) {
+  // 1) In-app notification for all managers (employees with 'all' or 'employees' permission)
+  const managers = await db.collection('employees').find({
+    $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }]
+  }).toArray();
+  const now = new Date().toISOString();
+  for (const m of managers) {
+    await db.collection('notifications').insertOne({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      userId: m.id, type, title, message, taskId: taskId || null,
+      employeeId: employeeId || null, read: false, createdAt: now,
+    });
+  }
+  // 2) Telegram to manager
+  await sendTelegram(db, `<b>${title}</b>\n${message}`);
+}
+
 async function handle(request, params) {
   const path = (params?.path || []).join('/');
   const method = request.method;
   const db = await getDb();
+  const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0] || request.headers.get('x-real-ip') || 'unknown';
 
   if (!path) return ok({ name: 'Ghazlan ERP API', version: '1.0', status: 'running' });
 
@@ -531,7 +580,6 @@ async function handle(request, params) {
     };
     await db.collection('tasks').insertOne(doc);
     delete doc._id;
-    // Notify the assigned employee
     if (doc.assignedTo) {
       await db.collection('notifications').insertOne({
         id: uuidv4(), userId: doc.assignedTo, type: 'task_new', title: '📋 مهمة جديدة',
@@ -539,6 +587,22 @@ async function handle(request, params) {
         taskId: doc.id, read: false, createdAt: now,
       });
     }
+    await logActivity(db, { action: 'task_created', entity: 'tasks', entityId: doc.id, user: doc.createdBy || 'المدير', details: `إنشاء مهمة "${doc.title}" للموظف ${doc.assignedToName}`, ip: clientIp });
+    return ok(doc, 201);
+  }
+
+  // Special-case: when creating a subscriber, send notification to manager
+  if (path === 'subscribers' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const doc = { id: uuidv4(), ...body, createdAt: new Date().toISOString() };
+    await db.collection('subscribers').insertOne(doc);
+    delete doc._id;
+    if (doc.zoneId) {
+      const c = await db.collection('subscribers').countDocuments({ zoneId: doc.zoneId });
+      await db.collection('zones').updateOne({ id: doc.zoneId }, { $set: { subscribers: c } });
+    }
+    await logActivity(db, { action: 'subscriber_created', entity: 'subscribers', entityId: doc.id, user: 'المدير', details: `مشترك جديد: ${doc.name}`, ip: clientIp });
+    await sendTelegram(db, `<b>👤 مشترك جديد</b>\nالاسم: ${doc.name}\nالمنطقة: ${doc.zoneName || '-'}\nالباقة: ${doc.speed || '-'}`);
     return ok(doc, 201);
   }
 
@@ -735,14 +799,14 @@ async function handle(request, params) {
 
   // Check-in
   if (path === 'attendance/checkin' && method === 'POST') {
-    const { employeeId } = await getJsonBody(request);
+    const { employeeId, photoUrl, lat, lng } = await getJsonBody(request);
     const emp = await db.collection('employees').findOne({ id: employeeId });
     if (!emp) return err('الموظف غير موجود', 404);
+    if (!photoUrl) return err('صورة الحضور إلزامية - يرجى التقاط صورة', 400);
     const today = new Date().toISOString().slice(0, 10);
     const existing = await db.collection('attendance').findOne({ employeeId, date: today });
     if (existing && existing.checkIn) return err('تم تسجيل الحضور مسبقاً اليوم', 400);
     const now = new Date();
-    // Use settings shift if available
     const settings = await db.collection('settings').findOne({ id: 'system' });
     const empSettings = settings?.employees || {};
     const globalShiftStart = empSettings.workStart || '08:00';
@@ -751,7 +815,7 @@ async function handle(request, params) {
     const lateMinutes = Math.max(0, Math.floor((now - shiftStart) / 60000));
     const grace = empSettings.lateGraceMinutes ?? 10;
     const isLate = lateMinutes > grace;
-    const autoEnabled = empSettings.autoDeductionEnabled !== false; // default true
+    const autoEnabled = empSettings.autoDeductionEnabled !== false;
     const mode = empSettings.lateDeductionMode || 'fixed';
     const fixedAmount = empSettings.lateDeductionAmount ?? 25000;
     const perMinute = empSettings.lateDeductionPerMinute ?? 500;
@@ -764,12 +828,11 @@ async function handle(request, params) {
     const record = {
       id: uuidv4(),
       employeeId, employeeName: emp.name, date: today,
-      checkIn: now.toISOString(),
-      checkOut: null,
+      checkIn: now.toISOString(), checkOut: null,
+      checkInPhoto: photoUrl, checkOutPhoto: null,
+      checkInLat: lat || null, checkInLng: lng || null,
       lateMinutes, isLate, status: isLate ? 'late' : 'present',
-      hoursWorked: 0,
-      autoDeduction: deductionAmount,
-      deductionMode: mode,
+      hoursWorked: 0, autoDeduction: deductionAmount, deductionMode: mode,
       createdAt: now.toISOString(),
     };
     if (deductionAmount > 0) {
@@ -784,13 +847,31 @@ async function handle(request, params) {
     }
     await db.collection('attendance').insertOne(record);
     await db.collection('employees').updateOne({ id: employeeId }, { $set: { attendance: record.status } });
+    await logActivity(db, { action: 'attendance_checkin', entity: 'attendance', entityId: record.id, user: emp.name, userId: emp.id, details: `حضور في ${now.toLocaleTimeString('ar-IQ')}${isLate ? ` (تأخير ${lateMinutes}د)` : ''}`, ip: clientIp });
+    const timeStr = now.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
+    if (isLate) {
+      await notifyManager(db, {
+        type: 'attendance_late',
+        title: `⏰ تأخير: ${emp.name}`,
+        message: `بصم الحضور في ${timeStr}\nالتأخير: ${lateMinutes} دقيقة\nالخصم: ${deductionAmount.toLocaleString('en-US')} د.ع`,
+        employeeId,
+      });
+    } else {
+      await notifyManager(db, {
+        type: 'attendance_checkin',
+        title: `📍 حضور: ${emp.name}`,
+        message: `بصم الحضور في ${timeStr}`,
+        employeeId,
+      });
+    }
     delete record._id;
     return ok({ success: true, record });
   }
 
   // Check-out
   if (path === 'attendance/checkout' && method === 'POST') {
-    const { employeeId } = await getJsonBody(request);
+    const { employeeId, photoUrl } = await getJsonBody(request);
+    if (!photoUrl) return err('صورة الانصراف إلزامية - يرجى التقاط صورة', 400);
     const today = new Date().toISOString().slice(0, 10);
     const existing = await db.collection('attendance').findOne({ employeeId, date: today });
     if (!existing) return err('لم تسجل حضور اليوم', 400);
@@ -800,8 +881,17 @@ async function handle(request, params) {
     const hoursWorked = ((now - checkInTime) / 3600000).toFixed(2);
     await db.collection('attendance').updateOne(
       { id: existing.id },
-      { $set: { checkOut: now.toISOString(), hoursWorked: Number(hoursWorked) } }
+      { $set: { checkOut: now.toISOString(), checkOutPhoto: photoUrl, hoursWorked: Number(hoursWorked) } }
     );
+    const emp = await db.collection('employees').findOne({ id: employeeId });
+    await logActivity(db, { action: 'attendance_checkout', entity: 'attendance', entityId: existing.id, user: emp?.name, userId: employeeId, details: `انصراف بعد ${hoursWorked} ساعة`, ip: clientIp });
+    const timeStr = now.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
+    await notifyManager(db, {
+      type: 'attendance_checkout',
+      title: `🚪 انصراف: ${emp?.name}`,
+      message: `بصم الانصراف في ${timeStr}\nالساعات المُنجزة: ${hoursWorked}`,
+      employeeId,
+    });
     return ok({ success: true, hoursWorked: Number(hoursWorked) });
   }
 
@@ -1004,6 +1094,175 @@ async function handle(request, params) {
     }
   }
 
+  // ============ LEAVES (الإجازات) ============
+  // GET all (admin) or filtered
+  if (path === 'leaves' && method === 'GET') {
+    const url = new URL(request.url);
+    const empFilter = url.searchParams.get('employeeId');
+    const q = empFilter ? { employeeId: empFilter } : {};
+    const items = await db.collection('leaves').find(q).sort({ createdAt: -1 }).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
+  }
+  // POST new leave request (by employee)
+  if (path === 'leaves' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { employeeId, type, reason, startDate, endDate, days } = body;
+    if (!employeeId || !type || !startDate || !days) return err('بيانات ناقصة', 400);
+    const emp = await db.collection('employees').findOne({ id: employeeId });
+    if (!emp) return err('الموظف غير موجود', 404);
+    const doc = {
+      id: uuidv4(), employeeId, employeeName: emp.name,
+      type, reason: reason || '', startDate, endDate: endDate || startDate, days: Number(days),
+      status: 'pending', approvedBy: null, approvedAt: null, rejectionReason: '',
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('leaves').insertOne(doc);
+    delete doc._id;
+    await logActivity(db, { action: 'leave_request', entity: 'leaves', entityId: doc.id, user: emp.name, userId: emp.id, details: `طلب ${days} يوم - ${type}`, ip: clientIp });
+    await notifyManager(db, {
+      type: 'leave_request', title: `📅 طلب إجازة: ${emp.name}`,
+      message: `النوع: ${type}\nالمدة: ${days} يوم\nمن: ${startDate} إلى: ${endDate || startDate}\nالسبب: ${reason || '-'}`,
+      employeeId,
+    });
+    return ok(doc, 201);
+  }
+  // PUT approve/reject leave (by admin)
+  if (path.match(/^leaves\/[^/]+\/(approve|reject)$/) && method === 'POST') {
+    const parts = path.split('/');
+    const id = parts[1];
+    const action = parts[2];
+    const body = await getJsonBody(request);
+    const leave = await db.collection('leaves').findOne({ id });
+    if (!leave) return err('غير موجود', 404);
+    if (leave.status !== 'pending') return err('تمت معالجة هذا الطلب مسبقاً', 400);
+    const now = new Date().toISOString();
+    const newStatus = action === 'approve' ? 'approved' : 'rejected';
+    await db.collection('leaves').updateOne({ id }, { $set: {
+      status: newStatus, approvedBy: body.approvedBy || 'المدير',
+      approvedAt: now, rejectionReason: action === 'reject' ? (body.reason || '') : '',
+    }});
+    await logActivity(db, { action: `leave_${action}`, entity: 'leaves', entityId: id, user: body.approvedBy || 'المدير', details: `${action === 'approve' ? 'موافقة' : 'رفض'} على إجازة ${leave.employeeName}`, ip: clientIp });
+    // Notify employee
+    await db.collection('notifications').insertOne({
+      id: uuidv4(), userId: leave.employeeId, type: `leave_${action}`,
+      title: action === 'approve' ? '✅ إجازتك مقبولة' : '❌ إجازتك مرفوضة',
+      message: action === 'approve' ? `تمت الموافقة على إجازتك (${leave.days} يوم) من ${leave.startDate}` : `سبب الرفض: ${body.reason || '-'}`,
+      read: false, createdAt: now,
+    });
+    return ok({ success: true });
+  }
+
+  // Leave balance
+  if (path.match(/^employees\/[^/]+\/leave-balance$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const settings = await db.collection('settings').findOne({ id: 'system' });
+    const yearlyAllowance = settings?.employees?.yearlyLeaveAllowance ?? 24;
+    const year = new Date().getFullYear();
+    const approved = await db.collection('leaves').find({ employeeId: empId, status: 'approved', startDate: { $regex: `^${year}` } }).toArray();
+    const used = approved.reduce((s, x) => s + (x.days || 0), 0);
+    const pending = await db.collection('leaves').find({ employeeId: empId, status: 'pending' }).toArray();
+    const pendingDays = pending.reduce((s, x) => s + (x.days || 0), 0);
+    return ok({ year, allowance: yearlyAllowance, used, pending: pendingDays, remaining: Math.max(0, yearlyAllowance - used) });
+  }
+
+  // ============ ADVANCES (السلف) ============
+  if (path === 'advances' && method === 'GET') {
+    const url = new URL(request.url);
+    const empFilter = url.searchParams.get('employeeId');
+    const q = empFilter ? { employeeId: empFilter } : {};
+    const items = await db.collection('advances').find(q).sort({ createdAt: -1 }).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
+  }
+  if (path === 'advances' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { employeeId, amount, reason, installments } = body;
+    if (!employeeId || !amount) return err('المبلغ مطلوب', 400);
+    const emp = await db.collection('employees').findOne({ id: employeeId });
+    if (!emp) return err('الموظف غير موجود', 404);
+    const doc = {
+      id: uuidv4(), employeeId, employeeName: emp.name,
+      amount: Number(amount), reason: reason || '',
+      installments: Number(installments || 1),
+      perInstallment: Math.round(Number(amount) / Number(installments || 1)),
+      paidInstallments: 0, remainingAmount: Number(amount),
+      status: 'pending', approvedBy: null, approvedAt: null, rejectionReason: '',
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('advances').insertOne(doc);
+    delete doc._id;
+    await logActivity(db, { action: 'advance_request', entity: 'advances', entityId: doc.id, user: emp.name, userId: emp.id, details: `طلب سلفة ${amount} د.ع`, ip: clientIp });
+    await notifyManager(db, {
+      type: 'advance_request', title: `💰 طلب سلفة: ${emp.name}`,
+      message: `المبلغ: ${Number(amount).toLocaleString('en-US')} د.ع\nالأقساط: ${installments || 1}\nالسبب: ${reason || '-'}`,
+      employeeId,
+    });
+    return ok(doc, 201);
+  }
+  // Approve/Reject advance
+  if (path.match(/^advances\/[^/]+\/(approve|reject)$/) && method === 'POST') {
+    const parts = path.split('/');
+    const id = parts[1];
+    const action = parts[2];
+    const body = await getJsonBody(request);
+    const advance = await db.collection('advances').findOne({ id });
+    if (!advance) return err('غير موجود', 404);
+    if (advance.status !== 'pending') return err('تمت معالجة هذا الطلب مسبقاً', 400);
+    const now = new Date().toISOString();
+    if (action === 'approve') {
+      // Optionally allow admin to override installments
+      const newInstallments = Number(body.installments || advance.installments || 1);
+      await db.collection('advances').updateOne({ id }, { $set: {
+        status: 'approved', approvedBy: body.approvedBy || 'المدير', approvedAt: now,
+        installments: newInstallments,
+        perInstallment: Math.round(advance.amount / newInstallments),
+      }});
+      // No immediate deduction; payroll calc will pick up installments
+    } else {
+      await db.collection('advances').updateOne({ id }, { $set: {
+        status: 'rejected', approvedBy: body.approvedBy || 'المدير', approvedAt: now,
+        rejectionReason: body.reason || '',
+      }});
+    }
+    await logActivity(db, { action: `advance_${action}`, entity: 'advances', entityId: id, user: body.approvedBy || 'المدير', details: `${action === 'approve' ? 'موافقة' : 'رفض'} سلفة ${advance.employeeName} (${advance.amount})`, ip: clientIp });
+    await db.collection('notifications').insertOne({
+      id: uuidv4(), userId: advance.employeeId, type: `advance_${action}`,
+      title: action === 'approve' ? '✅ سلفتك مقبولة' : '❌ سلفتك مرفوضة',
+      message: action === 'approve' ? `وافق المدير على سلفتك (${advance.amount.toLocaleString('en-US')} د.ع) - ستُخصم على ${body.installments || advance.installments} قسط` : `سبب الرفض: ${body.reason || '-'}`,
+      read: false, createdAt: now,
+    });
+    return ok({ success: true });
+  }
+  // Pay an installment of advance (admin marks 1 installment as paid)
+  if (path.match(/^advances\/[^/]+\/pay-installment$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const advance = await db.collection('advances').findOne({ id });
+    if (!advance) return err('غير موجود', 404);
+    if (advance.status !== 'approved') return err('السلفة غير مفعّلة', 400);
+    const newPaid = (advance.paidInstallments || 0) + 1;
+    const remaining = Math.max(0, advance.amount - (newPaid * advance.perInstallment));
+    const completed = newPaid >= advance.installments;
+    await db.collection('advances').updateOne({ id }, { $set: {
+      paidInstallments: newPaid, remainingAmount: remaining,
+      status: completed ? 'paid' : 'approved',
+    }});
+    return ok({ success: true, paidInstallments: newPaid, remaining });
+  }
+
+  // ============ ADMIN NOTIFICATIONS BELL ============
+  // Get the active manager's notifications (employees with role contains مدير or perm 'all')
+  if (path === 'notifications/admin' && method === 'GET') {
+    const managers = await db.collection('employees').find({ $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }] }).toArray();
+    const ids = managers.map(m => m.id);
+    const items = await db.collection('notifications').find({ userId: { $in: ids } }).sort({ createdAt: -1 }).limit(100).toArray();
+    return ok(items.map(n => { delete n._id; return n; }));
+  }
+  if (path === 'notifications/admin/read-all' && method === 'POST') {
+    const managers = await db.collection('employees').find({ $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }] }).toArray();
+    const ids = managers.map(m => m.id);
+    await db.collection('notifications').updateMany({ userId: { $in: ids }, read: false }, { $set: { read: true } });
+    return ok({ success: true });
+  }
+
   // Self-data endpoint (employee can fetch own info without exposing list)
   if (path.match(/^employees\/[^/]+\/self$/) && method === 'GET') {
     const empId = path.split('/')[1];
@@ -1190,18 +1449,29 @@ async function handle(request, params) {
     if (!emp) return err('الموظف غير موجود', 404);
     const attRecords = await db.collection('attendance').find({ employeeId: empId, date: { $regex: `^${month}` } }).toArray();
     const entries = await db.collection('payroll_entries').find({ employeeId: empId, date: { $regex: `^${month}` } }).toArray();
+    const advances = await db.collection('advances').find({ employeeId: empId, status: { $in: ['approved', 'paid'] } }).toArray();
     const presentDays = attRecords.filter(a => a.status === 'present').length;
     const lateDays = attRecords.filter(a => a.status === 'late').length;
     const absentDays = attRecords.filter(a => a.status === 'absent').length;
     const totalDays = attRecords.length;
     const bonuses = entries.filter(e => e.type === 'bonus').reduce((s, x) => s + (x.amount || 0), 0);
-    const deductions = entries.filter(e => e.type === 'deduction').reduce((s, x) => s + (x.amount || 0), 0);
+    const lateDeductions = entries.filter(e => e.type === 'deduction').reduce((s, x) => s + (x.amount || 0), 0);
+    // Active advance installments (one per month per active advance)
+    const advanceDeduction = advances
+      .filter(a => a.status === 'approved' && (a.paidInstallments || 0) < (a.installments || 1))
+      .reduce((s, a) => s + (a.perInstallment || 0), 0);
+    const deductions = lateDeductions + advanceDeduction;
     const baseSalary = emp.salary || 0;
     const finalSalary = baseSalary + bonuses - deductions;
     return ok({
       employee: { id: emp.id, name: emp.name, employeeId: emp.employeeId, role: emp.role },
-      month, baseSalary, bonuses, deductions, finalSalary,
+      month, baseSalary, bonuses, deductions,
+      lateDeductions, advanceDeduction, finalSalary,
       presentDays, lateDays, absentDays, totalDays,
+      activeAdvances: advances.filter(a => a.status === 'approved').map(a => ({
+        id: a.id, amount: a.amount, perInstallment: a.perInstallment,
+        installments: a.installments, paid: a.paidInstallments || 0, remaining: a.remainingAmount,
+      })),
       entries: entries.map(e => { delete e._id; return e; }),
       attendance: attRecords.map(a => { delete a._id; return a; }),
     });

@@ -17,7 +17,7 @@ import {
   User, Lock, LogIn, LogOut, Activity, Calendar, Clock,
   CheckCircle2, AlertCircle, X, Bell, Star, Upload, Image as ImageIcon,
   Check, XCircle, FileText, Send, ListTodo, Wallet, Home, Award,
-  Wrench, ShoppingCart, BadgeCheck, Users, Camera
+  Wrench, ShoppingCart, BadgeCheck, Users, Camera, CalendarDays, Printer
 } from 'lucide-react';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
@@ -89,13 +89,50 @@ function LoginScreen({ onLogin }) {
 }
 
 // ============================== NOTIFICATIONS BELL ==============================
+const NOTIF_COLORS = {
+  task_new: 'border-cyan-500/30 bg-cyan-500/5',
+  task_accepted: 'border-emerald-500/30 bg-emerald-500/5',
+  task_rejected: 'border-red-500/30 bg-red-500/5',
+  task_submitted: 'border-purple-500/30 bg-purple-500/5',
+  task_approve: 'border-emerald-500/30 bg-emerald-500/5',
+  task_reject: 'border-red-500/30 bg-red-500/5',
+  task_revise: 'border-orange-500/30 bg-orange-500/5',
+  leave_request: 'border-cyan-500/30 bg-cyan-500/5',
+  leave_approve: 'border-emerald-500/30 bg-emerald-500/5',
+  leave_reject: 'border-red-500/30 bg-red-500/5',
+  advance_request: 'border-amber-500/30 bg-amber-500/5',
+  advance_approve: 'border-emerald-500/30 bg-emerald-500/5',
+  advance_reject: 'border-red-500/30 bg-red-500/5',
+  attendance_late: 'border-orange-500/30 bg-orange-500/5',
+};
+const playBeep = () => {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = 'sine'; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.1, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    o.start(); o.stop(ctx.currentTime + 0.4);
+  } catch {}
+};
+
 function NotificationsBell({ employeeId, onTaskClick }) {
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
+  const lastCountRef = useRef(0);
   const load = async () => {
     if (!employeeId) return;
     const data = await api(`notifications?userId=${employeeId}`);
-    if (Array.isArray(data)) setItems(data);
+    if (Array.isArray(data)) {
+      setItems(data);
+      const unread = data.filter(n => !n.read).length;
+      if (unread > lastCountRef.current && lastCountRef.current > 0) playBeep();
+      lastCountRef.current = unread;
+    }
   };
   useEffect(() => {
     load();
@@ -108,9 +145,9 @@ function NotificationsBell({ employeeId, onTaskClick }) {
   return (
     <div className="relative">
       <Button onClick={() => setOpen(!open)} variant="ghost" size="icon" className="relative">
-        <Bell className="w-5 h-5 text-gold" />
+        <Bell className={`w-5 h-5 text-gold ${unread > 0 ? 'animate-pulse' : ''}`} />
         {unread > 0 && (
-          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-bold">{unread}</span>
+          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-bold animate-bounce">{unread}</span>
         )}
       </Button>
       {open && (
@@ -121,19 +158,22 @@ function NotificationsBell({ employeeId, onTaskClick }) {
           </div>
           {items.length === 0 ? (
             <p className="p-6 text-xs text-center text-muted-foreground">لا توجد إشعارات</p>
-          ) : items.map(n => (
-            <div key={n.id} onClick={() => { markRead(n.id); if (n.taskId && onTaskClick) onTaskClick(n.taskId); setOpen(false); }}
-              className={`p-3 border-b border-gold-soft/30 cursor-pointer hover:bg-input/20 ${!n.read ? 'bg-cyan-500/5' : ''}`}>
-              <div className="flex items-start gap-2">
-                {!n.read && <span className="mt-1 w-2 h-2 rounded-full bg-cyan-400 flex-shrink-0" />}
-                <div className="flex-1">
-                  <p className="text-xs font-bold">{n.title}</p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">{n.message}</p>
-                  <p className="text-[9px] text-muted-foreground mt-1">{new Date(n.createdAt).toLocaleString('ar-IQ')}</p>
+          ) : items.map(n => {
+            const colorCls = NOTIF_COLORS[n.type] || 'border-gold-soft/30';
+            return (
+              <div key={n.id} onClick={() => { markRead(n.id); if (n.taskId && onTaskClick) onTaskClick(n.taskId); setOpen(false); }}
+                className={`p-3 border-l-4 border-b border-gold-soft/30 cursor-pointer hover:bg-input/20 ${colorCls} ${!n.read ? 'font-semibold' : ''}`}>
+                <div className="flex items-start gap-2">
+                  {!n.read && <span className="mt-1 w-2 h-2 rounded-full bg-cyan-400 flex-shrink-0 animate-pulse" />}
+                  <div className="flex-1">
+                    <p className="text-xs font-bold">{n.title}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">{n.message}</p>
+                    <p className="text-[9px] text-muted-foreground mt-1">{new Date(n.createdAt).toLocaleString('ar-IQ')}</p>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -434,36 +474,147 @@ function TasksSection({ employeeId }) {
   );
 }
 
+// ============================== CAMERA ATTENDANCE MODAL ==============================
+function CameraModal({ open, mode, onClose, onCapture }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) {
+      // Stop stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
+      return;
+    }
+    (async () => {
+      setError('');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 480, height: 480 } });
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+      } catch (e) {
+        setError('تعذّر تشغيل الكاميرا: ' + e.message);
+      }
+    })();
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
+    };
+  }, [open]);
+
+  const snapAndUpload = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    setBusy(true);
+    try {
+      const v = videoRef.current;
+      const c = canvasRef.current;
+      c.width = v.videoWidth || 480;
+      c.height = v.videoHeight || 480;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      // Overlay timestamp
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, c.height - 30, c.width, 30);
+      ctx.fillStyle = '#fff';
+      ctx.font = '14px sans-serif';
+      ctx.fillText(new Date().toLocaleString('ar-IQ'), 10, c.height - 10);
+      // Convert to blob and upload
+      const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
+      const file = new File([blob], `att_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      const r = await uploadFile(file);
+      if (r.error) { toast.error(r.error); setBusy(false); return; }
+      onCapture(r.url);
+    } catch (e) {
+      toast.error('فشل الالتقاط: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="glass-strong border-gold/40 max-w-md">
+        <DialogHeader>
+          <DialogTitle className="gold-text">
+            {mode === 'in' ? '📸 صورة الحضور' : '📸 صورة الانصراف'}
+          </DialogTitle>
+        </DialogHeader>
+        {error ? (
+          <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">{error}</div>
+        ) : (
+          <>
+            <div className="relative rounded-2xl overflow-hidden bg-black border-2 border-gold-soft">
+              <video ref={videoRef} className="w-full" playsInline muted />
+              <div className="absolute inset-0 border-[3px] border-gold/30 rounded-2xl pointer-events-none" />
+            </div>
+            <canvas ref={canvasRef} className="hidden" />
+            <p className="text-[10px] text-center text-muted-foreground">📍 ضع وجهك في الإطار - سيتم حفظ الصورة مع الوقت</p>
+          </>
+        )}
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onClose} disabled={busy}>إلغاء</Button>
+          <Button onClick={snapAndUpload} disabled={busy || !!error} className="btn-gold flex-1">
+            <Camera className="w-4 h-4 ml-1" /> {busy ? 'جاري الرفع...' : 'التقاط وتسجيل'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ============================== ATTENDANCE BANNER ==============================
 function AttendanceBanner({ employee, todayAtt, onRefresh }) {
-  const punchIn = async () => {
-    const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId: employee.id }) });
-    if (r.error) toast.error(r.error); else { toast.success(r.record?.isLate ? `⏰ حضور متأخر بـ ${r.record.lateMinutes} دقيقة` : '✅ تم تسجيل الحضور'); onRefresh(); }
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraMode, setCameraMode] = useState('in');
+
+  const handleCapture = async (photoUrl) => {
+    setCameraOpen(false);
+    if (cameraMode === 'in') {
+      const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl }) });
+      if (r.error) toast.error(r.error);
+      else { toast.success(r.record?.isLate ? `⏰ حضور متأخر بـ ${r.record.lateMinutes} دقيقة` : '✅ تم تسجيل الحضور'); onRefresh(); }
+    } else {
+      const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl }) });
+      if (r.error) toast.error(r.error);
+      else { toast.success(`✅ تم الانصراف - عملت ${r.hoursWorked} ساعة`); onRefresh(); }
+    }
   };
-  const punchOut = async () => {
-    const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId: employee.id }) });
-    if (r.error) toast.error(r.error); else { toast.success(`✅ تم الانصراف - عملت ${r.hoursWorked} ساعة`); onRefresh(); }
-  };
-  if (!todayAtt) {
-    return (
-      <div className="bg-amber-500/10 border-y border-amber-500/30 px-4 py-3 flex items-center justify-between flex-wrap gap-2">
-        <p className="text-sm text-amber-400 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> يجب تسجيل الحضور قبل البدء بالعمل</p>
-        <Button onClick={punchIn} className="btn-gold"><Activity className="w-4 h-4 ml-1 animate-pulse" /> بصمة حضور</Button>
-      </div>
-    );
-  }
-  if (!todayAtt.checkOut) {
-    return (
-      <div className="bg-emerald-500/10 border-y border-emerald-500/30 px-4 py-3 flex items-center justify-between flex-wrap gap-2">
-        <p className="text-sm text-emerald-400 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> أنت حالياً في الدوام - بدأت في {new Date(todayAtt.checkIn).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' })}</p>
-        <Button onClick={punchOut} className="btn-neon"><X className="w-4 h-4 ml-1" /> بصمة انصراف</Button>
-      </div>
-    );
-  }
+
   return (
-    <div className="bg-purple-500/10 border-y border-purple-500/30 px-4 py-3 text-center text-sm text-purple-400">
-      ✅ تم إنهاء الدوام اليومي - شكراً لك!
-    </div>
+    <>
+      {!todayAtt ? (
+        <div className="bg-amber-500/10 border-y border-amber-500/30 px-4 py-3 flex items-center justify-between flex-wrap gap-2">
+          <p className="text-sm text-amber-400 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> يجب تسجيل الحضور بصورة قبل البدء بالعمل</p>
+          <Button onClick={() => { setCameraMode('in'); setCameraOpen(true); }} className="btn-gold">
+            <Camera className="w-4 h-4 ml-1 animate-pulse" /> بصمة حضور بالصورة
+          </Button>
+        </div>
+      ) : !todayAtt.checkOut ? (
+        <div className="bg-emerald-500/10 border-y border-emerald-500/30 px-4 py-3 flex items-center justify-between flex-wrap gap-2">
+          <p className="text-sm text-emerald-400 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> أنت حالياً في الدوام - بدأت في {new Date(todayAtt.checkIn).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' })}</p>
+          <Button onClick={() => { setCameraMode('out'); setCameraOpen(true); }} className="btn-neon">
+            <Camera className="w-4 h-4 ml-1" /> بصمة انصراف بالصورة
+          </Button>
+        </div>
+      ) : (
+        <div className="bg-purple-500/10 border-y border-purple-500/30 px-4 py-3 text-center text-sm text-purple-400">
+          ✅ تم إنهاء الدوام اليومي - شكراً لك!
+        </div>
+      )}
+      <CameraModal open={cameraOpen} mode={cameraMode} onClose={() => setCameraOpen(false)} onCapture={handleCapture} />
+    </>
   );
 }
 
@@ -538,47 +689,312 @@ function HomeTab({ employee, todayAtt, tasks, payroll }) {
 }
 
 // ============================== PAYROLL TAB (own only) ==============================
-function PayrollTab({ payroll }) {
+function PayrollTab({ payroll, employee }) {
   if (!payroll) return <p className="text-sm text-muted-foreground text-center py-8">جاري التحميل...</p>;
+  const handlePrint = () => {
+    window.print();
+  };
   return (
     <div className="space-y-4">
-      <Card className="glass-strong border-gold-soft">
-        <CardContent className="pt-6 text-center space-y-3">
-          <p className="text-xs text-muted-foreground">راتب شهر {payroll.month}</p>
-          <p className="text-5xl font-black gold-text">{fmt(payroll.finalSalary)}</p>
-          <p className="text-xs text-muted-foreground">د.ع</p>
-        </CardContent>
-      </Card>
-      <div className="grid grid-cols-3 gap-3">
-        <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">الراتب الأساسي</p><p className="text-base font-bold">{fmt(payroll.baseSalary)}</p></div>
-        <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">مكافآت</p><p className="text-base font-bold text-emerald-400">+{fmt(payroll.bonuses)}</p></div>
-        <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">خصومات</p><p className="text-base font-bold text-red-400">-{fmt(payroll.deductions)}</p></div>
+      <div className="flex justify-end print:hidden">
+        <Button onClick={handlePrint} className="btn-neon"><Printer className="w-4 h-4 ml-1" /> طباعة / حفظ PDF</Button>
       </div>
-      <div className="grid grid-cols-3 gap-3">
-        <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">حضور</p><p className="text-base font-bold text-emerald-400">{payroll.presentDays}</p></div>
-        <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">تأخير</p><p className="text-base font-bold text-amber-400">{payroll.lateDays}</p></div>
-        <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">غياب</p><p className="text-base font-bold text-red-400">{payroll.absentDays}</p></div>
-      </div>
-      <Card className="glass-strong border-gold-soft">
-        <CardHeader><CardTitle className="text-sm">قيود الشهر</CardTitle></CardHeader>
-        <CardContent>
-          {(payroll.entries || []).length === 0 ? <p className="text-xs text-muted-foreground text-center py-4">لا توجد قيود</p> :
-            payroll.entries.map(e => (
-              <div key={e.id} className="flex justify-between items-center p-2 border-b border-gold-soft/30">
-                <div>
-                  <p className="text-xs font-bold">{e.reason}</p>
-                  <p className="text-[10px] text-muted-foreground">{e.date}</p>
+      <div id="payslip-print" className="payslip-area space-y-4">
+        {/* Header for print */}
+        <div className="hidden print:block text-center border-b-2 border-black pb-3 mb-3">
+          <h1 className="text-3xl font-black">مركز الغزلان</h1>
+          <p className="text-sm">كشف راتب الموظف</p>
+          <p className="text-xs">شهر {payroll.month}</p>
+        </div>
+
+        <Card className="glass-strong border-gold/40 print:border-black print:bg-white">
+          <CardContent className="pt-6 text-center space-y-3 print:text-black">
+            <p className="text-xs text-muted-foreground print:text-black">راتب شهر {payroll.month}</p>
+            <p className="text-5xl font-black gold-text print:text-black">{fmt(payroll.finalSalary)}</p>
+            <p className="text-xs text-muted-foreground print:text-black">صافي الراتب (د.ع)</p>
+            <div className="text-right border-t border-gold-soft pt-3 mt-3 print:border-black">
+              <p className="text-xs">الاسم: <span className="font-bold">{employee?.name}</span></p>
+              <p className="text-xs">الرقم الوظيفي: <span className="font-mono">{employee?.employeeId}</span></p>
+              <p className="text-xs">المنصب: <span className="font-bold">{employee?.role}</span></p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="stat-card text-center print:border print:border-black"><p className="text-[10px] text-muted-foreground print:text-black">الراتب الأساسي</p><p className="text-base font-bold print:text-black">{fmt(payroll.baseSalary)}</p></div>
+          <div className="stat-card text-center print:border print:border-black"><p className="text-[10px] text-muted-foreground print:text-black">مكافآت</p><p className="text-base font-bold text-emerald-400 print:text-black">+{fmt(payroll.bonuses)}</p></div>
+          <div className="stat-card text-center print:border print:border-black"><p className="text-[10px] text-muted-foreground print:text-black">خصم التأخير</p><p className="text-base font-bold text-red-400 print:text-black">-{fmt(payroll.lateDeductions || 0)}</p></div>
+          <div className="stat-card text-center print:border print:border-black"><p className="text-[10px] text-muted-foreground print:text-black">قسط السلف</p><p className="text-base font-bold text-orange-400 print:text-black">-{fmt(payroll.advanceDeduction || 0)}</p></div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <div className="stat-card text-center print:border print:border-black"><p className="text-[10px] text-muted-foreground print:text-black">حضور</p><p className="text-base font-bold text-emerald-400 print:text-black">{payroll.presentDays}</p></div>
+          <div className="stat-card text-center print:border print:border-black"><p className="text-[10px] text-muted-foreground print:text-black">تأخير</p><p className="text-base font-bold text-amber-400 print:text-black">{payroll.lateDays}</p></div>
+          <div className="stat-card text-center print:border print:border-black"><p className="text-[10px] text-muted-foreground print:text-black">غياب</p><p className="text-base font-bold text-red-400 print:text-black">{payroll.absentDays}</p></div>
+        </div>
+
+        {payroll.activeAdvances && payroll.activeAdvances.length > 0 && (
+          <Card className="glass-strong border-orange-500/30 print:border-black">
+            <CardHeader><CardTitle className="text-sm print:text-black">💳 السلف النشطة</CardTitle></CardHeader>
+            <CardContent className="space-y-1">
+              {payroll.activeAdvances.map(a => (
+                <div key={a.id} className="flex justify-between text-xs p-2 border-b border-gold-soft/30 print:text-black">
+                  <span>{fmt(a.amount)} د.ع</span>
+                  <span>{a.paid}/{a.installments} قسط</span>
+                  <span className="font-bold text-red-400 print:text-black">-{fmt(a.perInstallment)} د.ع/شهر</span>
                 </div>
-                <span className={`font-bold ${e.type === 'bonus' ? 'text-emerald-400' : 'text-red-400'}`}>{e.type === 'bonus' ? '+' : '-'}{fmt(e.amount)}</span>
-              </div>
-            ))}
-        </CardContent>
-      </Card>
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
+        <Card className="glass-strong border-gold-soft print:border-black">
+          <CardHeader><CardTitle className="text-sm print:text-black">📋 قيود الشهر</CardTitle></CardHeader>
+          <CardContent>
+            {(payroll.entries || []).length === 0 ? <p className="text-xs text-muted-foreground text-center py-4 print:text-black">لا توجد قيود</p> :
+              payroll.entries.map(e => (
+                <div key={e.id} className="flex justify-between items-center p-2 border-b border-gold-soft/30 print:text-black">
+                  <div>
+                    <p className="text-xs font-bold">{e.reason}</p>
+                    <p className="text-[10px] text-muted-foreground print:text-black">{e.date}</p>
+                  </div>
+                  <span className={`font-bold ${e.type === 'bonus' ? 'text-emerald-400' : 'text-red-400'} print:text-black`}>{e.type === 'bonus' ? '+' : '-'}{fmt(e.amount)}</span>
+                </div>
+              ))}
+          </CardContent>
+        </Card>
+
+        <div className="hidden print:flex justify-between mt-8 text-xs">
+          <div><p>توقيع الموظف</p><div className="border-b border-black w-40 h-12 mt-2"></div></div>
+          <div><p>توقيع المدير</p><div className="border-b border-black w-40 h-12 mt-2"></div></div>
+        </div>
+      </div>
+
+      <style jsx global>{`
+        @media print {
+          body * { visibility: hidden; }
+          #payslip-print, #payslip-print * { visibility: visible; }
+          #payslip-print { position: absolute; left: 0; top: 0; width: 100%; background: white !important; color: black !important; padding: 20px; }
+          .glass-strong, .glass-card, .stat-card { background: white !important; border: 1px solid #d4af37 !important; }
+        }
+      `}</style>
     </div>
   );
 }
 
-// ============================== REAL EMPLOYEE PAGES ==============================
+// ============================== LEAVES SECTION ==============================
+function MyLeavesSection({ employee }) {
+  const [items, setItems] = useState([]);
+  const [balance, setBalance] = useState({ allowance: 24, used: 0, pending: 0, remaining: 24 });
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ type: 'annual', reason: '', startDate: new Date().toISOString().slice(0, 10), endDate: new Date().toISOString().slice(0, 10), days: 1 });
+
+  const load = async () => {
+    const [list, bal] = await Promise.all([
+      api(`leaves?employeeId=${employee.id}`),
+      api(`employees/${employee.id}/leave-balance`),
+    ]);
+    if (Array.isArray(list)) setItems(list);
+    if (bal && !bal.error) setBalance(bal);
+  };
+  useEffect(() => { load(); }, []);
+
+  const submit = async () => {
+    if (!form.startDate || !form.days) { toast.error('املأ الحقول'); return; }
+    const r = await api('leaves', { method: 'POST', body: JSON.stringify({ ...form, employeeId: employee.id, days: Number(form.days) }) });
+    if (r.error) toast.error(r.error);
+    else { toast.success('✅ تم إرسال طلب الإجازة للمدير'); setOpen(false); load(); }
+  };
+
+  const TYPE_LABEL = { annual: 'سنوية', sick: 'مرضية', emergency: 'طارئة', unpaid: 'بدون راتب', other: 'أخرى' };
+  const STATUS_META = {
+    pending: { l: 'قيد المراجعة', c: 'bg-amber-500/20 text-amber-400' },
+    approved: { l: '✅ موافق', c: 'bg-emerald-500/20 text-emerald-400' },
+    rejected: { l: '❌ مرفوض', c: 'bg-red-500/20 text-red-400' },
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">الرصيد السنوي</p><p className="text-2xl font-bold gold-text">{balance.allowance}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">مستخدمة</p><p className="text-2xl font-bold text-amber-400">{balance.used}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">قيد الموافقة</p><p className="text-2xl font-bold text-cyan-400">{balance.pending}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">المتبقي</p><p className="text-2xl font-bold text-emerald-400">{balance.remaining}</p></div>
+      </div>
+
+      <div className="flex justify-between items-center">
+        <h3 className="font-bold text-base gold-text">طلباتي ({items.length})</h3>
+        <Button onClick={() => setOpen(true)} className="btn-gold"><CalendarDays className="w-4 h-4 ml-1" /> طلب إجازة جديد</Button>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="text-center py-12"><CalendarDays className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" /><p className="text-sm text-muted-foreground">لا توجد طلبات إجازة</p></div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(l => {
+            const meta = STATUS_META[l.status] || STATUS_META.pending;
+            return (
+              <Card key={l.id} className="glass-card border-gold-soft">
+                <CardContent className="p-4 flex justify-between items-start gap-3 flex-wrap">
+                  <div className="flex-1 min-w-[200px]">
+                    <p className="font-bold">{TYPE_LABEL[l.type] || l.type} · {l.days} يوم</p>
+                    <p className="text-xs text-muted-foreground">{l.startDate} → {l.endDate}</p>
+                    {l.reason && <p className="text-xs mt-1">📝 {l.reason}</p>}
+                    {l.rejectionReason && <p className="text-xs mt-1 text-red-400">سبب الرفض: {l.rejectionReason}</p>}
+                  </div>
+                  <Badge className={meta.c}>{meta.l}</Badge>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="gold-text">طلب إجازة جديد</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">نوع الإجازة</Label>
+              <Select value={form.type} onValueChange={v => setForm({ ...form, type: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="annual">سنوية</SelectItem>
+                  <SelectItem value="sick">مرضية</SelectItem>
+                  <SelectItem value="emergency">طارئة</SelectItem>
+                  <SelectItem value="unpaid">بدون راتب</SelectItem>
+                  <SelectItem value="other">أخرى</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><Label className="text-xs">من تاريخ</Label><Input type="date" value={form.startDate} onChange={e => setForm({ ...form, startDate: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label className="text-xs">إلى تاريخ</Label><Input type="date" value={form.endDate} onChange={e => setForm({ ...form, endDate: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            </div>
+            <div>
+              <Label className="text-xs">عدد الأيام</Label>
+              <Input type="number" min="1" value={form.days} onChange={e => setForm({ ...form, days: e.target.value })} className="bg-input/30 border-gold/20" />
+            </div>
+            <div>
+              <Label className="text-xs">السبب</Label>
+              <Textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className="bg-input/30 border-gold/20 h-20" placeholder="اشرح سبب الإجازة..." />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={submit} className="btn-gold w-full">إرسال للمدير</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ============================== ADVANCES SECTION ==============================
+function MyAdvancesSection({ employee }) {
+  const [items, setItems] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ amount: 100000, reason: '', installments: 1 });
+
+  const load = async () => {
+    const list = await api(`advances?employeeId=${employee.id}`);
+    if (Array.isArray(list)) setItems(list);
+  };
+  useEffect(() => { load(); }, []);
+
+  const submit = async () => {
+    if (!form.amount) { toast.error('املأ المبلغ'); return; }
+    const r = await api('advances', { method: 'POST', body: JSON.stringify({ ...form, employeeId: employee.id, amount: Number(form.amount), installments: Number(form.installments) }) });
+    if (r.error) toast.error(r.error);
+    else { toast.success('✅ تم إرسال طلب السلفة للمدير'); setOpen(false); load(); }
+  };
+
+  const STATUS_META = {
+    pending: { l: 'قيد المراجعة', c: 'bg-amber-500/20 text-amber-400' },
+    approved: { l: '✅ موافق - قيد التسديد', c: 'bg-emerald-500/20 text-emerald-400' },
+    rejected: { l: '❌ مرفوض', c: 'bg-red-500/20 text-red-400' },
+    paid: { l: '🎉 مسددة', c: 'bg-purple-500/20 text-purple-400' },
+  };
+
+  const totalActive = items.filter(a => a.status === 'approved').reduce((s, a) => s + (a.remainingAmount || 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">عدد الطلبات</p><p className="text-2xl font-bold gold-text">{items.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">قيد التسديد</p><p className="text-2xl font-bold text-amber-400">{items.filter(a => a.status === 'approved').length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">المتبقي عليّ</p><p className="text-xl font-bold text-red-400">{fmt(totalActive)} <span className="text-xs">د.ع</span></p></div>
+      </div>
+
+      <div className="flex justify-between items-center">
+        <h3 className="font-bold text-base gold-text">سلفي ({items.length})</h3>
+        <Button onClick={() => setOpen(true)} className="btn-gold"><Wallet className="w-4 h-4 ml-1" /> طلب سلفة جديدة</Button>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="text-center py-12"><Wallet className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" /><p className="text-sm text-muted-foreground">لا توجد طلبات سلف</p></div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(a => {
+            const meta = STATUS_META[a.status] || STATUS_META.pending;
+            return (
+              <Card key={a.id} className="glass-card border-gold-soft">
+                <CardContent className="p-4 space-y-2">
+                  <div className="flex justify-between items-start gap-2">
+                    <div>
+                      <p className="font-bold text-lg gold-text">{fmt(a.amount)} د.ع</p>
+                      <p className="text-xs text-muted-foreground">{a.installments} قسط × {fmt(a.perInstallment)} د.ع</p>
+                    </div>
+                    <Badge className={meta.c}>{meta.l}</Badge>
+                  </div>
+                  {a.status === 'approved' && (
+                    <>
+                      <div className="flex justify-between text-xs">
+                        <span>المُسدَّد: {a.paidInstallments}/{a.installments}</span>
+                        <span>المتبقي: <span className="font-bold text-red-400">{fmt(a.remainingAmount)} د.ع</span></span>
+                      </div>
+                      <Progress value={(a.paidInstallments / a.installments) * 100} className="h-2" />
+                    </>
+                  )}
+                  {a.reason && <p className="text-xs text-muted-foreground">📝 {a.reason}</p>}
+                  {a.rejectionReason && <p className="text-xs text-red-400">سبب الرفض: {a.rejectionReason}</p>}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="gold-text">طلب سلفة جديدة</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">المبلغ (د.ع)</Label>
+              <Input type="number" min="1000" step="10000" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} className="bg-input/30 border-gold/20 text-lg font-bold" />
+            </div>
+            <div>
+              <Label className="text-xs">عدد الأقساط</Label>
+              <Select value={String(form.installments)} onValueChange={v => setForm({ ...form, installments: Number(v) })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {[1, 2, 3, 4, 5, 6, 8, 10, 12].map(n => <SelectItem key={n} value={String(n)}>{n} {n === 1 ? 'دفعة واحدة' : 'أقساط'}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-muted-foreground mt-1">قسط الشهر: <span className="font-bold gold-text">{fmt(Math.round((Number(form.amount) || 0) / Math.max(1, Number(form.installments))))} د.ع</span></p>
+            </div>
+            <div>
+              <Label className="text-xs">السبب</Label>
+              <Textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className="bg-input/30 border-gold/20 h-20" placeholder="اشرح سبب الحاجة للسلفة..." />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={submit} className="btn-gold w-full">إرسال للمدير</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
 
 // 1) POS - record sale + view own sales
 function MyPOSSection({ employee }) {
@@ -985,12 +1401,14 @@ function EmployeeDashboard({ employee, onLogout }) {
   const allTabs = [
     { key: 'home', label: 'الرئيسية', icon: Home, perm: null }, // always
     { key: 'tasks', label: 'المهام', icon: ListTodo, perm: 'tasks', badge: tasks.filter(t => ['pending', 'new'].includes(t.status)).length },
-    { key: 'payroll', label: 'راتبي', icon: Wallet, perm: null }, // always for self
+    { key: 'leaves', label: 'إجازاتي', icon: CalendarDays, perm: null }, // always for self
+    { key: 'advances', label: 'سُلفي', icon: Wallet, perm: null }, // always for self
+    { key: 'payroll', label: 'راتبي', icon: BadgeCheck, perm: null }, // always for self
     { key: 'pos', label: 'نقاط البيع', icon: ShoppingCart, perm: 'pos' },
     { key: 'repairs', label: 'الصيانة', icon: Wrench, perm: 'repairs' },
     { key: 'isp', label: 'الإنترنت', icon: Activity, perm: 'isp' },
     { key: 'subscribers', label: 'مشتركيني', icon: Users, perm: 'subscribers' },
-    { key: 'reports', label: 'تقاريري', icon: BadgeCheck, perm: 'reports' },
+    { key: 'reports', label: 'تقاريري', icon: Award, perm: 'reports' },
   ];
   const visibleTabs = allTabs.filter(t => !t.perm || perms.includes(t.perm) || perms.includes('all'));
   const hasPerm = (p) => perms.includes(p) || perms.includes('all');
@@ -1048,7 +1466,15 @@ function EmployeeDashboard({ employee, onLogout }) {
             ) : null}
 
             <TabsContent value="payroll" className="mt-4">
-              <PayrollTab payroll={payroll} />
+              <PayrollTab payroll={payroll} employee={selfData} />
+            </TabsContent>
+
+            <TabsContent value="leaves" className="mt-4">
+              <MyLeavesSection employee={selfData} />
+            </TabsContent>
+
+            <TabsContent value="advances" className="mt-4">
+              <MyAdvancesSection employee={selfData} />
             </TabsContent>
 
             {hasPerm('pos') ? (

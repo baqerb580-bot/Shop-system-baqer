@@ -180,12 +180,93 @@ function TopBar({ setActive, sidebarOpen, setSidebarOpen }) {
         <Button variant="ghost" size="icon" className="relative hover:bg-gold/10" onClick={() => setActive('ai')}>
           <Sparkles className="w-5 h-5 text-gold" />
         </Button>
-        <Button variant="ghost" size="icon" className="relative hover:bg-gold/10">
-          <Bell className="w-5 h-5 text-gold" />
-          <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
-        </Button>
+        <AdminNotificationsBell />
       </div>
     </header>
+  );
+}
+
+// ============ ADMIN NOTIFICATIONS BELL ============
+function AdminNotificationsBell() {
+  const [items, setItems] = useState([]);
+  const [open, setOpen] = useState(false);
+  const lastCountRef = useRef(0);
+
+  const playBeep = () => {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const ctx = new AC();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine'; o.frequency.value = 1000;
+      g.gain.setValueAtTime(0.1, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      o.start(); o.stop(ctx.currentTime + 0.5);
+    } catch {}
+  };
+
+  const load = async () => {
+    const data = await api('notifications/admin');
+    if (Array.isArray(data)) {
+      setItems(data);
+      const unread = data.filter(n => !n.read).length;
+      if (unread > lastCountRef.current && lastCountRef.current > 0) playBeep();
+      lastCountRef.current = unread;
+    }
+  };
+  useEffect(() => { load(); const i = setInterval(load, 15000); return () => clearInterval(i); }, []);
+
+  const unread = items.filter(n => !n.read).length;
+  const markRead = async (id) => { await api(`notifications/${id}/read`, { method: 'POST' }); load(); };
+  const markAllRead = async () => { await api('notifications/admin/read-all', { method: 'POST' }); load(); };
+
+  const NOTIF_COLOR = {
+    attendance_late: 'border-orange-500/40 bg-orange-500/5',
+    attendance_checkin: 'border-cyan-500/40 bg-cyan-500/5',
+    attendance_checkout: 'border-purple-500/40 bg-purple-500/5',
+    leave_request: 'border-amber-500/40 bg-amber-500/5',
+    advance_request: 'border-yellow-500/40 bg-yellow-500/5',
+    task_submitted: 'border-purple-500/40 bg-purple-500/5',
+    task_accepted: 'border-emerald-500/40 bg-emerald-500/5',
+    task_rejected: 'border-red-500/40 bg-red-500/5',
+  };
+
+  return (
+    <div className="relative">
+      <Button variant="ghost" size="icon" className="relative hover:bg-gold/10" onClick={() => setOpen(!open)}>
+        <Bell className={`w-5 h-5 text-gold ${unread > 0 ? 'animate-pulse' : ''}`} />
+        {unread > 0 && (
+          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-bold animate-bounce">{unread}</span>
+        )}
+      </Button>
+      {open && (
+        <div className="absolute left-0 top-12 w-96 max-h-[500px] overflow-y-auto glass-strong border border-gold/30 rounded-xl shadow-2xl z-50">
+          <div className="p-3 border-b border-gold-soft flex justify-between items-center sticky top-0 bg-background">
+            <p className="text-sm font-bold gold-text flex items-center gap-2"><Bell className="w-4 h-4" /> الإشعارات ({unread})</p>
+            {unread > 0 && <button onClick={markAllRead} className="text-[10px] text-cyan-400 hover:underline">قراءة الكل</button>}
+          </div>
+          {items.length === 0 ? (
+            <p className="p-6 text-xs text-center text-muted-foreground">لا توجد إشعارات</p>
+          ) : items.map(n => {
+            const c = NOTIF_COLOR[n.type] || 'border-gold-soft/30';
+            return (
+              <div key={n.id} onClick={() => markRead(n.id)} className={`p-3 border-l-4 border-b border-gold-soft/30 cursor-pointer hover:bg-input/20 ${c} ${!n.read ? 'font-semibold' : ''}`}>
+                <div className="flex items-start gap-2">
+                  {!n.read && <span className="mt-1 w-2 h-2 rounded-full bg-cyan-400 flex-shrink-0 animate-pulse" />}
+                  <div className="flex-1">
+                    <p className="text-xs font-bold">{n.title}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5 whitespace-pre-line">{n.message}</p>
+                    <p className="text-[9px] text-muted-foreground mt-1">{new Date(n.createdAt).toLocaleString('ar-IQ')}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1455,16 +1536,20 @@ function Employees() {
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="bg-input/30 border border-gold-soft w-full grid grid-cols-5">
+        <TabsList className="bg-input/30 border border-gold-soft w-full grid grid-cols-7">
           <TabsTrigger value="list">👥 الموظفون</TabsTrigger>
           <TabsTrigger value="attendance">🕐 الحضور</TabsTrigger>
           <TabsTrigger value="tasks">📋 المهام</TabsTrigger>
+          <TabsTrigger value="leaves">📅 الإجازات</TabsTrigger>
+          <TabsTrigger value="advances">💳 السلف</TabsTrigger>
           <TabsTrigger value="payroll">💰 الرواتب</TabsTrigger>
           <TabsTrigger value="reports">📊 التقارير</TabsTrigger>
         </TabsList>
         <TabsContent value="list" className="mt-4"><EmployeesList /></TabsContent>
         <TabsContent value="attendance" className="mt-4"><AttendanceView /></TabsContent>
         <TabsContent value="tasks" className="mt-4"><TasksManager /></TabsContent>
+        <TabsContent value="leaves" className="mt-4"><LeavesManager /></TabsContent>
+        <TabsContent value="advances" className="mt-4"><AdvancesManager /></TabsContent>
         <TabsContent value="payroll" className="mt-4"><PayrollView /></TabsContent>
         <TabsContent value="reports" className="mt-4"><HRReports /></TabsContent>
       </Tabs>
@@ -1946,6 +2031,214 @@ function TaskReviewDialog({ task, onClose, onDone }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ============ LEAVES MANAGER ============
+function LeavesManager() {
+  const [items, setItems] = useState([]);
+  const [filter, setFilter] = useState('pending');
+  const [rejectItem, setRejectItem] = useState(null);
+  const [reason, setReason] = useState('');
+
+  const load = async () => {
+    const r = await api('leaves');
+    if (Array.isArray(r)) setItems(r);
+  };
+  useEffect(() => { load(); const i = setInterval(load, 20000); return () => clearInterval(i); }, []);
+
+  const filtered = filter === 'all' ? items : items.filter(x => x.status === filter);
+
+  const approve = async (id) => {
+    const r = await api(`leaves/${id}/approve`, { method: 'POST', body: JSON.stringify({ approvedBy: 'المدير' }) });
+    if (r.error) toast.error(r.error); else { toast.success('✅ تمت الموافقة'); load(); }
+  };
+  const reject = async () => {
+    if (!reason.trim()) { toast.error('سبب الرفض مطلوب'); return; }
+    const r = await api(`leaves/${rejectItem.id}/reject`, { method: 'POST', body: JSON.stringify({ approvedBy: 'المدير', reason }) });
+    if (r.error) toast.error(r.error); else { toast.success('تم الرفض'); setRejectItem(null); setReason(''); load(); }
+  };
+
+  const TYPE_LABEL = { annual: 'سنوية', sick: 'مرضية', emergency: 'طارئة', unpaid: 'بدون راتب', other: 'أخرى' };
+  const counts = {
+    all: items.length,
+    pending: items.filter(x => x.status === 'pending').length,
+    approved: items.filter(x => x.status === 'approved').length,
+    rejected: items.filter(x => x.status === 'rejected').length,
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {['pending', 'approved', 'rejected', 'all'].map(s => (
+          <button key={s} onClick={() => setFilter(s)} className={`px-3 py-1.5 rounded-lg text-xs border ${filter === s ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>
+            {s === 'pending' ? `🟡 قيد المراجعة (${counts.pending})` : s === 'approved' ? `✅ مقبولة (${counts.approved})` : s === 'rejected' ? `❌ مرفوضة (${counts.rejected})` : `📋 الكل (${counts.all})`}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-12 text-sm text-muted-foreground">لا توجد طلبات في هذه الفئة</div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-3">
+          {filtered.map(l => (
+            <Card key={l.id} className="glass-card border-gold-soft">
+              <CardContent className="p-4 space-y-2">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-bold">{l.employeeName}</p>
+                    <p className="text-xs text-muted-foreground">{TYPE_LABEL[l.type] || l.type} · {l.days} يوم</p>
+                  </div>
+                  <Badge className={l.status === 'pending' ? 'bg-amber-500/20 text-amber-400' : l.status === 'approved' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}>
+                    {l.status === 'pending' ? 'قيد المراجعة' : l.status === 'approved' ? 'موافق' : 'مرفوض'}
+                  </Badge>
+                </div>
+                <p className="text-xs">📅 {l.startDate} → {l.endDate}</p>
+                {l.reason && <p className="text-xs text-muted-foreground">📝 {l.reason}</p>}
+                {l.rejectionReason && <p className="text-xs text-red-400">سبب الرفض: {l.rejectionReason}</p>}
+                {l.status === 'pending' && (
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gold-soft">
+                    <Button onClick={() => approve(l.id)} size="sm" className="btn-gold h-8 text-xs">✅ موافقة</Button>
+                    <Button onClick={() => setRejectItem(l)} size="sm" variant="outline" className="border-red-500/30 text-red-400 h-8 text-xs">❌ رفض</Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={!!rejectItem} onOpenChange={() => { setRejectItem(null); setReason(''); }}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="text-red-400">رفض طلب الإجازة</DialogTitle></DialogHeader>
+          <p className="text-xs">الموظف: <span className="font-bold">{rejectItem?.employeeName}</span></p>
+          <Textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="سبب الرفض..." className="bg-input/30 border-gold/20 h-24" />
+          <DialogFooter>
+            <Button onClick={reject} className="bg-red-500 hover:bg-red-600 text-white w-full">إرسال الرفض</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ============ ADVANCES MANAGER ============
+function AdvancesManager() {
+  const [items, setItems] = useState([]);
+  const [filter, setFilter] = useState('pending');
+  const [approveItem, setApproveItem] = useState(null);
+  const [installments, setInstallments] = useState(3);
+  const [rejectItem, setRejectItem] = useState(null);
+  const [reason, setReason] = useState('');
+
+  const load = async () => {
+    const r = await api('advances');
+    if (Array.isArray(r)) setItems(r);
+  };
+  useEffect(() => { load(); const i = setInterval(load, 20000); return () => clearInterval(i); }, []);
+
+  const filtered = filter === 'all' ? items : items.filter(x => x.status === filter);
+
+  const approve = async () => {
+    const r = await api(`advances/${approveItem.id}/approve`, { method: 'POST', body: JSON.stringify({ approvedBy: 'المدير', installments }) });
+    if (r.error) toast.error(r.error); else { toast.success('✅ تمت الموافقة - سيُخصم القسط شهرياً من الراتب'); setApproveItem(null); load(); }
+  };
+  const reject = async () => {
+    if (!reason.trim()) { toast.error('سبب الرفض مطلوب'); return; }
+    const r = await api(`advances/${rejectItem.id}/reject`, { method: 'POST', body: JSON.stringify({ approvedBy: 'المدير', reason }) });
+    if (r.error) toast.error(r.error); else { toast.success('تم الرفض'); setRejectItem(null); setReason(''); load(); }
+  };
+  const payInstallment = async (id) => {
+    const r = await api(`advances/${id}/pay-installment`, { method: 'POST' });
+    if (r.error) toast.error(r.error); else { toast.success('✅ تم تسجيل قسط'); load(); }
+  };
+
+  const counts = {
+    all: items.length,
+    pending: items.filter(x => x.status === 'pending').length,
+    approved: items.filter(x => x.status === 'approved').length,
+    rejected: items.filter(x => x.status === 'rejected').length,
+    paid: items.filter(x => x.status === 'paid').length,
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {['pending', 'approved', 'paid', 'rejected', 'all'].map(s => (
+          <button key={s} onClick={() => setFilter(s)} className={`px-3 py-1.5 rounded-lg text-xs border ${filter === s ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>
+            {s === 'pending' ? `🟡 قيد المراجعة (${counts.pending})` : s === 'approved' ? `💸 قيد التسديد (${counts.approved})` : s === 'paid' ? `🎉 مسددة (${counts.paid})` : s === 'rejected' ? `❌ مرفوضة (${counts.rejected})` : `📋 الكل (${counts.all})`}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-12 text-sm text-muted-foreground">لا توجد طلبات</div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-3">
+          {filtered.map(a => (
+            <Card key={a.id} className="glass-card border-gold-soft">
+              <CardContent className="p-4 space-y-2">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-bold">{a.employeeName}</p>
+                    <p className="text-xl font-bold gold-text">{fmt(a.amount)} د.ع</p>
+                    <p className="text-xs text-muted-foreground">{a.installments} قسط × {fmt(a.perInstallment)} د.ع</p>
+                  </div>
+                  <Badge className={a.status === 'pending' ? 'bg-amber-500/20 text-amber-400' : a.status === 'approved' ? 'bg-emerald-500/20 text-emerald-400' : a.status === 'paid' ? 'bg-purple-500/20 text-purple-400' : 'bg-red-500/20 text-red-400'}>
+                    {a.status === 'pending' ? 'قيد المراجعة' : a.status === 'approved' ? 'قيد التسديد' : a.status === 'paid' ? 'مسددة' : 'مرفوضة'}
+                  </Badge>
+                </div>
+                {a.reason && <p className="text-xs text-muted-foreground">📝 {a.reason}</p>}
+                {a.status === 'approved' && (
+                  <>
+                    <div className="flex justify-between text-xs">
+                      <span>المسدد: {a.paidInstallments}/{a.installments}</span>
+                      <span>المتبقي: <span className="font-bold text-red-400">{fmt(a.remainingAmount)} د.ع</span></span>
+                    </div>
+                    <Progress value={(a.paidInstallments / a.installments) * 100} className="h-2" />
+                    <Button onClick={() => payInstallment(a.id)} size="sm" className="btn-neon w-full h-8 text-xs">تسديد قسط ({fmt(a.perInstallment)} د.ع)</Button>
+                  </>
+                )}
+                {a.rejectionReason && <p className="text-xs text-red-400">سبب الرفض: {a.rejectionReason}</p>}
+                {a.status === 'pending' && (
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gold-soft">
+                    <Button onClick={() => { setApproveItem(a); setInstallments(a.installments || 3); }} size="sm" className="btn-gold h-8 text-xs">✅ موافقة</Button>
+                    <Button onClick={() => setRejectItem(a)} size="sm" variant="outline" className="border-red-500/30 text-red-400 h-8 text-xs">❌ رفض</Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={!!approveItem} onOpenChange={() => setApproveItem(null)}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="gold-text">الموافقة على السلفة</DialogTitle></DialogHeader>
+          <p className="text-xs">الموظف: <span className="font-bold">{approveItem?.employeeName}</span></p>
+          <p className="text-xs">المبلغ: <span className="font-bold gold-text">{fmt(approveItem?.amount)} د.ع</span></p>
+          <div>
+            <Label className="text-xs">عدد الأقساط (سيُخصم القسط من الراتب الشهري)</Label>
+            <Input type="number" min="1" max="24" value={installments} onChange={e => setInstallments(Number(e.target.value))} className="bg-input/30 border-gold/20" />
+            <p className="text-[10px] text-muted-foreground mt-1">قسط الشهر: <span className="font-bold gold-text">{fmt(Math.round((approveItem?.amount || 0) / Math.max(1, installments)))} د.ع</span></p>
+          </div>
+          <DialogFooter>
+            <Button onClick={approve} className="btn-gold w-full">تأكيد الموافقة</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!rejectItem} onOpenChange={() => { setRejectItem(null); setReason(''); }}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="text-red-400">رفض طلب السلفة</DialogTitle></DialogHeader>
+          <p className="text-xs">الموظف: <span className="font-bold">{rejectItem?.employeeName}</span></p>
+          <Textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="سبب الرفض..." className="bg-input/30 border-gold/20 h-24" />
+          <DialogFooter>
+            <Button onClick={reject} className="bg-red-500 hover:bg-red-600 text-white w-full">إرسال الرفض</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
