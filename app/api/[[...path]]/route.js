@@ -35,11 +35,21 @@ async function seedDefaults(db) {
   const zonesCount = await db.collection('zones').countDocuments();
   if (zonesCount === 0) {
     await db.collection('zones').insertMany([
-      { id: uuidv4(), name: 'زون الكرادة المركزي', location: 'بغداد - الكرادة', lat: 33.3060, lng: 44.4180, status: 'online', subscribers: 0, fats: 4, utilization: 65, createdAt: new Date().toISOString() },
-      { id: uuidv4(), name: 'زون المنصور', location: 'بغداد - المنصور', lat: 33.3152, lng: 44.3661, status: 'online', subscribers: 0, fats: 6, utilization: 78, createdAt: new Date().toISOString() },
-      { id: uuidv4(), name: 'زون الجادرية', location: 'بغداد - الجادرية', lat: 33.2750, lng: 44.3850, status: 'warning', subscribers: 0, fats: 3, utilization: 91, createdAt: new Date().toISOString() },
-      { id: uuidv4(), name: 'زون الدورة', location: 'بغداد - الدورة', lat: 33.2466, lng: 44.4060, status: 'offline', subscribers: 0, fats: 2, utilization: 0, createdAt: new Date().toISOString() },
+      { id: uuidv4(), number: 'Z-001', name: 'زون الكرادة المركزي', location: 'بغداد - الكرادة', lat: 33.3060, lng: 44.4180, status: 'online', subscribers: 0, fats: 4, utilization: 65, createdAt: new Date().toISOString() },
+      { id: uuidv4(), number: 'Z-002', name: 'زون المنصور', location: 'بغداد - المنصور', lat: 33.3152, lng: 44.3661, status: 'online', subscribers: 0, fats: 6, utilization: 78, createdAt: new Date().toISOString() },
+      { id: uuidv4(), number: 'Z-003', name: 'زون الجادرية', location: 'بغداد - الجادرية', lat: 33.2750, lng: 44.3850, status: 'warning', subscribers: 0, fats: 3, utilization: 91, createdAt: new Date().toISOString() },
+      { id: uuidv4(), number: 'Z-004', name: 'زون الدورة', location: 'بغداد - الدورة', lat: 33.2466, lng: 44.4060, status: 'offline', subscribers: 0, fats: 2, utilization: 0, createdAt: new Date().toISOString() },
     ]);
+  } else {
+    // Backfill: ensure existing zones have a 'number' field
+    const allZones = await db.collection('zones').find({}).toArray();
+    let i = 1;
+    for (const z of allZones) {
+      if (!z.number) {
+        await db.collection('zones').updateOne({ id: z.id }, { $set: { number: `Z-${String(i).padStart(3, '0')}` } });
+      }
+      i++;
+    }
   }
 
   const subsCount = await db.collection('subscribers').countDocuments();
@@ -60,6 +70,8 @@ async function seedDefaults(db) {
       ...s,
       zoneId: zones[i % zones.length].id,
       zoneName: zones[i % zones.length].name,
+      zoneNumber: zones[i % zones.length].number || `Z-${String((i % zones.length) + 1).padStart(3, '0')}`,
+      fatNumber: `F-${String((i % zones.length) + 1).padStart(2, '0')}-${String((i % 4) + 1).padStart(2, '0')}`,
       address: `${zones[i % zones.length].location} - شارع ${i + 1}`,
       ipAddress: `10.10.${i + 1}.${100 + i}`,
       macAddress: `AA:BB:CC:${(10 + i).toString(16).toUpperCase()}:${(20 + i).toString(16).toUpperCase()}:${(30 + i).toString(16).toUpperCase()}`,
@@ -71,6 +83,25 @@ async function seedDefaults(db) {
     for (const z of zones) {
       const count = await db.collection('subscribers').countDocuments({ zoneId: z.id });
       await db.collection('zones').updateOne({ id: z.id }, { $set: { subscribers: count } });
+    }
+  } else {
+    // Backfill: ensure subscribers have zoneNumber & fatNumber
+    const allSubs = await db.collection('subscribers').find({}).toArray();
+    const allZones = await db.collection('zones').find({}).toArray();
+    const zoneById = Object.fromEntries(allZones.map(z => [z.id, z]));
+    let i = 0;
+    for (const s of allSubs) {
+      const updates = {};
+      if (!s.zoneNumber && s.zoneId && zoneById[s.zoneId]) {
+        updates.zoneNumber = zoneById[s.zoneId].number || `Z-${String((i % 4) + 1).padStart(3, '0')}`;
+      }
+      if (!s.fatNumber) {
+        updates.fatNumber = `F-${String((i % 4) + 1).padStart(2, '0')}-${String((i % 4) + 1).padStart(2, '0')}`;
+      }
+      if (Object.keys(updates).length > 0) {
+        await db.collection('subscribers').updateOne({ id: s.id }, { $set: updates });
+      }
+      i++;
     }
   }
 

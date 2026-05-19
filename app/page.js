@@ -631,9 +631,11 @@ function Subscribers() {
   const [zones, setZones] = useState([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [zoneFilter, setZoneFilter] = useState('all');
+  const [fatFilter, setFatFilter] = useState('');
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: '', phone: '', address: '', zoneId: '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '' });
+  const [form, setForm] = useState({ name: '', phone: '', address: '', zoneId: '', fatNumber: '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '' });
 
   const load = async () => {
     const [s, z] = await Promise.all([api('subscribers'), api('zones')]);
@@ -643,12 +645,20 @@ function Subscribers() {
 
   const filtered = items.filter(i =>
     (statusFilter === 'all' || i.status === statusFilter) &&
-    (i.name.includes(search) || i.phone?.includes(search) || i.ipAddress?.includes(search))
+    (zoneFilter === 'all' || i.zoneId === zoneFilter) &&
+    (!fatFilter || (i.fatNumber || '').toLowerCase().includes(fatFilter.toLowerCase())) &&
+    (!search ||
+      i.name?.includes(search) ||
+      i.phone?.includes(search) ||
+      i.ipAddress?.includes(search) ||
+      i.zoneNumber?.toLowerCase().includes(search.toLowerCase()) ||
+      i.fatNumber?.toLowerCase().includes(search.toLowerCase())
+    )
   );
 
   const save = async () => {
     const zone = zones.find(z => z.id === form.zoneId);
-    const payload = { ...form, zoneName: zone?.name, fee: Number(form.fee), debt: Number(form.debt) };
+    const payload = { ...form, zoneName: zone?.name, zoneNumber: zone?.number, fee: Number(form.fee), debt: Number(form.debt) };
     if (editing) await api(`subscribers/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
     else await api('subscribers', { method: 'POST', body: JSON.stringify(payload) });
     toast.success('تم الحفظ'); setOpen(false); setEditing(null); load();
@@ -660,11 +670,14 @@ function Subscribers() {
   const totalDebt = items.reduce((s, x) => s + (x.debt || 0), 0);
   const monthlyIncome = items.filter(i => i.status === 'active').reduce((s, x) => s + (x.fee || 0), 0);
 
+  const clearFilters = () => { setSearch(''); setStatusFilter('all'); setZoneFilter('all'); setFatFilter(''); };
+  const hasActiveFilters = search || statusFilter !== 'all' || zoneFilter !== 'all' || fatFilter;
+
   return (
     <div className="max-w-[1600px] mx-auto space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold gold-text">مشتركو الإنترنت</h1>
-        <Button onClick={() => { setEditing(null); setForm({ name: '', phone: '', address: '', zoneId: zones[0]?.id || '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '' }); setOpen(true); }} className="btn-gold">
+        <Button onClick={() => { setEditing(null); setForm({ name: '', phone: '', address: '', zoneId: zones[0]?.id || '', fatNumber: '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '' }); setOpen(true); }} className="btn-gold">
           <Plus className="w-4 h-4 ml-1" /> مشترك جديد
         </Button>
       </div>
@@ -678,35 +691,92 @@ function Subscribers() {
 
       <Card className="glass-strong border-gold-soft">
         <CardContent className="pt-6 space-y-3">
+          {/* Search Bar */}
           <div className="flex gap-2 flex-wrap">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث بالاسم/الهاتف/IP..." className="pr-10 bg-input/30 border-gold/20" />
+              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث شامل: اسم/هاتف/IP/زون/فاتة..." className="pr-10 bg-input/30 border-gold/20" />
             </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-40 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">الكل</SelectItem>
-                <SelectItem value="active">نشط</SelectItem>
-                <SelectItem value="suspended">موقف</SelectItem>
-              </SelectContent>
-            </Select>
+          </div>
+
+          {/* Advanced Filters Row */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 p-3 rounded-xl bg-gold/5 border border-gold-soft">
+            <div>
+              <Label className="text-[10px] text-muted-foreground mb-1 block flex items-center gap-1"><Network className="w-3 h-3 text-gold" /> فلترة برقم الزون</Label>
+              <Select value={zoneFilter} onValueChange={setZoneFilter}>
+                <SelectTrigger className="bg-input/30 border-gold/20 h-9 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">جميع الزونات</SelectItem>
+                  {zones.map(z => (
+                    <SelectItem key={z.id} value={z.id}>
+                      <span className="font-mono text-gold">{z.number}</span> · {z.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-[10px] text-muted-foreground mb-1 block flex items-center gap-1"><Plug className="w-3 h-3 text-neon-blue" /> فلترة برقم الفاتة</Label>
+              <Input value={fatFilter} onChange={e => setFatFilter(e.target.value)} placeholder="مثلاً: F-01" className="bg-input/30 border-gold/20 h-9 text-xs font-mono" />
+            </div>
+            <div>
+              <Label className="text-[10px] text-muted-foreground mb-1 block flex items-center gap-1"><Activity className="w-3 h-3 text-emerald-400" /> الحالة</Label>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="bg-input/30 border-gold/20 h-9 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">الكل</SelectItem>
+                  <SelectItem value="active">نشط</SelectItem>
+                  <SelectItem value="suspended">موقف</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-end">
+              <Button onClick={clearFilters} variant="outline" size="sm" disabled={!hasActiveFilters} className="w-full h-9 text-xs border-gold/30 disabled:opacity-40">
+                <X className="w-3 h-3 ml-1" /> مسح الفلاتر
+              </Button>
+            </div>
+          </div>
+
+          {/* Result Count */}
+          <div className="flex items-center justify-between text-xs">
+            <p className="text-muted-foreground">
+              عدد النتائج: <span className="text-gold font-bold">{filtered.length}</span> من {items.length}
+            </p>
+            {hasActiveFilters && (
+              <div className="flex flex-wrap gap-1">
+                {zoneFilter !== 'all' && (
+                  <Badge variant="outline" className="border-gold/30 text-[10px]">
+                    زون: {zones.find(z => z.id === zoneFilter)?.number}
+                  </Badge>
+                )}
+                {fatFilter && <Badge variant="outline" className="border-cyan-500/30 text-[10px]">فاتة: {fatFilter}</Badge>}
+                {statusFilter !== 'all' && <Badge variant="outline" className="border-emerald-500/30 text-[10px]">{statusFilter === 'active' ? 'نشط' : 'موقف'}</Badge>}
+              </div>
+            )}
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gold-soft text-right text-xs text-muted-foreground">
-                  <th className="p-2">المشترك</th><th>الهاتف</th><th>الباقة</th><th>الزون</th><th>IP</th><th>الحالة</th><th>الدين</th><th></th>
+                  <th className="p-2">المشترك</th><th>الهاتف</th><th>الباقة</th><th>الزون</th><th>الفاتة</th><th>IP</th><th>الحالة</th><th>الدين</th><th></th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(s => (
+                {filtered.length === 0 ? (
+                  <tr><td colSpan="9" className="text-center py-8 text-muted-foreground">لا توجد نتائج مطابقة 🔍</td></tr>
+                ) : filtered.map(s => (
                   <tr key={s.id} className="border-b border-gold-soft/30 hover:bg-gold/5">
                     <td className="p-2 font-semibold">{s.name}</td>
                     <td className="text-xs">{s.phone}</td>
                     <td><Badge variant="outline" className="border-cyan-500/30 text-cyan-400">{s.package}</Badge></td>
-                    <td className="text-xs text-muted-foreground">{s.zoneName}</td>
+                    <td>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-mono text-gold">{s.zoneNumber || '—'}</span>
+                        <span className="text-[10px] text-muted-foreground">{s.zoneName}</span>
+                      </div>
+                    </td>
+                    <td><Badge variant="outline" className="border-purple-500/30 text-purple-400 font-mono text-[10px]">{s.fatNumber || '—'}</Badge></td>
                     <td className="text-xs font-mono">{s.ipAddress}</td>
                     <td><Badge className={s.status === 'active' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'}>{s.status === 'active' ? 'نشط' : 'موقف'}</Badge></td>
                     <td className={s.debt > 0 ? 'text-red-400 font-bold' : 'text-muted-foreground'}>{fmt(s.debt)}</td>
@@ -733,9 +803,14 @@ function Subscribers() {
             <div><Label>الزون</Label>
               <Select value={form.zoneId} onValueChange={v => setForm({ ...form, zoneId: v })}>
                 <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر زون" /></SelectTrigger>
-                <SelectContent>{zones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}</SelectContent>
+                <SelectContent>{zones.map(z => (
+                  <SelectItem key={z.id} value={z.id}>
+                    <span className="font-mono text-gold">{z.number}</span> · {z.name}
+                  </SelectItem>
+                ))}</SelectContent>
               </Select>
             </div>
+            <div className="col-span-2"><Label>رقم الفاتة (FAT)</Label><Input value={form.fatNumber} onChange={e => setForm({ ...form, fatNumber: e.target.value })} placeholder="مثلاً: F-01-03" className="bg-input/30 border-gold/20 font-mono" /></div>
             <div className="col-span-2"><Label>العنوان</Label><Input value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} className="bg-input/30 border-gold/20" /></div>
             <div><Label>الباقة</Label>
               <Select value={form.package} onValueChange={v => setForm({ ...form, package: v, fee: v === '25 Mbps' ? 25000 : v === '50 Mbps' ? 35000 : v === '100 Mbps' ? 50000 : 75000 })}>
