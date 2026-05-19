@@ -499,6 +499,8 @@ async function notifyManager(db, { title, message, type, taskId, employeeId }) {
   await sendTelegram(db, `<b>${title}</b>\n${message}`);
 }
 
+import { tgSend, tgEdit, tgAnswerCallback, buildHome, buildReports, buildEmployees, buildSubscribers, buildFinance, buildMaintenance, buildNetwork, buildMe, buildLogs, buildAdmin, ROLE_DEFAULT_PERMS, PERMS_ALL } from '@/lib/telegram-bot';
+
 async function handle(request, params) {
   const path = (params?.path || []).join('/');
   const method = request.method;
@@ -1261,6 +1263,193 @@ async function handle(request, params) {
     const ids = managers.map(m => m.id);
     await db.collection('notifications').updateMany({ userId: { $in: ids }, read: false }, { $set: { read: true } });
     return ok({ success: true });
+  }
+
+  // ============ TELEGRAM BOT - STATISTICS ============
+  // Seed super admin if missing
+  const seedTgAdmin = async () => {
+    const adminId = process.env.TELEGRAM_SUPER_ADMIN_ID;
+    if (!adminId) return;
+    const existing = await db.collection('telegram_users').findOne({ telegramId: String(adminId) });
+    if (!existing) {
+      await db.collection('telegram_users').insertOne({
+        id: uuidv4(), telegramId: String(adminId),
+        name: 'Super Admin', role: 'super_admin',
+        permissions: PERMS_ALL, enabled: true,
+        createdAt: new Date().toISOString(),
+        lastActivity: null, failedAttempts: 0,
+      });
+    }
+  };
+  await seedTgAdmin();
+
+  // Telegram webhook
+  if (path === 'telegram/webhook' && method === 'POST') {
+    const update = await getJsonBody(request);
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return ok({ ok: false, reason: 'no_token' });
+
+    const isCallback = !!update.callback_query;
+    const tgUser = isCallback ? update.callback_query.from : update.message?.from;
+    const chatId = isCallback ? update.callback_query.message.chat.id : update.message?.chat?.id;
+    const messageId = isCallback ? update.callback_query.message.message_id : null;
+    const dataOrText = isCallback ? update.callback_query.data : update.message?.text;
+
+    if (!tgUser || !chatId) return ok({ ok: true });
+
+    const tgId = String(tgUser.id);
+    const dbUser = await db.collection('telegram_users').findOne({ telegramId: tgId });
+
+    // Auth check
+    if (!dbUser || !dbUser.enabled) {
+      await db.collection('telegram_logs').insertOne({
+        id: uuidv4(), telegramId: tgId, userName: tgUser.first_name || tgUser.username || 'unknown',
+        action: 'unauthorized_access', success: false,
+        details: dataOrText || '', timestamp: new Date().toISOString(),
+      });
+      if (dbUser && !dbUser.enabled) {
+        await db.collection('telegram_users').updateOne({ telegramId: tgId }, { $inc: { failedAttempts: 1 } });
+      }
+      const msg = `❌ <b>غير مصرح لك باستخدام هذا البوت</b>\n\nTelegram ID: <code>${tgId}</code>\nيرجى التواصل مع المدير لإضافة حسابك`;
+      if (isCallback) {
+        await tgAnswerCallback(token, update.callback_query.id, 'غير مصرح');
+        await tgEdit(token, chatId, messageId, msg);
+      } else {
+        await tgSend(token, chatId, msg);
+      }
+      return ok({ ok: true });
+    }
+
+    // Rate limit: 30 requests / minute
+    const oneMinAgo = new Date(Date.now() - 60000).toISOString();
+    const recent = await db.collection('telegram_logs').countDocuments({ telegramId: tgId, timestamp: { $gt: oneMinAgo } });
+    if (recent > 30) {
+      if (isCallback) await tgAnswerCallback(token, update.callback_query.id, 'تم تجاوز الحد المسموح، حاول بعد دقيقة');
+      else await tgSend(token, chatId, '⚠️ تم تجاوز الحد المسموح (30 طلب/دقيقة). انتظر دقيقة وحاول مجدداً.');
+      return ok({ ok: true });
+    }
+
+    // Update lastActivity
+    await db.collection('telegram_users').updateOne({ telegramId: tgId }, { $set: { lastActivity: new Date().toISOString() }, $inc: { totalRequests: 1 } });
+
+    // Route the request
+    const route = isCallback ? dataOrText : (dataOrText === '/start' ? 'home' : 'home');
+    const [main, sub] = route.split(':');
+    let response = null;
+    const perms = dbUser.permissions || [];
+    const has = (p) => perms.includes(p) || perms.includes('all');
+    const needPerm = (p, builder) => has(p) ? builder() : Promise.resolve({ text: '⛔ <b>غير مصرح لك بهذا القسم</b>', kb: { inline_keyboard: [[{ text: '🔙 الرئيسية', callback_data: 'home' }]] } });
+
+    try {
+      if (main === 'home' || main === '/start') response = await buildHome(db, dbUser);
+      else if (main === 'reports') response = await needPerm('reports', () => buildReports(db, sub));
+      else if (main === 'employees') response = await needPerm('employees', () => buildEmployees(db, sub));
+      else if (main === 'subscribers') response = await needPerm('subscribers', () => buildSubscribers(db, sub));
+      else if (main === 'finance') response = await needPerm('finance', () => buildFinance(db, sub));
+      else if (main === 'maintenance') response = await needPerm('maintenance', () => buildMaintenance(db, sub));
+      else if (main === 'network') response = await needPerm('network', () => buildNetwork(db, sub));
+      else if (main === 'me') response = buildMe(dbUser);
+      else if (main === 'logs') response = await needPerm('view_logs', () => buildLogs(db));
+      else if (main === 'admin') response = await needPerm('manage_users', () => buildAdmin(db));
+      else response = await buildHome(db, dbUser);
+    } catch (e) {
+      response = { text: `⚠️ خطأ: ${e.message}`, kb: { inline_keyboard: [[{ text: '🔙 الرئيسية', callback_data: 'home' }]] } };
+    }
+
+    // Log
+    await db.collection('telegram_logs').insertOne({
+      id: uuidv4(), telegramId: tgId, userName: dbUser.name,
+      action: route, success: true,
+      details: '', timestamp: new Date().toISOString(),
+    });
+
+    // Send response
+    if (isCallback) {
+      await tgAnswerCallback(token, update.callback_query.id);
+      await tgEdit(token, chatId, messageId, response.text, response.kb);
+    } else {
+      await tgSend(token, chatId, response.text, response.kb);
+    }
+    return ok({ ok: true });
+  }
+
+  // Setup webhook
+  if (path === 'telegram/setup-webhook' && method === 'POST') {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return err('TELEGRAM_BOT_TOKEN غير مضبوط في .env', 400);
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+    if (!baseUrl) return err('NEXT_PUBLIC_BASE_URL غير مضبوط', 400);
+    const webhookUrl = `${baseUrl}/api/telegram/webhook`;
+    const r = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl, allowed_updates: ['message', 'callback_query'] }),
+    }).then(r => r.json()).catch(e => ({ ok: false, error: e.message }));
+    return ok({ success: r.ok, response: r, webhookUrl });
+  }
+
+  // Get webhook info
+  if (path === 'telegram/webhook-info' && method === 'GET') {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return err('TELEGRAM_BOT_TOKEN غير مضبوط', 400);
+    const r = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`).then(r => r.json());
+    return ok(r);
+  }
+
+  // Delete webhook
+  if (path === 'telegram/delete-webhook' && method === 'POST') {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return err('TELEGRAM_BOT_TOKEN غير مضبوط', 400);
+    const r = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: 'POST' }).then(r => r.json());
+    return ok(r);
+  }
+
+  // ============ TELEGRAM USERS CRUD (admin platform) ============
+  if (path === 'telegram-users' && method === 'GET') {
+    const items = await db.collection('telegram_users').find({}).sort({ createdAt: -1 }).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
+  }
+  if (path === 'telegram-users' && method === 'POST') {
+    const body = await getJsonBody(request);
+    if (!body.telegramId || !body.name || !body.role) return err('الحقول الأساسية مطلوبة', 400);
+    const existing = await db.collection('telegram_users').findOne({ telegramId: String(body.telegramId) });
+    if (existing) return err('هذا Telegram ID مضاف مسبقاً', 400);
+    const perms = body.permissions || ROLE_DEFAULT_PERMS[body.role] || [];
+    const doc = {
+      id: uuidv4(), telegramId: String(body.telegramId), name: body.name,
+      role: body.role, permissions: perms, enabled: body.enabled !== false,
+      createdAt: new Date().toISOString(), lastActivity: null, failedAttempts: 0, totalRequests: 0,
+    };
+    await db.collection('telegram_users').insertOne(doc);
+    delete doc._id;
+    await logActivity(db, { action: 'tg_user_created', entity: 'telegram_users', entityId: doc.id, details: `إضافة Telegram ID ${doc.telegramId} (${doc.name})`, ip: clientIp });
+    return ok(doc, 201);
+  }
+  if (path.match(/^telegram-users\/[^/]+$/) && method === 'PUT') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    delete body._id; delete body.id;
+    await db.collection('telegram_users').updateOne({ id }, { $set: body });
+    const updated = await db.collection('telegram_users').findOne({ id });
+    if (updated) delete updated._id;
+    await logActivity(db, { action: 'tg_user_updated', entity: 'telegram_users', entityId: id, details: `تعديل ${updated?.name}`, ip: clientIp });
+    return ok(updated);
+  }
+  if (path.match(/^telegram-users\/[^/]+$/) && method === 'DELETE') {
+    const id = path.split('/')[1];
+    const u = await db.collection('telegram_users').findOne({ id });
+    await db.collection('telegram_users').deleteOne({ id });
+    await logActivity(db, { action: 'tg_user_deleted', entity: 'telegram_users', entityId: id, details: `حذف ${u?.name}`, ip: clientIp });
+    return ok({ success: true });
+  }
+
+  // Telegram logs
+  if (path === 'telegram-logs' && method === 'GET') {
+    const url = new URL(request.url);
+    const limit = Math.min(500, Number(url.searchParams.get('limit') || 100));
+    const filter = url.searchParams.get('telegramId');
+    const q = filter ? { telegramId: filter } : {};
+    const items = await db.collection('telegram_logs').find(q).sort({ timestamp: -1 }).limit(limit).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
   }
 
   // Self-data endpoint (employee can fetch own info without exposing list)
