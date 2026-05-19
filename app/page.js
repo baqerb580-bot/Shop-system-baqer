@@ -1645,41 +1645,705 @@ function AIAssistant() {
 }
 
 // ============ SETTINGS ============
+// ============ SETTINGS PAGE - FULL FUNCTIONAL ============
+const SETTINGS_SECTIONS = [
+  { key: 'general', label: 'النظام العام', icon: Building2, color: 'from-amber-500 to-yellow-600' },
+  { key: 'users', label: 'المستخدمون والصلاحيات', icon: Users, color: 'from-emerald-500 to-teal-600' },
+  { key: 'agents', label: 'إعدادات الوكلاء', icon: UserCheck, color: 'from-cyan-500 to-blue-600' },
+  { key: 'subscribers', label: 'إعدادات المشتركين', icon: Wifi, color: 'from-purple-500 to-pink-600' },
+  { key: 'zones', label: 'الزونات والشبكات', icon: Network, color: 'from-orange-500 to-red-600' },
+  { key: 'invoices', label: 'الفواتير والديون', icon: Receipt, color: 'from-indigo-500 to-purple-600' },
+  { key: 'packages', label: 'التفعيل والباقات', icon: Zap, color: 'from-pink-500 to-rose-600' },
+  { key: 'whatsapp', label: 'إعدادات الواتساب', icon: Phone, color: 'from-green-500 to-emerald-600' },
+  { key: 'telegram', label: 'إعدادات التليجرام', icon: Send, color: 'from-sky-500 to-blue-600' },
+  { key: 'notifications', label: 'الإشعارات والتنبيهات', icon: Bell, color: 'from-rose-500 to-red-600' },
+  { key: 'maps', label: 'الخرائط والمواقع', icon: MapPin, color: 'from-teal-500 to-cyan-600' },
+  { key: 'printing', label: 'الطباعة والوصولات', icon: Receipt, color: 'from-violet-500 to-purple-600' },
+  { key: 'backup', label: 'النسخ الاحتياطي', icon: HardDrive, color: 'from-fuchsia-500 to-pink-600' },
+  { key: 'security', label: 'الأمان وتسجيل الدخول', icon: Activity, color: 'from-red-500 to-orange-600' },
+  { key: 'reports', label: 'التقارير والإحصائيات', icon: BarChart3, color: 'from-yellow-500 to-amber-600' },
+  { key: 'employees', label: 'الموظفون والمهام', icon: Users, color: 'from-lime-500 to-green-600' },
+];
+
 function SettingsPage() {
+  const [settings, setSettings] = useState(null);
+  const [activeSection, setActiveSection] = useState('general');
+  const [draft, setDraft] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    const d = await api('settings');
+    setSettings(d);
+    setDraft(d);
+  };
+  useEffect(() => { load(); }, []);
+
+  if (!settings) return <LoadingScreen />;
+
+  const update = (section, field, value) => {
+    setDraft(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
+  };
+  const updateNested = (section, subKey, field, value) => {
+    setDraft(prev => ({
+      ...prev,
+      [section]: {
+        ...prev[section],
+        [subKey]: { ...(prev[section]?.[subKey] || {}), [field]: value }
+      }
+    }));
+  };
+
+  const sectionChanged = JSON.stringify(draft[activeSection]) !== JSON.stringify(settings[activeSection]);
+
+  const saveSection = async () => {
+    setSaving(true);
+    const r = await api('settings', { method: 'PUT', body: JSON.stringify({ [activeSection]: draft[activeSection] }) });
+    setSaving(false);
+    if (r.error) { toast.error(r.error); return; }
+    toast.success('✅ تم حفظ الإعدادات');
+    setSettings(r); setDraft(r);
+  };
+
+  const resetSection = async () => {
+    if (!confirm('هل تريد إعادة ضبط هذا القسم للقيم الافتراضية؟')) return;
+    const r = await api('settings/reset', { method: 'POST', body: JSON.stringify({ section: activeSection }) });
+    if (r.error) { toast.error(r.error); return; }
+    toast.success('✅ تم إعادة الضبط');
+    await load();
+  };
+
+  const resetAll = async () => {
+    if (!confirm('⚠️ هل أنت متأكد من إعادة ضبط جميع الإعدادات؟')) return;
+    const r = await api('settings/reset', { method: 'POST', body: JSON.stringify({}) });
+    if (r.error) { toast.error(r.error); return; }
+    toast.success('✅ تم إعادة الضبط الكامل');
+    await load();
+  };
+
+  const testWhatsApp = async () => {
+    const r = await api('settings/test/whatsapp', { method: 'POST', body: JSON.stringify({ phone: draft.whatsapp?.managerPhone }) });
+    if (r.error) toast.error(r.error); else toast.success(r.message);
+  };
+  const testTelegram = async () => {
+    const r = await api('settings/test/telegram', { method: 'POST', body: JSON.stringify({}) });
+    if (r.error) toast.error(r.error); else toast.success(r.message);
+  };
+  const runBackup = async () => {
+    const r = await api('settings/backup/run', { method: 'POST', body: JSON.stringify({}) });
+    if (r.error) toast.error(r.error); else { toast.success('✅ تم إنشاء النسخة الاحتياطية'); await load(); }
+  };
+
+  const section = SETTINGS_SECTIONS.find(s => s.key === activeSection);
+
   return (
-    <div className="max-w-4xl mx-auto space-y-4">
-      <h1 className="text-2xl font-bold gold-text">الإعدادات</h1>
-      <div className="grid md:grid-cols-2 gap-4">
-        {[
-          { icon: Users, title: 'المستخدمون والصلاحيات', desc: 'إدارة الأدوار والصلاحيات RBAC', color: 'from-amber-500 to-yellow-600' },
-          { icon: Phone, title: 'إعدادات WhatsApp', desc: 'تكامل WhatsApp API للإشعارات', color: 'from-emerald-500 to-teal-600' },
-          { icon: Send, title: 'إعدادات Telegram', desc: 'Bot للإشعارات والتقارير', color: 'from-cyan-500 to-blue-600' },
-          { icon: Building2, title: 'الفروع', desc: 'إدارة فروع متعددة', color: 'from-purple-500 to-pink-600' },
-          { icon: Globe, title: 'اللغات', desc: 'العربية، الإنجليزية، الكردية', color: 'from-orange-500 to-red-600' },
-          { icon: HardDrive, title: 'النسخ الاحتياطي', desc: 'نسخ تلقائي يومي للبيانات', color: 'from-indigo-500 to-purple-600' },
-          { icon: CreditCard, title: 'بوابات الدفع', desc: 'تكامل ZainCash، AsiaCell، MasterCard', color: 'from-pink-500 to-rose-600' },
-          { icon: Activity, title: 'مراقبة النظام', desc: 'حالة الخوادم والأداء', color: 'from-fuchsia-500 to-purple-600' },
-        ].map((s, i) => {
-          const I = s.icon;
-          return (
-            <Card key={i} className="glass-card border-gold-soft hover:border-gold/50 cursor-pointer transition-all group">
-              <CardContent className="p-5 flex items-center gap-4">
-                <div className={`w-14 h-14 rounded-xl bg-gradient-to-br ${s.color} flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                  <I className="w-6 h-6 text-white" />
-                </div>
-                <div className="flex-1">
-                  <h3 className="font-bold">{s.title}</h3>
-                  <p className="text-xs text-muted-foreground">{s.desc}</p>
-                </div>
-                <ChevronLeft className="w-5 h-5 text-muted-foreground" />
-              </CardContent>
-            </Card>
-          );
-        })}
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold gold-text flex items-center gap-2"><Settings className="w-6 h-6" /> الإعدادات</h1>
+          <p className="text-xs text-muted-foreground mt-1">آخر تحديث: {settings.updatedAt ? new Date(settings.updatedAt).toLocaleString('ar-IQ') : 'لم يحدث'}</p>
+        </div>
+        <Button onClick={resetAll} variant="outline" className="border-red-500/30 hover:bg-red-500/10 text-red-400">
+          <Trash2 className="w-4 h-4 ml-1" /> إعادة ضبط الكل
+        </Button>
+      </div>
+
+      <div className="grid lg:grid-cols-[280px_1fr] gap-4">
+        {/* Sidebar */}
+        <Card className="glass-strong border-gold-soft h-fit">
+          <CardContent className="p-2">
+            <ScrollArea className="h-[calc(100vh-220px)]">
+              <div className="space-y-1">
+                {SETTINGS_SECTIONS.map(s => {
+                  const I = s.icon;
+                  const isActive = activeSection === s.key;
+                  return (
+                    <button
+                      key={s.key}
+                      onClick={() => setActiveSection(s.key)}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-right transition-all text-sm ${
+                        isActive ? 'bg-gold/15 text-gold border-r-2 border-gold' : 'text-muted-foreground hover:bg-gold/5 hover:text-foreground'
+                      }`}
+                    >
+                      <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${s.color} flex items-center justify-center flex-shrink-0 ${isActive ? '' : 'opacity-50'}`}>
+                        <I className="w-4 h-4 text-white" />
+                      </div>
+                      <span className="flex-1 text-right truncate">{s.label}</span>
+                      {isActive && <ChevronLeft className="w-4 h-4" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+
+        {/* Main Panel */}
+        <Card className="glass-strong border-gold-soft">
+          <CardHeader className="border-b border-gold-soft">
+            <CardTitle className="flex items-center justify-between flex-wrap gap-2">
+              <span className="flex items-center gap-2 gold-text">
+                {section && <section.icon className="w-5 h-5" />}
+                {section?.label}
+              </span>
+              <div className="flex gap-2">
+                <Button onClick={resetSection} variant="outline" size="sm" className="border-amber-500/30 hover:bg-amber-500/10 text-amber-400">
+                  <X className="w-3 h-3 ml-1" /> إعادة ضبط
+                </Button>
+                <Button onClick={saveSection} disabled={!sectionChanged || saving} size="sm" className="btn-gold">
+                  {saving ? 'جاري...' : <><CheckCircle2 className="w-3 h-3 ml-1" /> حفظ التغييرات</>}
+                </Button>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-6">
+            <ScrollArea className="h-[calc(100vh-300px)] pr-2">
+              {activeSection === 'general' && <GeneralSection draft={draft} update={update} />}
+              {activeSection === 'users' && <UsersSection draft={draft} update={update} />}
+              {activeSection === 'agents' && <AgentsSection draft={draft} update={update} />}
+              {activeSection === 'subscribers' && <SubscribersSection draft={draft} update={update} />}
+              {activeSection === 'zones' && <ZonesSection draft={draft} update={update} />}
+              {activeSection === 'invoices' && <InvoicesSection draft={draft} update={update} />}
+              {activeSection === 'packages' && <PackagesSection draft={draft} update={update} />}
+              {activeSection === 'whatsapp' && <WhatsAppSection draft={draft} update={update} testWhatsApp={testWhatsApp} />}
+              {activeSection === 'telegram' && <TelegramSection draft={draft} update={update} testTelegram={testTelegram} />}
+              {activeSection === 'notifications' && <NotificationsSection draft={draft} updateNested={updateNested} />}
+              {activeSection === 'maps' && <MapsSection draft={draft} update={update} />}
+              {activeSection === 'printing' && <PrintingSection draft={draft} update={update} />}
+              {activeSection === 'backup' && <BackupSection draft={draft} update={update} runBackup={runBackup} />}
+              {activeSection === 'security' && <SecuritySection draft={draft} update={update} />}
+              {activeSection === 'reports' && <ReportsSection draft={draft} update={update} />}
+              {activeSection === 'employees' && <EmployeesSection draft={draft} update={update} />}
+            </ScrollArea>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
 }
+
+// ============ SECTION COMPONENTS ============
+const Field = ({ label, hint, children }) => (
+  <div className="space-y-1.5">
+    <Label className="text-xs">{label}</Label>
+    {children}
+    {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
+  </div>
+);
+const Switch = ({ checked, onChange, label }) => (
+  <label className="flex items-center justify-between p-3 rounded-lg bg-gold/5 border border-gold-soft cursor-pointer hover:border-gold/30 transition-all">
+    <span className="text-sm">{label}</span>
+    <div className={`w-11 h-6 rounded-full transition-all relative ${checked ? 'bg-gold' : 'bg-muted'}`} onClick={() => onChange(!checked)}>
+      <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${checked ? 'right-0.5' : 'right-[22px]'}`}></div>
+    </div>
+  </label>
+);
+
+function GeneralSection({ draft, update }) {
+  const g = draft.general || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="اسم الشركة (عربي)"><Input value={g.companyName || ''} onChange={e => update('general', 'companyName', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="Company Name (EN)"><Input value={g.companyNameEn || ''} onChange={e => update('general', 'companyNameEn', e.target.value)} className="bg-input/30 border-gold/20" dir="ltr" /></Field>
+      <Field label="الشعار (Emoji)"><Input value={g.logo || ''} onChange={e => update('general', 'logo', e.target.value)} className="bg-input/30 border-gold/20 text-xl" /></Field>
+      <Field label="الهاتف"><Input value={g.phone || ''} onChange={e => update('general', 'phone', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="البريد الإلكتروني"><Input value={g.email || ''} onChange={e => update('general', 'email', e.target.value)} className="bg-input/30 border-gold/20" dir="ltr" /></Field>
+      <Field label="الموقع الإلكتروني"><Input value={g.website || ''} onChange={e => update('general', 'website', e.target.value)} className="bg-input/30 border-gold/20" dir="ltr" /></Field>
+      <Field label="العنوان" hint="عنوان الفرع الرئيسي"><Input value={g.address || ''} onChange={e => update('general', 'address', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="العملة">
+        <Select value={g.currency} onValueChange={v => update('general', 'currency', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="IQD">دينار عراقي (IQD)</SelectItem>
+            <SelectItem value="USD">دولار (USD)</SelectItem>
+            <SelectItem value="EUR">يورو (EUR)</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="رمز العملة"><Input value={g.currencySymbol || ''} onChange={e => update('general', 'currencySymbol', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="المنطقة الزمنية">
+        <Select value={g.timezone} onValueChange={v => update('general', 'timezone', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Asia/Baghdad">بغداد (GMT+3)</SelectItem>
+            <SelectItem value="Asia/Dubai">دبي (GMT+4)</SelectItem>
+            <SelectItem value="Asia/Riyadh">الرياض (GMT+3)</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="اللغة الافتراضية">
+        <Select value={g.language} onValueChange={v => update('general', 'language', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ar">العربية</SelectItem>
+            <SelectItem value="en">English</SelectItem>
+            <SelectItem value="ku">کوردی</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="بداية السنة المالية" hint="MM-DD"><Input value={g.fiscalYearStart || ''} onChange={e => update('general', 'fiscalYearStart', e.target.value)} className="bg-input/30 border-gold/20 font-mono" /></Field>
+      <div className="md:col-span-2">
+        <Field label="الفروع (سطر لكل فرع)">
+          <Textarea value={(g.branches || []).join('\n')} onChange={e => update('general', 'branches', e.target.value.split('\n').filter(Boolean))} className="bg-input/30 border-gold/20 h-24" />
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+function UsersSection({ draft, update }) {
+  const u = draft.users || {};
+  return (
+    <div className="space-y-3">
+      <Switch checked={u.requireApproval} onChange={v => update('users', 'requireApproval', v)} label="🔒 يتطلب موافقة المدير لإضافة مستخدمين جدد" />
+      <Switch checked={u.allowSelfRegistration} onChange={v => update('users', 'allowSelfRegistration', v)} label="📝 السماح بالتسجيل الذاتي للمستخدمين" />
+      <Field label="الدور الافتراضي للمستخدم الجديد">
+        <Select value={u.defaultRole} onValueChange={v => update('users', 'defaultRole', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {(u.roles || []).map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </Field>
+      <div>
+        <Label className="text-xs mb-2 block">الأدوار والصلاحيات</Label>
+        <div className="space-y-2">
+          {(u.roles || []).map((r, i) => (
+            <div key={r.id} className="p-3 rounded-lg bg-gold/5 border border-gold-soft">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-bold text-sm">{r.name}</span>
+                <Badge variant="outline" className="border-gold/30 font-mono text-[10px]">{r.id}</Badge>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {(r.permissions || []).map(p => <Badge key={p} className="bg-cyan-500/10 text-cyan-400 border-cyan-500/30 text-[10px]">{p}</Badge>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentsSection({ draft, update }) {
+  const a = draft.agents || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="نسبة العمولة الافتراضية %" hint="للوكلاء الجدد"><Input type="number" value={a.defaultCommission || 0} onChange={e => update('agents', 'defaultCommission', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="الحد الأقصى للدين" hint="بالدينار العراقي"><Input type="number" value={a.maxDebt || 0} onChange={e => update('agents', 'maxDebt', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="رابط لوحة الوكيل"><Input value={a.portalUrl || ''} onChange={e => update('agents', 'portalUrl', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+      <Field label="مدة الجلسة (دقيقة)"><Input type="number" value={a.sessionTimeout || 30} onChange={e => update('agents', 'sessionTimeout', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={a.allowSelfActivation} onChange={v => update('agents', 'allowSelfActivation', v)} label="✅ السماح للوكلاء بتفعيل المشتركين بأنفسهم" />
+        <Switch checked={a.autoDisableOnDebt} onChange={v => update('agents', 'autoDisableOnDebt', v)} label="🚫 إيقاف الوكيل تلقائياً عند تجاوز حد الدين" />
+        <Switch checked={a.requireQRLogin} onChange={v => update('agents', 'requireQRLogin', v)} label="📱 تفعيل تسجيل دخول QR للوكلاء" />
+      </div>
+    </div>
+  );
+}
+
+function SubscribersSection({ draft, update }) {
+  const s = draft.subscribers || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="الباقة الافتراضية"><Input value={s.defaultPackage || ''} onChange={e => update('subscribers', 'defaultPackage', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="الرسوم الافتراضية"><Input type="number" value={s.defaultFee || 0} onChange={e => update('subscribers', 'defaultFee', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="فترة السماح بعد انتهاء الاشتراك (يوم)" hint="قبل إيقاف المشترك"><Input type="number" value={s.gracePeriodDays || 0} onChange={e => update('subscribers', 'gracePeriodDays', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="حد الدين المسموح"><Input type="number" value={s.debtLimit || 0} onChange={e => update('subscribers', 'debtLimit', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="إشعار قبل انتهاء الاشتراك (يوم)"><Input type="number" value={s.autoNotifyBeforeExpiry || 0} onChange={e => update('subscribers', 'autoNotifyBeforeExpiry', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="نمط اليوزر التلقائي" hint="استخدم {phone4} للأرقام الأخيرة"><Input value={s.usernamePattern || ''} onChange={e => update('subscribers', 'usernamePattern', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={s.autoSuspendOnExpiry} onChange={v => update('subscribers', 'autoSuspendOnExpiry', v)} label="🚫 إيقاف تلقائي للمشتركين عند انتهاء الاشتراك" />
+        <Switch checked={s.requireIMEI} onChange={v => update('subscribers', 'requireIMEI', v)} label="📱 تطلب IMEI عند إضافة مشترك جديد" />
+        <Switch checked={s.autoGenerateUsername} onChange={v => update('subscribers', 'autoGenerateUsername', v)} label="🤖 توليد اليوزر تلقائياً" />
+      </div>
+    </div>
+  );
+}
+
+function ZonesSection({ draft, update }) {
+  const z = draft.zones || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="السعة الافتراضية للفاتة"><Input type="number" value={z.defaultCapacity || 0} onChange={e => update('zones', 'defaultCapacity', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="فترة المراقبة (ثانية)"><Input type="number" value={z.monitoringInterval || 0} onChange={e => update('zones', 'monitoringInterval', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="حد التحذير (%)"><Input type="number" value={z.warningThreshold || 0} onChange={e => update('zones', 'warningThreshold', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="الحد الحرج (%)"><Input type="number" value={z.criticalThreshold || 0} onChange={e => update('zones', 'criticalThreshold', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="مزود الخرائط الافتراضي">
+        <Select value={z.defaultMapProvider} onValueChange={v => update('zones', 'defaultMapProvider', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="osm">OpenStreetMap (مجاني)</SelectItem>
+            <SelectItem value="google">Google Maps</SelectItem>
+            <SelectItem value="satellite">Satellite View</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <div className="md:col-span-2">
+        <Switch checked={z.autoStatusUpdate} onChange={v => update('zones', 'autoStatusUpdate', v)} label="🔄 تحديث حالة الزون تلقائياً حسب الضغط" />
+      </div>
+    </div>
+  );
+}
+
+function InvoicesSection({ draft, update }) {
+  const i = draft.invoices || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="بادئة رقم الفاتورة"><Input value={i.invoicePrefix || ''} onChange={e => update('invoices', 'invoicePrefix', e.target.value)} className="bg-input/30 border-gold/20 font-mono" /></Field>
+      <Field label="رقم البداية"><Input type="number" value={i.startingNumber || 0} onChange={e => update('invoices', 'startingNumber', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="نسبة الضريبة %"><Input type="number" step="0.1" value={i.taxRate || 0} onChange={e => update('invoices', 'taxRate', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="تنبيه الدين بعد (يوم)"><Input type="number" value={i.debtAlertDays || 0} onChange={e => update('invoices', 'debtAlertDays', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <div className="md:col-span-2">
+        <Field label="ملاحظة أسفل الفاتورة">
+          <Textarea value={i.footerNote || ''} onChange={e => update('invoices', 'footerNote', e.target.value)} className="bg-input/30 border-gold/20 h-20" />
+        </Field>
+      </div>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={i.taxEnabled} onChange={v => update('invoices', 'taxEnabled', v)} label="💰 تفعيل احتساب الضريبة" />
+        <Switch checked={i.autoReminder} onChange={v => update('invoices', 'autoReminder', v)} label="🔔 إرسال تذكير تلقائي بالديون" />
+      </div>
+    </div>
+  );
+}
+
+function PackagesSection({ draft, update }) {
+  const p = draft.packages || {};
+  const methods = p.enabledPaymentMethods || [];
+  const toggle = (m) => {
+    const newMethods = methods.includes(m) ? methods.filter(x => x !== m) : [...methods, m];
+    update('packages', 'enabledPaymentMethods', newMethods);
+  };
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="المدة الافتراضية (يوم)"><Input type="number" value={p.defaultDurationDays || 0} onChange={e => update('packages', 'defaultDurationDays', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="نسبة عمولة الوكلاء الافتراضية %"><Input type="number" value={p.defaultProfitShare || 0} onChange={e => update('packages', 'defaultProfitShare', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <div className="md:col-span-2">
+        <Label className="text-xs mb-2 block">طرق الدفع المُفعّلة</Label>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {[
+            { id: 'cash', label: '💵 كاش' },
+            { id: 'master', label: '💳 ماستر' },
+            { id: 'fastpay', label: '⚡ فاست باي' },
+            { id: 'transfer', label: '🏦 تحويل' },
+            { id: 'zaincash', label: '📱 زين كاش' },
+            { id: 'asiacell', label: '📱 آسياسيل' },
+          ].map(m => (
+            <button key={m.id} onClick={() => toggle(m.id)} className={`p-3 rounded-lg border text-sm transition-all ${methods.includes(m.id) ? 'bg-gold/10 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={p.allowCustomDuration} onChange={v => update('packages', 'allowCustomDuration', v)} label="📅 السماح بمدة مخصصة عند التفعيل" />
+        <Switch checked={p.proRateOnUpgrade} onChange={v => update('packages', 'proRateOnUpgrade', v)} label="💱 حساب النسبة المتبقية عند ترقية الباقة" />
+        <Switch checked={p.requireFullPayment} onChange={v => update('packages', 'requireFullPayment', v)} label="💯 يتطلب الدفع الكامل قبل التفعيل" />
+      </div>
+    </div>
+  );
+}
+
+function WhatsAppSection({ draft, update, testWhatsApp }) {
+  const w = draft.whatsapp || {};
+  return (
+    <div className="space-y-4">
+      <Switch checked={w.enabled} onChange={v => update('whatsapp', 'enabled', v)} label="🟢 تفعيل خدمة الواتساب" />
+      {!w.enabled && <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-400">⚠️ الخدمة غير مفعّلة - الرسائل ستحفظ في الطابور فقط</div>}
+      <div className="grid md:grid-cols-2 gap-4">
+        <Field label="المزود">
+          <Select value={w.provider} onValueChange={v => update('whatsapp', 'provider', v)}>
+            <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="cloud">WhatsApp Cloud API (Meta)</SelectItem>
+              <SelectItem value="ultramsg">UltraMsg</SelectItem>
+              <SelectItem value="wati">Wati</SelectItem>
+              <SelectItem value="dialog360">360dialog</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="اسم المُرسِل"><Input value={w.senderName || ''} onChange={e => update('whatsapp', 'senderName', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+        <div className="md:col-span-2">
+          <Field label="API Token" hint="مفتاح الـ API من المزود"><Input type="password" value={w.apiToken || ''} onChange={e => update('whatsapp', 'apiToken', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+        </div>
+        <Field label="Phone Number ID"><Input value={w.phoneNumberId || ''} onChange={e => update('whatsapp', 'phoneNumberId', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+        <Field label="هاتف المدير"><Input value={w.managerPhone || ''} onChange={e => update('whatsapp', 'managerPhone', e.target.value)} className="bg-input/30 border-gold/20 font-mono" /></Field>
+      </div>
+      <Switch checked={w.sendToManager} onChange={v => update('whatsapp', 'sendToManager', v)} label="📨 إرسال نسخة للمدير في كل عملية" />
+      <Button onClick={testWhatsApp} className="btn-neon w-full"><Send className="w-4 h-4 ml-2" /> اختبار إرسال رسالة</Button>
+    </div>
+  );
+}
+
+function TelegramSection({ draft, update, testTelegram }) {
+  const t = draft.telegram || {};
+  return (
+    <div className="space-y-4">
+      <Switch checked={t.enabled} onChange={v => update('telegram', 'enabled', v)} label="🟢 تفعيل تليجرام Bot" />
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="md:col-span-2">
+          <Field label="Bot Token" hint="من @BotFather"><Input type="password" value={t.botToken || ''} onChange={e => update('telegram', 'botToken', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+        </div>
+        <Field label="Chat ID المدير"><Input value={t.managerChatId || ''} onChange={e => update('telegram', 'managerChatId', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+        <Field label="Channel ID (اختياري)"><Input value={t.channelId || ''} onChange={e => update('telegram', 'channelId', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+        <Field label="وقت التقرير اليومي"><Input type="time" value={t.reportTime || '20:00'} onChange={e => update('telegram', 'reportTime', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      </div>
+      <div className="space-y-2">
+        <Switch checked={t.sendActivations} onChange={v => update('telegram', 'sendActivations', v)} label="🎉 إرسال إشعار عند كل تفعيل" />
+        <Switch checked={t.sendAlerts} onChange={v => update('telegram', 'sendAlerts', v)} label="🚨 إرسال تنبيهات النظام (شبكة، أعطال)" />
+        <Switch checked={t.sendDailyReport} onChange={v => update('telegram', 'sendDailyReport', v)} label="📊 إرسال تقرير يومي تلقائي" />
+      </div>
+      <Button onClick={testTelegram} className="btn-neon w-full"><Send className="w-4 h-4 ml-2" /> اختبار إرسال للمدير</Button>
+    </div>
+  );
+}
+
+function NotificationsSection({ draft, updateNested }) {
+  const n = draft.notifications || {};
+  const events = [
+    { key: 'activation', label: '🎉 تفعيل اشتراك جديد' },
+    { key: 'expiry', label: '⏰ انتهاء الاشتراك' },
+    { key: 'debt', label: '💰 ديون مستحقة' },
+    { key: 'lowStock', label: '📦 نفاد المخزون' },
+    { key: 'networkAlert', label: '🚨 تنبيهات الشبكة' },
+    { key: 'newSubscriber', label: '👤 مشترك جديد' },
+  ];
+  const channels = [
+    { key: 'whatsapp', label: '📱 واتساب' },
+    { key: 'telegram', label: '✈️ تليجرام' },
+    { key: 'email', label: '📧 إيميل' },
+    { key: 'sms', label: '💬 SMS' },
+    { key: 'push', label: '🔔 Push' },
+  ];
+  return (
+    <div className="space-y-3">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gold-soft">
+              <th className="p-2 text-right text-xs text-muted-foreground">الحدث</th>
+              {channels.map(c => <th key={c.key} className="p-2 text-center text-xs text-muted-foreground">{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {events.map(e => (
+              <tr key={e.key} className="border-b border-gold-soft/30 hover:bg-gold/5">
+                <td className="p-2 text-xs font-semibold">{e.label}</td>
+                {channels.map(c => {
+                  const checked = !!n[e.key]?.[c.key];
+                  return (
+                    <td key={c.key} className="p-2 text-center">
+                      <button onClick={() => updateNested('notifications', e.key, c.key, !checked)} className={`w-6 h-6 rounded transition-all ${checked ? 'bg-gold text-background' : 'bg-input/30 border border-gold-soft'}`}>
+                        {checked && '✓'}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MapsSection({ draft, update }) {
+  const m = draft.maps || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="مزود الخرائط">
+        <Select value={m.provider} onValueChange={v => update('maps', 'provider', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="osm">OpenStreetMap</SelectItem>
+            <SelectItem value="google">Google Maps</SelectItem>
+            <SelectItem value="mapbox">Mapbox</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="مستوى التكبير الافتراضي"><Input type="number" min="5" max="20" value={m.defaultZoom || 12} onChange={e => update('maps', 'defaultZoom', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="خط العرض الافتراضي"><Input type="number" step="0.0001" value={m.defaultLat || 0} onChange={e => update('maps', 'defaultLat', Number(e.target.value))} className="bg-input/30 border-gold/20 font-mono" /></Field>
+      <Field label="خط الطول الافتراضي"><Input type="number" step="0.0001" value={m.defaultLng || 0} onChange={e => update('maps', 'defaultLng', Number(e.target.value))} className="bg-input/30 border-gold/20 font-mono" /></Field>
+      <div className="md:col-span-2">
+        <Field label="Google API Key" hint="اختياري - فقط لخرائط جوجل"><Input type="password" value={m.googleApiKey || ''} onChange={e => update('maps', 'googleApiKey', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+      </div>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={m.showZones} onChange={v => update('maps', 'showZones', v)} label="📍 عرض الزونات على الخريطة" />
+        <Switch checked={m.showNetworks} onChange={v => update('maps', 'showNetworks', v)} label="🔌 عرض الفاتات/الشبكات" />
+        <Switch checked={m.showSubscribers} onChange={v => update('maps', 'showSubscribers', v)} label="👥 عرض المشتركين (قد يكون بطيئاً)" />
+        <Switch checked={m.clusterMarkers} onChange={v => update('maps', 'clusterMarkers', v)} label="🔵 تجميع العلامات (Cluster)" />
+      </div>
+    </div>
+  );
+}
+
+function PrintingSection({ draft, update }) {
+  const p = draft.printing || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="حجم الورق">
+        <Select value={p.paperSize} onValueChange={v => update('printing', 'paperSize', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="58mm">حراري 58mm</SelectItem>
+            <SelectItem value="80mm">حراري 80mm</SelectItem>
+            <SelectItem value="A4">A4</SelectItem>
+            <SelectItem value="A5">A5</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="عدد النسخ"><Input type="number" min="1" max="5" value={p.copies || 1} onChange={e => update('printing', 'copies', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <div className="md:col-span-2">
+        <Field label="رأس الوصل"><Textarea value={p.receiptHeader || ''} onChange={e => update('printing', 'receiptHeader', e.target.value)} className="bg-input/30 border-gold/20 h-20" /></Field>
+      </div>
+      <div className="md:col-span-2">
+        <Field label="تذييل الوصل"><Textarea value={p.receiptFooter || ''} onChange={e => update('printing', 'receiptFooter', e.target.value)} className="bg-input/30 border-gold/20 h-20" /></Field>
+      </div>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={p.showLogo} onChange={v => update('printing', 'showLogo', v)} label="🏢 إظهار الشعار" />
+        <Switch checked={p.showBarcode} onChange={v => update('printing', 'showBarcode', v)} label="📊 إظهار الباركود" />
+        <Switch checked={p.showQR} onChange={v => update('printing', 'showQR', v)} label="📱 إظهار QR Code" />
+        <Switch checked={p.autoOpenCashDrawer} onChange={v => update('printing', 'autoOpenCashDrawer', v)} label="💵 فتح درج النقود تلقائياً" />
+      </div>
+    </div>
+  );
+}
+
+function BackupSection({ draft, update, runBackup }) {
+  const b = draft.backup || {};
+  return (
+    <div className="space-y-4">
+      <Switch checked={b.enabled} onChange={v => update('backup', 'enabled', v)} label="🟢 تفعيل النسخ الاحتياطي" />
+      <div className="grid md:grid-cols-2 gap-4">
+        <Field label="الجدولة">
+          <Select value={b.schedule} onValueChange={v => update('backup', 'schedule', v)}>
+            <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="hourly">كل ساعة</SelectItem>
+              <SelectItem value="daily">يومي</SelectItem>
+              <SelectItem value="weekly">أسبوعي</SelectItem>
+              <SelectItem value="monthly">شهري</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="وقت النسخ"><Input type="time" value={b.time || '03:00'} onChange={e => update('backup', 'time', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+        <Field label="فترة الاحتفاظ (يوم)"><Input type="number" value={b.retentionDays || 30} onChange={e => update('backup', 'retentionDays', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        <Field label="مكان التخزين">
+          <Select value={b.location} onValueChange={v => update('backup', 'location', v)}>
+            <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="local">محلي</SelectItem>
+              <SelectItem value="s3">Amazon S3</SelectItem>
+              <SelectItem value="gdrive">Google Drive</SelectItem>
+              <SelectItem value="dropbox">Dropbox</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+      <Switch checked={b.encrypt} onChange={v => update('backup', 'encrypt', v)} label="🔐 تشفير النسخ الاحتياطية" />
+      {b.lastBackup && (
+        <div className="p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs text-emerald-400">
+          آخر نسخة احتياطية: {new Date(b.lastBackup).toLocaleString('ar-IQ')}
+        </div>
+      )}
+      <Button onClick={runBackup} className="btn-gold w-full"><HardDrive className="w-4 h-4 ml-2" /> إنشاء نسخة احتياطية الآن</Button>
+    </div>
+  );
+}
+
+function SecuritySection({ draft, update }) {
+  const s = draft.security || {};
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="مدة الجلسة (دقيقة)"><Input type="number" value={s.sessionTimeoutMinutes || 60} onChange={e => update('security', 'sessionTimeoutMinutes', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="الحد الأدنى لطول كلمة المرور"><Input type="number" value={s.passwordMinLength || 6} onChange={e => update('security', 'passwordMinLength', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="حد محاولات الدخول الفاشلة"><Input type="number" value={s.maxLoginAttempts || 5} onChange={e => update('security', 'maxLoginAttempts', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="مدة القفل بعد الفشل (دقيقة)"><Input type="number" value={s.lockoutMinutes || 15} onChange={e => update('security', 'lockoutMinutes', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <div className="md:col-span-2">
+        <Field label="قائمة IPs المسموحة (سطر لكل IP، فارغ = جميع IPs)">
+          <Textarea value={(s.ipWhitelist || []).join('\n')} onChange={e => update('security', 'ipWhitelist', e.target.value.split('\n').filter(Boolean))} className="bg-input/30 border-gold/20 h-20 font-mono" dir="ltr" />
+        </Field>
+      </div>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={s.requireStrongPassword} onChange={v => update('security', 'requireStrongPassword', v)} label="🔐 يتطلب كلمة مرور قوية (أرقام + رموز)" />
+        <Switch checked={s.twoFAEnabled} onChange={v => update('security', 'twoFAEnabled', v)} label="🛡️ تفعيل المصادقة الثنائية 2FA" />
+        <Switch checked={s.auditLogEnabled} onChange={v => update('security', 'auditLogEnabled', v)} label="📋 تسجيل سجل النشاطات Audit Log" />
+        <Switch checked={s.forceLogoutOnPasswordChange} onChange={v => update('security', 'forceLogoutOnPasswordChange', v)} label="🚪 تسجيل خروج إجباري عند تغيير كلمة المرور" />
+      </div>
+    </div>
+  );
+}
+
+function ReportsSection({ draft, update }) {
+  const r = draft.reports || {};
+  const formats = r.exportFormats || [];
+  const toggleFormat = (f) => {
+    update('reports', 'exportFormats', formats.includes(f) ? formats.filter(x => x !== f) : [...formats, f]);
+  };
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="الفترة الافتراضية">
+        <Select value={r.defaultPeriod} onValueChange={v => update('reports', 'defaultPeriod', v)}>
+          <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="daily">يومي</SelectItem>
+            <SelectItem value="weekly">أسبوعي</SelectItem>
+            <SelectItem value="monthly">شهري</SelectItem>
+            <SelectItem value="yearly">سنوي</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="وقت إرسال التقرير"><Input type="time" value={r.reportTime || '08:00'} onChange={e => update('reports', 'reportTime', e.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="مدة الاحتفاظ بالتقارير (يوم)"><Input type="number" value={r.keepReportsDays || 365} onChange={e => update('reports', 'keepReportsDays', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <div className="md:col-span-2">
+        <Label className="text-xs mb-2 block">صيغ التصدير المُفعّلة</Label>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {['pdf', 'excel', 'csv', 'json'].map(f => (
+            <button key={f} onClick={() => toggleFormat(f)} className={`p-3 rounded-lg border text-sm uppercase font-mono transition-all ${formats.includes(f) ? 'bg-gold/10 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>
+              {f}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={r.emailReportsToManager} onChange={v => update('reports', 'emailReportsToManager', v)} label="📧 إرسال التقارير للمدير عبر الإيميل" />
+        <Switch checked={r.scheduleReports} onChange={v => update('reports', 'scheduleReports', v)} label="⏰ جدولة التقارير التلقائية" />
+        <Switch checked={r.includeCharts} onChange={v => update('reports', 'includeCharts', v)} label="📊 تضمين الرسوم البيانية" />
+      </div>
+    </div>
+  );
+}
+
+function EmployeesSection({ draft, update }) {
+  const e = draft.employees || {};
+  const days = e.workDays || [];
+  const toggleDay = (d) => {
+    update('employees', 'workDays', days.includes(d) ? days.filter(x => x !== d) : [...days, d]);
+  };
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Field label="بداية الدوام"><Input type="time" value={e.workStart || '08:00'} onChange={ev => update('employees', 'workStart', ev.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="نهاية الدوام"><Input type="time" value={e.workEnd || '17:00'} onChange={ev => update('employees', 'workEnd', ev.target.value)} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="معدل الأجر الإضافي (×)"><Input type="number" step="0.1" value={e.overtimeRate || 1.5} onChange={ev => update('employees', 'overtimeRate', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <Field label="هدف KPI %"><Input type="number" value={e.kpiTarget || 80} onChange={ev => update('employees', 'kpiTarget', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      <div className="md:col-span-2">
+        <Label className="text-xs mb-2 block">أيام العمل</Label>
+        <div className="grid grid-cols-7 gap-1">
+          {[{ id: 'sat', l: 'سبت' }, { id: 'sun', l: 'أحد' }, { id: 'mon', l: 'اثنين' }, { id: 'tue', l: 'ثلاثاء' }, { id: 'wed', l: 'أربعاء' }, { id: 'thu', l: 'خميس' }, { id: 'fri', l: 'جمعة' }].map(d => (
+            <button key={d.id} onClick={() => toggleDay(d.id)} className={`p-2 rounded-lg border text-xs transition-all ${days.includes(d.id) ? 'bg-gold/10 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>{d.l}</button>
+          ))}
+        </div>
+      </div>
+      <div className="md:col-span-2 space-y-2">
+        <Switch checked={e.gpsTrackingEnabled} onChange={v => update('employees', 'gpsTrackingEnabled', v)} label="📍 تفعيل تتبع GPS للموظفين" />
+        <Switch checked={e.requireFingerprint} onChange={v => update('employees', 'requireFingerprint', v)} label="👆 تطلب بصمة للحضور" />
+        <Switch checked={e.requireFaceRecognition} onChange={v => update('employees', 'requireFaceRecognition', v)} label="😊 تطلب بصمة الوجه" />
+        <Switch checked={e.autoAssignTasks} onChange={v => update('employees', 'autoAssignTasks', v)} label="🤖 توزيع المهام تلقائياً" />
+      </div>
+    </div>
+  );
+}
+
 
 // ============ ACTIVATIONS LOG ============
 function ActivationsLog() {

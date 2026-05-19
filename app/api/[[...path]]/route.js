@@ -6,6 +6,174 @@ const MONGO_URL = process.env.MONGO_URL;
 const DB_NAME = process.env.DB_NAME || 'ghazlan_erp';
 const EMERGENT_LLM_KEY = process.env.EMERGENT_LLM_KEY;
 
+const SETTINGS_DEFAULTS = {
+  general: {
+    companyName: 'مركز الغزلان',
+    companyNameEn: 'Ghazlan Center',
+    logo: '🌟',
+    address: 'بغداد - العراق',
+    phone: '07901234567',
+    email: 'info@ghazlan.iq',
+    website: 'https://ghazlan.iq',
+    currency: 'IQD',
+    currencySymbol: 'د.ع',
+    timezone: 'Asia/Baghdad',
+    language: 'ar',
+    fiscalYearStart: '01-01',
+    branches: ['الفرع الرئيسي', 'فرع الكرادة', 'فرع المنصور'],
+  },
+  users: {
+    requireApproval: true,
+    allowSelfRegistration: false,
+    defaultRole: 'cashier',
+    roles: [
+      { id: 'admin', name: 'مدير عام', permissions: ['all'] },
+      { id: 'manager', name: 'مدير فرع', permissions: ['view_reports', 'manage_subscribers', 'manage_inventory'] },
+      { id: 'cashier', name: 'كاشير', permissions: ['pos', 'view_inventory'] },
+      { id: 'technician', name: 'فني', permissions: ['manage_repairs', 'manage_networks'] },
+      { id: 'agent', name: 'وكيل', permissions: ['view_own_subscribers', 'activate'] },
+    ],
+  },
+  agents: {
+    defaultCommission: 20,
+    allowSelfActivation: true,
+    autoDisableOnDebt: true,
+    maxDebt: 500000,
+    portalUrl: '/agent',
+    requireQRLogin: false,
+    sessionTimeout: 30,
+  },
+  subscribers: {
+    defaultPackage: '50 Mbps',
+    defaultFee: 35000,
+    gracePeriodDays: 3,
+    autoSuspendOnExpiry: true,
+    debtLimit: 100000,
+    autoNotifyBeforeExpiry: 5,
+    requireIMEI: false,
+    autoGenerateUsername: true,
+    usernamePattern: 'user_{phone4}',
+  },
+  zones: {
+    defaultCapacity: 32,
+    warningThreshold: 80,
+    criticalThreshold: 95,
+    autoStatusUpdate: true,
+    monitoringInterval: 60,
+    defaultMapProvider: 'osm',
+  },
+  invoices: {
+    invoicePrefix: 'INV-',
+    startingNumber: 1000,
+    taxEnabled: false,
+    taxRate: 0,
+    debtAlertDays: 7,
+    autoReminder: true,
+    reminderChannels: ['whatsapp'],
+    footerNote: 'شكراً لتعاملكم معنا',
+  },
+  packages: {
+    defaultDurationDays: 30,
+    allowCustomDuration: true,
+    enabledPaymentMethods: ['cash', 'master', 'fastpay', 'transfer'],
+    defaultProfitShare: 20,
+    proRateOnUpgrade: true,
+    requireFullPayment: false,
+  },
+  whatsapp: {
+    enabled: false,
+    provider: 'cloud',
+    apiToken: '',
+    phoneNumberId: '',
+    senderName: 'مركز الغزلان',
+    activationTemplate: 'auto',
+    expiryTemplate: 'auto',
+    debtTemplate: 'auto',
+    sendToManager: true,
+    managerPhone: '07901234567',
+  },
+  telegram: {
+    enabled: false,
+    botToken: '',
+    managerChatId: '',
+    channelId: '',
+    sendActivations: true,
+    sendAlerts: true,
+    sendDailyReport: true,
+    reportTime: '20:00',
+  },
+  notifications: {
+    activation: { whatsapp: true, telegram: true, email: false, sms: false, push: true },
+    expiry: { whatsapp: true, telegram: false, email: false, sms: false, push: true },
+    debt: { whatsapp: true, telegram: true, email: false, sms: false, push: true },
+    lowStock: { whatsapp: false, telegram: true, email: true, sms: false, push: true },
+    networkAlert: { whatsapp: false, telegram: true, email: false, sms: false, push: true },
+    newSubscriber: { whatsapp: false, telegram: true, email: false, sms: false, push: false },
+  },
+  maps: {
+    provider: 'osm',
+    defaultLat: 33.3060,
+    defaultLng: 44.4180,
+    defaultZoom: 12,
+    googleApiKey: '',
+    showZones: true,
+    showNetworks: true,
+    showSubscribers: false,
+    clusterMarkers: true,
+  },
+  printing: {
+    paperSize: '80mm',
+    receiptHeader: 'مركز الغزلان\nبغداد - العراق\n07901234567',
+    receiptFooter: 'شكراً لزيارتكم 🙏\nصالح لمدة 7 أيام للاسترداد',
+    showLogo: true,
+    showBarcode: true,
+    showQR: true,
+    copies: 1,
+    autoOpenCashDrawer: false,
+  },
+  backup: {
+    enabled: true,
+    schedule: 'daily',
+    time: '03:00',
+    retentionDays: 30,
+    location: 'local',
+    cloudProvider: '',
+    encrypt: true,
+    lastBackup: null,
+  },
+  security: {
+    sessionTimeoutMinutes: 60,
+    passwordMinLength: 6,
+    requireStrongPassword: false,
+    twoFAEnabled: false,
+    maxLoginAttempts: 5,
+    lockoutMinutes: 15,
+    ipWhitelist: [],
+    auditLogEnabled: true,
+    forceLogoutOnPasswordChange: true,
+  },
+  reports: {
+    defaultPeriod: 'monthly',
+    emailReportsToManager: false,
+    scheduleReports: false,
+    reportTime: '08:00',
+    includeCharts: true,
+    exportFormats: ['pdf', 'excel'],
+    keepReportsDays: 365,
+  },
+  employees: {
+    workStart: '08:00',
+    workEnd: '17:00',
+    workDays: ['sun', 'mon', 'tue', 'wed', 'thu'],
+    overtimeRate: 1.5,
+    gpsTrackingEnabled: false,
+    requireFingerprint: false,
+    requireFaceRecognition: false,
+    autoAssignTasks: false,
+    kpiTarget: 80,
+  },
+};
+
 let cachedClient = null;
 async function getDb() {
   if (cachedClient) return cachedClient.db(DB_NAME);
@@ -184,6 +352,17 @@ async function seedDefaults(db) {
       counter++;
     }
     if (networks.length > 0) await db.collection('networks').insertMany(networks);
+  }
+
+  // ============ SETTINGS Initialize ============
+  const settingsDoc = await db.collection('settings').findOne({ id: 'system' });
+  if (!settingsDoc) {
+    await db.collection('settings').insertOne({
+      id: 'system',
+      ...SETTINGS_DEFAULTS,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   // Backfill subscribers with: agentId, networkId, username, userLat/Lng, cabinetLat/Lng
@@ -578,6 +757,141 @@ async function handle(request, params) {
         { name: 'صيانة', value: repairRevenue },
       ],
     });
+  }
+
+  // ============ SETTINGS ENDPOINTS ============
+  if (path === 'settings' && method === 'GET') {
+    let doc = await db.collection('settings').findOne({ id: 'system' });
+    if (!doc) {
+      doc = { id: 'system', ...SETTINGS_DEFAULTS, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      await db.collection('settings').insertOne(doc);
+    }
+    delete doc._id;
+    // Deep merge with defaults so new sections appear
+    const merged = { ...SETTINGS_DEFAULTS };
+    for (const key of Object.keys(SETTINGS_DEFAULTS)) {
+      merged[key] = { ...SETTINGS_DEFAULTS[key], ...(doc[key] || {}) };
+    }
+    return ok({ id: 'system', ...merged, createdAt: doc.createdAt, updatedAt: doc.updatedAt });
+  }
+
+  if (path === 'settings' && method === 'PUT') {
+    const body = await getJsonBody(request);
+    const current = await db.collection('settings').findOne({ id: 'system' }) || { id: 'system', ...SETTINGS_DEFAULTS };
+    delete body.id; delete body._id;
+    // Deep merge: merge top-level sections
+    const updated = { ...current };
+    for (const key of Object.keys(body)) {
+      if (typeof body[key] === 'object' && !Array.isArray(body[key]) && body[key] !== null) {
+        updated[key] = { ...(current[key] || {}), ...body[key] };
+      } else {
+        updated[key] = body[key];
+      }
+    }
+    updated.updatedAt = new Date().toISOString();
+    await db.collection('settings').updateOne(
+      { id: 'system' },
+      { $set: updated },
+      { upsert: true }
+    );
+    delete updated._id;
+    // Audit log
+    await db.collection('activity_logs').insertOne({
+      id: uuidv4(), user: body.__user || 'admin', action: 'settings_update',
+      entity: 'settings', entityId: 'system',
+      details: `تحديث الإعدادات: ${Object.keys(body).filter(k => !k.startsWith('__')).join(', ')}`,
+      timestamp: new Date().toISOString(),
+    });
+    return ok(updated);
+  }
+
+  if (path === 'settings/reset' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const section = body?.section;
+    if (section && SETTINGS_DEFAULTS[section]) {
+      await db.collection('settings').updateOne(
+        { id: 'system' },
+        { $set: { [section]: SETTINGS_DEFAULTS[section], updatedAt: new Date().toISOString() } },
+        { upsert: true }
+      );
+      await db.collection('activity_logs').insertOne({
+        id: uuidv4(), user: 'admin', action: 'settings_reset_section',
+        entity: 'settings', entityId: section,
+        details: `إعادة ضبط قسم: ${section}`, timestamp: new Date().toISOString(),
+      });
+      return ok({ success: true, section, defaults: SETTINGS_DEFAULTS[section] });
+    }
+    // Reset all
+    await db.collection('settings').updateOne(
+      { id: 'system' },
+      { $set: { ...SETTINGS_DEFAULTS, updatedAt: new Date().toISOString() } },
+      { upsert: true }
+    );
+    await db.collection('activity_logs').insertOne({
+      id: uuidv4(), user: 'admin', action: 'settings_reset_all',
+      entity: 'settings', entityId: 'system',
+      details: 'إعادة ضبط جميع الإعدادات للقيم الافتراضية',
+      timestamp: new Date().toISOString(),
+    });
+    return ok({ success: true, defaults: SETTINGS_DEFAULTS });
+  }
+
+  // Test integrations (WhatsApp/Telegram)
+  if (path === 'settings/test/whatsapp' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const settings = await db.collection('settings').findOne({ id: 'system' });
+    const wa = settings?.whatsapp || SETTINGS_DEFAULTS.whatsapp;
+    if (!wa.enabled) return err('واتساب غير مفعّل في الإعدادات');
+    if (!wa.apiToken) return err('لم يتم تعيين API Token');
+    // Log a test message
+    await db.collection('whatsapp_messages').insertOne({
+      id: uuidv4(), subscriberId: null, phone: body.phone || wa.managerPhone,
+      type: 'test', message: `🧪 رسالة اختبار من ${wa.senderName} - ${new Date().toLocaleString('ar-IQ')}`,
+      status: 'queued', retries: 0, createdAt: new Date().toISOString(),
+    });
+    return ok({ success: true, message: 'تم تسجيل رسالة اختبار في الطابور (يحتاج backend job لإرسالها فعلياً)' });
+  }
+
+  if (path === 'settings/test/telegram' && method === 'POST') {
+    const settings = await db.collection('settings').findOne({ id: 'system' });
+    const tg = settings?.telegram || SETTINGS_DEFAULTS.telegram;
+    if (!tg.enabled) return err('تليجرام غير مفعّل في الإعدادات');
+    if (!tg.botToken) return err('لم يتم تعيين Bot Token');
+    if (!tg.managerChatId) return err('لم يتم تعيين Chat ID');
+    // Try sending via Telegram API directly
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${tg.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: tg.managerChatId, text: `🧪 رسالة اختبار من نظام مركز الغزلان - ${new Date().toLocaleString('ar-IQ')}` }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) return err('فشل: ' + (data.description || 'خطأ غير معروف'));
+      return ok({ success: true, message: 'تم إرسال رسالة الاختبار بنجاح ✅' });
+    } catch (e) {
+      return err('فشل الاتصال بـ Telegram API: ' + e.message);
+    }
+  }
+
+  // Manual backup trigger (logs the action)
+  if (path === 'settings/backup/run' && method === 'POST') {
+    const collections = await db.listCollections().toArray();
+    const stats = {};
+    for (const c of collections) {
+      stats[c.name] = await db.collection(c.name).countDocuments();
+    }
+    const backupId = uuidv4();
+    await db.collection('settings').updateOne(
+      { id: 'system' },
+      { $set: { 'backup.lastBackup': new Date().toISOString(), 'backup.lastBackupId': backupId } }
+    );
+    await db.collection('activity_logs').insertOne({
+      id: uuidv4(), user: 'admin', action: 'manual_backup',
+      entity: 'backup', entityId: backupId,
+      details: `نسخة احتياطية يدوية: ${Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(', ')}`,
+      timestamp: new Date().toISOString(),
+    });
+    return ok({ success: true, backupId, stats, timestamp: new Date().toISOString() });
   }
 
   if (path === 'ai/chat' && method === 'POST') {

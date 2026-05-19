@@ -531,3 +531,101 @@ agent_communication:
         not a functional bug. The backfill logic works correctly for valid data.
       
       NO CRITICAL ISSUES FOUND. All activation flow and agent management features working perfectly.
+
+
+  - task: "Full Settings System (16 sections)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Added comprehensive settings system with 16 sections (general, users, agents, subscribers,
+            zones, invoices, packages, whatsapp, telegram, notifications, maps, printing, backup, security,
+            reports, employees). Endpoints:
+            - GET /api/settings → returns merged defaults+saved
+            - PUT /api/settings → deep merge updates (creates activity_log)
+            - POST /api/settings/reset → {section?: 'sectionName'} resets one section or all
+            - POST /api/settings/test/whatsapp → logs test msg to queue
+            - POST /api/settings/test/telegram → actually calls Telegram API if configured
+            - POST /api/settings/backup/run → manual backup trigger (logs stats)
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All 7 settings endpoints fully functional (7/7 tests passed).
+            
+            Test Results:
+            1. GET /api/settings: Returns all 16 sections (general, users, agents, subscribers, zones, 
+               invoices, packages, whatsapp, telegram, notifications, maps, printing, backup, security, 
+               reports, employees) + metadata (id, createdAt, updatedAt). Defaults loaded correctly 
+               (companyName='مركز الغزلان', whatsapp.enabled=false).
+            
+            2. PUT /api/settings (Deep Merge): Partial updates working perfectly. Updated general.companyName 
+               to 'TEST_NAME' while preserving other general fields. Updated whatsapp.enabled=true and 
+               apiToken='test123' while preserving previous changes. Activity log entries created for each update.
+            
+            3. POST /api/settings/reset (section='general'): Successfully resets only general section to defaults 
+               (companyName back to 'مركز الغزلان') while preserving other sections (whatsapp.enabled remained true).
+            
+            4. POST /api/settings/reset (all): Successfully resets ALL sections to defaults. Verified 
+               general.companyName='مركز الغزلان' and whatsapp.enabled=false, apiToken=''.
+            
+            5. POST /api/settings/test/whatsapp: Correctly fails with error 'واتساب غير مفعّل في الإعدادات' 
+               when whatsapp.enabled=false. After enabling whatsapp, test succeeds and creates message in 
+               whatsapp_messages collection with type='test', status='queued'.
+            
+            6. POST /api/settings/test/telegram: Correctly fails with 'تليجرام غير مفعّل في الإعدادات' when 
+               disabled. Fails with 'لم يتم تعيين Bot Token' when enabled but no botToken. With fake botToken 
+               '123:fake', gracefully handles Telegram API error ('Unauthorized') without crashing (no 500 error).
+            
+            7. POST /api/settings/backup/run: Returns {success: true, backupId, stats, timestamp}. Stats contains 
+               14 collections with counts (products=9, subscribers=8, zones=3, networks=144, agents=3, packages=5, 
+               activations=3, whatsapp_messages=7, activity_logs=10, etc.). Verified backup.lastBackup updated in 
+               settings. Activity log entry created with action='manual_backup'.
+            
+            All settings reset to defaults after testing (cleanup successful).
+            NO CRITICAL ISSUES FOUND. Settings system is production-ready.
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Added full Settings system. Please test:
+      1. GET /api/settings returns all 16 sections with defaults
+      2. PUT /api/settings with partial updates (e.g. {general: {companyName: 'X'}}) should deep-merge
+      3. POST /api/settings/reset with {section: 'general'} resets only that section
+      4. POST /api/settings/reset with {} resets ALL sections
+      5. POST /api/settings/test/whatsapp - should fail if whatsapp.enabled=false
+      6. POST /api/settings/test/telegram - should fail if no botToken
+      7. POST /api/settings/backup/run - returns {success, backupId, stats, timestamp} and updates backup.lastBackup
+      8. Verify each PUT creates activity_log entry
+  - agent: "testing"
+    message: |
+      🎉 SETTINGS SYSTEM TESTING COMPLETE - ALL TESTS PASSED (7/7)
+      
+      Tested all 7 settings endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ GET /api/settings: Returns all 16 sections + metadata (id, createdAt, updatedAt)
+      ✅ PUT /api/settings: Deep merge working perfectly
+         - Partial updates preserve other fields
+         - Multiple updates preserve previous changes
+         - Activity log entries created for each update
+      ✅ POST /api/settings/reset (section): Resets only specified section, others preserved
+      ✅ POST /api/settings/reset (all): Resets all sections to defaults
+      ✅ POST /api/settings/test/whatsapp: 
+         - Correctly fails when disabled
+         - Creates test message in whatsapp_messages when enabled
+      ✅ POST /api/settings/test/telegram:
+         - Correctly fails when disabled
+         - Correctly fails without botToken
+         - Gracefully handles Telegram API errors (no crashes)
+      ✅ POST /api/settings/backup/run:
+         - Returns backup stats for 14 collections
+         - Updates backup.lastBackup in settings
+         - Creates activity log entry with action='manual_backup'
+      
+      All settings reset to defaults after testing (cleanup successful).
+      NO CRITICAL ISSUES FOUND. Settings system is production-ready.
