@@ -969,7 +969,11 @@ function EmployeeDashboard({ employee, onLogout }) {
     setTodayAtt(att); setTasks(Array.isArray(ts) ? ts : []); setPayroll(pr);
     if (self && !self.error) {
       setSelfData(self);
-      localStorage.setItem('emp_session', JSON.stringify({ employee: self, token: 'x' }));
+      // Preserve the existing token in localStorage; only update employee object
+      try {
+        const cur = JSON.parse(localStorage.getItem('emp_session') || '{}');
+        localStorage.setItem('emp_session', JSON.stringify({ ...cur, employee: self }));
+      } catch {}
     }
   };
   useEffect(() => { loadAll(); const i = setInterval(loadAll, 30000); return () => clearInterval(i); }, []);
