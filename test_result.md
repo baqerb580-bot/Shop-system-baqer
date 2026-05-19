@@ -258,20 +258,20 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 1
+  test_sequence: 2
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Dashboard stats endpoint"
-    - "Products CRUD"
-    - "POS Checkout"
-    - "Subscribers CRUD"
-    - "Zones CRUD + NOC status"
-    - "Repairs CRUD"
-    - "AI Assistant (Emergent LLM gpt-4o-mini)"
+    - "Subscriber Activation Flow"
+    - "Agents CRUD + stats + login"
+    - "Networks/FATs CRUD"
+    - "Packages CRUD"
+    - "WhatsApp messages log + resend"
+    - "Activations Log + Activity Log"
+    - "Subscriber enhancements: username, agentId, networkId, GPS locations"
   stuck_tasks: []
-  test_all: true
+  test_all: false
   test_priority: "high_first"
 
 agent_communication:
@@ -311,3 +311,223 @@ agent_communication:
       - All Arabic data rendering correctly
       
       NO CRITICAL ISSUES FOUND. Backend is production-ready.
+
+
+  - task: "Subscriber Activation Flow"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/subscribers/:id/activate - creates activation record, updates subscriber (status=active,
+            dueDate=endDate based on durationMonths), updates agent (totalActivations++, totalProfit, balance),
+            creates 2 whatsapp_messages (subscriber template + manager alert), creates activity_log.
+            Body: {packageId, speed, amount, paymentMethod (cash/master/fastpay/transfer), durationMonths,
+            agentId, notes}. Returns {activation, whatsappMessage, success}.
+            Manually tested via curl - returns proper Arabic WhatsApp template with all fields.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Full activation flow working perfectly. Tested with real subscriber/package/agent data.
+            Response contains: activation object (id, subscriberName, amount, agentProfit=10000, companyProfit=40000, endDate), 
+            Arabic WhatsApp message template (contains subscriber name, speed, amount, payment method, dates), success=true.
+            Verified all side effects: (1) Subscriber status→active, dueDate set to +3 months, lastActivationAt set,
+            (2) Agent totalActivations incremented by 1, totalProfit increased by 10000, balance increased by 10000,
+            (3) 2 WhatsApp messages created (type: activation + manager_alert), both with status=queued,
+            (4) Activity log entry created with action=subscriber_activation,
+            (5) Activation record appears in GET /api/activations list.
+            All calculations correct based on commission rate.
+
+  - task: "Agents CRUD + stats + login"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET/POST/PUT/DELETE /api/agents.
+            GET /api/agents/:id/stats - returns agent details + stats (totalSubscribers, activeSubscribers,
+            totalActivations, totalRevenue, totalProfit, totalDebt, expiringSoon) + subscribers list + recent activations.
+            POST /api/agents/login - body {username, password}, returns {agent, token} or 401.
+            Seeded with 3 agents (karada/karada123, mansour/mansour123, jadriya/jadriya123).
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All agent endpoints working. GET /api/agents returns 3 seeded agents (karada, mansour, jadriya).
+            POST/PUT/DELETE all working correctly with UUID generation. 
+            Agent Login: POST /api/agents/login with valid credentials (karada/karada123) returns {success: true, agent, token}.
+            Invalid credentials correctly return 401 status.
+            Agent Stats: GET /api/agents/:id/stats returns complete data: agent object, stats (totalSubscribers=3, 
+            activeSubscribers, totalActivations=1, totalRevenue, totalProfit, totalDebt, expiringSoon), 
+            subscribers array, and activations array (limited to 20 recent).
+
+  - task: "Networks/FATs CRUD"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET/POST/PUT/DELETE /api/networks. Each FAT has: number, name, zoneId, capacity,
+            subscribers (auto-counted), status (active/weak/stopped/maintenance), lat/lng, utilization.
+            Seeded ~144 networks based on existing zones.fats counts.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All network/FAT endpoints working. GET /api/networks returns 144 seeded networks.
+            All networks have status='active' (distribution verified). POST/PUT/DELETE operations all working correctly.
+            Network structure includes: number (F-XX-XX format), name, zoneId, zoneName, zoneNumber, capacity (32),
+            subscribers count, status, lat/lng coordinates, utilization percentage.
+
+  - task: "Packages CRUD"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET/POST/PUT/DELETE /api/packages. 5 seeded packages (25/50/100/200/500 Mbps).
+            Each has: name, speed, monthlyFee, durationDays, profitShare, active.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All package endpoints working. GET /api/packages returns 5 seeded packages 
+            (باقة ذهبية 25, باقة فضية 50, باقة بلاتينية 100, باقة VIP 200, باقة فايبر 500).
+            POST/PUT/DELETE operations all working correctly with UUID generation.
+            Package structure includes: name, speed, monthlyFee, durationDays, profitShare, active status.
+
+  - task: "WhatsApp messages log + resend"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/whatsapp-messages - returns all messages with status (queued/sent/failed), type
+            (activation/manager_alert/expiry/debt), retries.
+            POST /api/whatsapp-messages/:id/resend - increments retries, sets status=queued.
+            NOTE: Actual send is NOT implemented - logs only. Real WhatsApp API integration needed (user chose option C - build with logging).
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - WhatsApp message logging system working. GET /api/whatsapp-messages returns message log with all fields
+            (id, phone, type, message, status, retries, subscriberId, activationId, createdAt).
+            POST /api/whatsapp-messages/:id/resend correctly increments retries counter and sets status='queued'.
+            Verified retries incremented from 0 to 1 after resend. Note: This is logging only - actual WhatsApp API 
+            integration not implemented (as per user choice).
+
+  - task: "Activations Log + Activity Log"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/activations - all activation records. Each contains snapshot of subscriber, package,
+            amount, paymentMethod, agentProfit/companyProfit, dates.
+            GET /api/activity-logs - audit log entries created automatically on actions.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Both logging endpoints working. GET /api/activations returns activation records with complete data
+            (id, subscriberId, subscriberName, amount, agentProfit, companyProfit, startDate, endDate, status, etc.).
+            GET /api/activity-logs returns audit log entries with structure (id, user, action, entity, entityId, details, timestamp).
+            Verified that activation flow creates entries in both collections.
+
+  - task: "Subscriber enhancements: username, agentId, networkId, GPS locations"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Subscriber fields added: username, agentId, agentName, networkId, fatNumber (still kept),
+            userLat, userLng, cabinetLat, cabinetLng, lastActivationAt.
+            Backfill code runs on first connection to populate these fields for existing subscribers.
+            Network subscriber counts auto-updated when subscribers are CUD'd.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Subscriber backfill mostly working. 6/8 subscribers have all required fields populated
+            (username, agentId, agentName, fatNumber, zoneNumber, userLat, userLng, cabinetLat, cabinetLng).
+            Minor: 2/8 subscribers missing zoneNumber, cabinetLat, cabinetLng because they reference a non-existent zone
+            (orphaned data from previous DB state). This is a data consistency issue, not a functional bug.
+            The backfill logic is working correctly - it just can't backfill data for subscribers referencing 
+            zones/networks that don't exist. Core functionality verified: username generation (user_XXXX format),
+            agent assignment, network assignment, GPS coordinates (user + cabinet locations).
+
+agent_communication:
+  - agent: "main"
+    message: |
+      MASSIVE EXPANSION: Added activation flow, agents system, networks/FATs management, packages,
+      WhatsApp messages log, activity audit log, and subscriber enhancements (username/agent/network/GPS).
+      Frontend: New sections for ActivationsLog, Agents, Networks, WhatsAppLog. Activation modal in
+      Subscribers section with full flow (package, speed, amount, payment method, duration, agent, notes).
+      Auto-fills end date, builds Arabic WhatsApp template, updates agent balance/profit.
+      Please test all the NEW endpoints:
+      1. POST /api/subscribers/:id/activate (full activation flow)
+      2. /api/agents CRUD + /api/agents/:id/stats + /api/agents/login
+      3. /api/networks CRUD
+      4. /api/packages CRUD
+      5. /api/whatsapp-messages GET + /api/whatsapp-messages/:id/resend
+      6. /api/activations GET
+      Use sample data: 3 agents, 5 packages, ~144 networks seeded.
+  - agent: "testing"
+    message: |
+      🎉 NEW ENDPOINTS TESTING COMPLETE - ALL CRITICAL TESTS PASSED (10/11)
+      
+      Tested all NEW endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ Packages CRUD: All operations working (5 seeded packages found)
+      ✅ Agents CRUD: All operations working (3 agents: karada, mansour, jadriya)
+      ✅ Networks CRUD: All operations working (144 networks seeded, all active)
+      ✅ Activations Log: GET /api/activations working, returns activation records
+      ✅ WhatsApp Messages: GET /api/whatsapp-messages working, returns message log
+      ✅ Activity Logs: GET /api/activity-logs working, returns audit entries
+      ✅ Agent Login: POST /api/agents/login working (valid→200+token, invalid→401)
+      ✅ Agent Stats: GET /api/agents/:id/stats working (returns complete stats + subscribers + activations)
+      ✅ WhatsApp Resend: POST /api/whatsapp-messages/:id/resend working (increments retries, sets status=queued)
+      ✅ Subscriber Activation Flow (CRITICAL): FULLY WORKING
+         - Creates activation record with all fields (amount, agentProfit, companyProfit, dates)
+         - Updates subscriber (status→active, dueDate set, lastActivationAt set)
+         - Updates agent (totalActivations++, totalProfit+10000, balance+10000)
+         - Creates 2 WhatsApp messages (subscriber + manager_alert)
+         - Creates activity log entry
+         - Returns Arabic WhatsApp template with all details
+         - Activation appears in /api/activations list
+      
+      ⚠️ Minor Issue (not critical):
+      - Subscriber Backfill: 2/8 subscribers missing some fields (zoneNumber, cabinetLat, cabinetLng)
+        because they reference a non-existent zone (orphaned data). This is a data consistency issue,
+        not a functional bug. The backfill logic works correctly for valid data.
+      
+      NO CRITICAL ISSUES FOUND. All activation flow and agent management features working perfectly.

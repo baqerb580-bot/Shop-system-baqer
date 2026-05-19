@@ -133,6 +133,93 @@ async function seedDefaults(db) {
       { id: uuidv4(), client: 'محل ذهب الزين', location: 'الجادرية', cameras: 12, type: 'تركيب + صيانة سنوية', value: 4200000, status: 'pending', startDate: new Date().toISOString().slice(0, 10), createdAt: new Date().toISOString() },
     ]);
   }
+
+  // ============ PACKAGES ============
+  const pkgCount = await db.collection('packages').countDocuments();
+  if (pkgCount === 0) {
+    await db.collection('packages').insertMany([
+      { id: uuidv4(), name: 'باقة ذهبية 25', speed: '25 Mbps', monthlyFee: 25000, durationDays: 30, profitShare: 20, active: true, createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'باقة فضية 50', speed: '50 Mbps', monthlyFee: 35000, durationDays: 30, profitShare: 22, active: true, createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'باقة بلاتينية 100', speed: '100 Mbps', monthlyFee: 50000, durationDays: 30, profitShare: 25, active: true, createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'باقة VIP 200', speed: '200 Mbps', monthlyFee: 75000, durationDays: 30, profitShare: 30, active: true, createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'باقة فايبر 500', speed: '500 Mbps', monthlyFee: 150000, durationDays: 30, profitShare: 35, active: true, createdAt: new Date().toISOString() },
+    ]);
+  }
+
+  // ============ AGENTS (الوكلاء) ============
+  const agentsCount = await db.collection('agents').countDocuments();
+  if (agentsCount === 0) {
+    await db.collection('agents').insertMany([
+      { id: uuidv4(), name: 'وكيل الكرادة', username: 'karada', password: 'karada123', phone: '07901111000', branch: 'الكرادة', commission: 20, balance: 0, totalActivations: 0, totalProfit: 0, status: 'active', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'وكيل المنصور', username: 'mansour', password: 'mansour123', phone: '07902222000', branch: 'المنصور', commission: 22, balance: 0, totalActivations: 0, totalProfit: 0, status: 'active', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'وكيل الجادرية', username: 'jadriya', password: 'jadriya123', phone: '07903333000', branch: 'الجادرية', commission: 18, balance: 0, totalActivations: 0, totalProfit: 0, status: 'active', createdAt: new Date().toISOString() },
+    ]);
+  }
+
+  // ============ NETWORKS / FATs (الشبكات والفاتات) ============
+  const netCount = await db.collection('networks').countDocuments();
+  if (netCount === 0) {
+    const zones = await db.collection('zones').find({}).toArray();
+    const networks = [];
+    let counter = 1;
+    for (const z of zones) {
+      for (let f = 1; f <= (z.fats || 2); f++) {
+        networks.push({
+          id: uuidv4(),
+          number: `F-${String(counter).padStart(2, '0')}-${String(f).padStart(2, '0')}`,
+          name: `فاتة ${f} - ${z.name}`,
+          zoneId: z.id,
+          zoneName: z.name,
+          zoneNumber: z.number,
+          capacity: 32,
+          subscribers: 0,
+          status: z.status === 'offline' ? 'stopped' : (z.status === 'warning' ? 'weak' : 'active'),
+          lat: (z.lat || 33.3) + (Math.random() - 0.5) * 0.02,
+          lng: (z.lng || 44.4) + (Math.random() - 0.5) * 0.02,
+          utilization: Math.floor(Math.random() * 80) + 10,
+          installedAt: new Date(Date.now() - 86400000 * Math.floor(Math.random() * 200)).toISOString(),
+          createdAt: new Date().toISOString(),
+        });
+      }
+      counter++;
+    }
+    if (networks.length > 0) await db.collection('networks').insertMany(networks);
+  }
+
+  // Backfill subscribers with: agentId, networkId, username, userLat/Lng, cabinetLat/Lng
+  const subsToBackfill = await db.collection('subscribers').find({ $or: [{ agentId: { $exists: false } }, { username: { $exists: false } }] }).toArray();
+  if (subsToBackfill.length > 0) {
+    const agents = await db.collection('agents').find({}).toArray();
+    const networks = await db.collection('networks').find({}).toArray();
+    let i = 0;
+    for (const s of subsToBackfill) {
+      const updates = {};
+      const zoneNetworks = networks.filter(n => n.zoneId === s.zoneId);
+      const net = zoneNetworks[i % Math.max(1, zoneNetworks.length)];
+      if (!s.username) updates.username = `user_${(s.phone || '').slice(-4) || (i + 1).toString().padStart(4, '0')}`;
+      if (!s.agentId && agents.length > 0) {
+        const a = agents[i % agents.length];
+        updates.agentId = a.id; updates.agentName = a.name;
+      }
+      if (!s.networkId && net) {
+        updates.networkId = net.id; updates.fatNumber = net.number;
+      }
+      if (!s.userLat) updates.userLat = 33.31 + (Math.random() - 0.5) * 0.05;
+      if (!s.userLng) updates.userLng = 44.4 + (Math.random() - 0.5) * 0.05;
+      if (!s.cabinetLat && net) updates.cabinetLat = net.lat;
+      if (!s.cabinetLng && net) updates.cabinetLng = net.lng;
+      if (Object.keys(updates).length > 0) {
+        await db.collection('subscribers').updateOne({ id: s.id }, { $set: updates });
+      }
+      i++;
+    }
+    // Update network subscriber counts
+    const allNets = await db.collection('networks').find({}).toArray();
+    for (const n of allNets) {
+      const c = await db.collection('subscribers').countDocuments({ networkId: n.id });
+      await db.collection('networks').updateOne({ id: n.id }, { $set: { subscribers: c } });
+    }
+  }
 }
 
 function ok(data, status = 200) {
@@ -201,6 +288,12 @@ async function handle(request, params) {
     'customers': 'customers',
     'sales': 'sales',
     'camera-contracts': 'camera_contracts',
+    'agents': 'agents',
+    'networks': 'networks',
+    'packages': 'packages',
+    'activations': 'activations',
+    'whatsapp-messages': 'whatsapp_messages',
+    'activity-logs': 'activity_logs',
   };
 
   for (const [route, coll] of Object.entries(collections)) {
@@ -244,10 +337,184 @@ async function handle(request, params) {
     }
   }
 
-  if (path === 'pos/checkout' && method === 'POST') {
+  // ============ SUBSCRIBER ACTIVATION (مهم جداً) ============
+  if (path.match(/^subscribers\/[^/]+\/activate$/) && method === 'POST') {
+    const subId = path.split('/')[1];
     const body = await getJsonBody(request);
-    const { items, discount = 0, paymentMethod = 'cash', cashier = 'الكاشير', customer = 'زبون نقدي' } = body;
-    if (!items || items.length === 0) return err('السلة فارغة');
+    const { packageId, speed, amount, paymentMethod = 'cash', durationMonths = 1, agentId, notes = '', processedBy = 'النظام' } = body;
+    const subscriber = await db.collection('subscribers').findOne({ id: subId });
+    if (!subscriber) return err('المشترك غير موجود', 404);
+    const pkg = packageId ? await db.collection('packages').findOne({ id: packageId }) : null;
+    const agent = agentId ? await db.collection('agents').findOne({ id: agentId }) : null;
+    const startDate = new Date();
+    const endDate = new Date(startDate.getTime() + durationMonths * 30 * 86400000);
+    const finalSpeed = speed || pkg?.speed || subscriber.package || '50 Mbps';
+    const finalAmount = Number(amount || pkg?.monthlyFee * durationMonths || 0);
+    // Profit calc
+    const commissionRate = agent?.commission || 0;
+    const agentProfit = Math.floor(finalAmount * commissionRate / 100);
+    const companyProfit = finalAmount - agentProfit;
+
+    // Create activation record
+    const activation = {
+      id: uuidv4(),
+      subscriberId: subId,
+      subscriberName: subscriber.name,
+      subscriberPhone: subscriber.phone,
+      username: subscriber.username || `user_${(subscriber.phone || '').slice(-4)}`,
+      packageId: pkg?.id || null,
+      packageName: pkg?.name || subscriber.package || finalSpeed,
+      speed: finalSpeed,
+      amount: finalAmount,
+      paymentMethod,
+      durationMonths,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      agentId: agent?.id || null,
+      agentName: agent?.name || 'المركز الرئيسي',
+      agentProfit,
+      companyProfit,
+      processedBy,
+      notes,
+      status: 'completed',
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('activations').insertOne(activation);
+    delete activation._id;
+
+    // Update subscriber
+    await db.collection('subscribers').updateOne({ id: subId }, {
+      $set: {
+        status: 'active',
+        package: finalSpeed,
+        fee: pkg?.monthlyFee || subscriber.fee || finalAmount,
+        debt: 0,
+        dueDate: endDate.toISOString().slice(0, 10),
+        agentId: agent?.id || subscriber.agentId,
+        agentName: agent?.name || subscriber.agentName,
+        lastActivationAt: new Date().toISOString(),
+      }
+    });
+
+    // Update agent stats
+    if (agent) {
+      await db.collection('agents').updateOne({ id: agent.id }, {
+        $inc: { totalActivations: 1, totalProfit: agentProfit, balance: agentProfit },
+      });
+    }
+
+    // Build WhatsApp message
+    const waMsg = `🎉 *تم تفعيل اشتراكك بنجاح* 🎉
+
+عزيزي *${subscriber.name}*، تفاصيل اشتراكك:
+
+👤 *اليوزر:* ${activation.username}
+🆔 *المعرف:* ${subId.slice(0, 8).toUpperCase()}
+📦 *الباقة:* ${activation.packageName}
+⚡ *السرعة:* ${finalSpeed}
+💰 *المبلغ:* ${finalAmount.toLocaleString()} د.ع
+💳 *طريقة الدفع:* ${({cash:'كاش',master:'ماستر',fastpay:'فاست باي',transfer:'تحويل'})[paymentMethod] || paymentMethod}
+📅 *تاريخ التفعيل:* ${startDate.toLocaleDateString('ar-IQ')}
+⏰ *تاريخ الانتهاء:* ${endDate.toLocaleDateString('ar-IQ')}
+🏢 *الفرع/الوكيل:* ${activation.agentName}
+
+شكراً لاختيارك *مركز الغزلان* 🌟
+للاستفسار: 07901234567`;
+
+    const waLog = {
+      id: uuidv4(),
+      subscriberId: subId,
+      subscriberName: subscriber.name,
+      activationId: activation.id,
+      phone: subscriber.phone,
+      type: 'activation',
+      message: waMsg,
+      status: 'queued', // pending real API; will become 'sent' when integrated
+      retries: 0,
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('whatsapp_messages').insertOne(waLog);
+    delete waLog._id;
+
+    // Manager notification (Telegram log + WhatsApp manager copy)
+    const managerMsg = `🔔 *تفعيل جديد*
+👤 ${subscriber.name} (${subscriber.phone})
+📦 ${activation.packageName} - ${finalSpeed}
+💰 ${finalAmount.toLocaleString()} د.ع (${paymentMethod})
+👨‍💼 ${activation.agentName}
+⏰ ينتهي: ${endDate.toLocaleDateString('ar-IQ')}`;
+    await db.collection('whatsapp_messages').insertOne({
+      id: uuidv4(), subscriberId: subId, activationId: activation.id, phone: 'MANAGER',
+      type: 'manager_alert', message: managerMsg, status: 'queued', retries: 0,
+      createdAt: new Date().toISOString(),
+    });
+
+    // Activity log
+    await db.collection('activity_logs').insertOne({
+      id: uuidv4(),
+      user: processedBy,
+      action: 'subscriber_activation',
+      entity: 'subscriber',
+      entityId: subId,
+      details: `تفعيل ${subscriber.name} بباقة ${activation.packageName} لمدة ${durationMonths} شهر بمبلغ ${finalAmount.toLocaleString()} د.ع`,
+      timestamp: new Date().toISOString(),
+    });
+
+    return ok({ activation, whatsappMessage: waMsg, success: true }, 201);
+  }
+
+  // Resend WhatsApp message
+  if (path.match(/^whatsapp-messages\/[^/]+\/resend$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const msg = await db.collection('whatsapp_messages').findOne({ id });
+    if (!msg) return err('الرسالة غير موجودة', 404);
+    await db.collection('whatsapp_messages').updateOne({ id }, {
+      $inc: { retries: 1 },
+      $set: { status: 'queued', lastRetryAt: new Date().toISOString() },
+    });
+    return ok({ success: true, message: 'تم إعادة وضع الرسالة في الطابور' });
+  }
+
+  // Agent stats
+  if (path.match(/^agents\/[^/]+\/stats$/) && method === 'GET') {
+    const id = path.split('/')[1];
+    const agent = await db.collection('agents').findOne({ id });
+    if (!agent) return err('الوكيل غير موجود', 404);
+    delete agent._id;
+    const subscribers = await db.collection('subscribers').find({ agentId: id }).toArray();
+    const activations = await db.collection('activations').find({ agentId: id }).sort({ createdAt: -1 }).toArray();
+    const totalRevenue = activations.reduce((s, a) => s + (a.amount || 0), 0);
+    const totalProfit = activations.reduce((s, a) => s + (a.agentProfit || 0), 0);
+    const totalDebt = subscribers.reduce((s, x) => s + (x.debt || 0), 0);
+    // Expiring soon (next 7 days)
+    const soon = new Date(Date.now() + 7 * 86400000);
+    const expiringSoon = subscribers.filter(s => s.dueDate && new Date(s.dueDate) <= soon && s.status === 'active').length;
+    return ok({
+      agent,
+      stats: {
+        totalSubscribers: subscribers.length,
+        activeSubscribers: subscribers.filter(s => s.status === 'active').length,
+        totalActivations: activations.length,
+        totalRevenue,
+        totalProfit,
+        totalDebt,
+        expiringSoon,
+      },
+      subscribers: subscribers.map(s => { delete s._id; return s; }),
+      activations: activations.slice(0, 20).map(a => { delete a._id; return a; }),
+    });
+  }
+
+  // Agent login
+  if (path === 'agents/login' && method === 'POST') {
+    const { username, password } = await getJsonBody(request);
+    const agent = await db.collection('agents').findOne({ username, password });
+    if (!agent) return err('بيانات تسجيل الدخول خاطئة', 401);
+    delete agent._id;
+    return ok({ success: true, agent, token: `agent_${agent.id}_${Date.now()}` });
+  }
+
+  if (path === 'pos/checkout' && method === 'POST') {
     let subtotal = 0;
     for (const it of items) {
       subtotal += (it.price || 0) * (it.quantity || 1);

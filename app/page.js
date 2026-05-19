@@ -41,10 +41,14 @@ const MENU = [
   { id: 'pos', label: 'نقطة البيع POS', icon: ShoppingCart, color: 'gold' },
   { id: 'products', label: 'المنتجات والمخزون', icon: Package, color: 'neon' },
   { id: 'subscribers', label: 'مشتركو الإنترنت', icon: Wifi, color: 'neon' },
-  { id: 'zones', label: 'الزونات والشبكات', icon: Network, color: 'neon' },
+  { id: 'activations', label: 'سجل التفعيلات', icon: CheckCircle2, color: 'gold' },
+  { id: 'agents', label: 'الوكلاء', icon: UserCheck, color: 'neon' },
+  { id: 'networks', label: 'الشبكات / الفاتات', icon: Plug, color: 'neon' },
+  { id: 'zones', label: 'الزونات', icon: Network, color: 'neon' },
   { id: 'noc', label: 'مراقبة الشبكة NOC', icon: Activity, color: 'neon' },
+  { id: 'whatsapp', label: 'سجل الواتساب', icon: Send, color: 'gold' },
   { id: 'repairs', label: 'صيانة الهواتف', icon: Wrench, color: 'gold' },
-  { id: 'cameras', label: 'الكاميرات والمراقبة', icon: Camera, color: 'gold' },
+  { id: 'cameras', label: 'الكاميرات', icon: Camera, color: 'gold' },
   { id: 'employees', label: 'الموظفون', icon: Users, color: 'gold' },
   { id: 'reports', label: 'التقارير والتحليلات', icon: BarChart3, color: 'neon' },
   { id: 'ai', label: 'المساعد الذكي AI', icon: Sparkles, color: 'gold' },
@@ -69,8 +73,12 @@ function App() {
           {active === 'pos' && <POS />}
           {active === 'products' && <Products />}
           {active === 'subscribers' && <Subscribers />}
+          {active === 'activations' && <ActivationsLog />}
+          {active === 'agents' && <Agents />}
+          {active === 'networks' && <Networks />}
           {active === 'zones' && <Zones />}
           {active === 'noc' && <NOC />}
+          {active === 'whatsapp' && <WhatsAppLog />}
           {active === 'repairs' && <Repairs />}
           {active === 'cameras' && <Cameras />}
           {active === 'employees' && <Employees />}
@@ -629,26 +637,37 @@ function Products() {
 function Subscribers() {
   const [items, setItems] = useState([]);
   const [zones, setZones] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [networks, setNetworks] = useState([]);
+  const [packages, setPackages] = useState([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [zoneFilter, setZoneFilter] = useState('all');
+  const [agentFilter, setAgentFilter] = useState('all');
+  const [networkFilter, setNetworkFilter] = useState('all');
   const [fatFilter, setFatFilter] = useState('');
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: '', phone: '', address: '', zoneId: '', fatNumber: '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '' });
+  const [activatingSub, setActivatingSub] = useState(null);
+  const [form, setForm] = useState({ name: '', phone: '', username: '', address: '', zoneId: '', networkId: '', fatNumber: '', agentId: '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '', userLat: 33.31, userLng: 44.40, cabinetLat: 33.31, cabinetLng: 44.40 });
 
   const load = async () => {
-    const [s, z] = await Promise.all([api('subscribers'), api('zones')]);
-    setItems(s); setZones(z);
+    const [s, z, a, n, p] = await Promise.all([
+      api('subscribers'), api('zones'), api('agents'), api('networks'), api('packages')
+    ]);
+    setItems(s); setZones(z); setAgents(a); setNetworks(n); setPackages(p);
   };
   useEffect(() => { load(); }, []);
 
   const filtered = items.filter(i =>
     (statusFilter === 'all' || i.status === statusFilter) &&
     (zoneFilter === 'all' || i.zoneId === zoneFilter) &&
+    (agentFilter === 'all' || i.agentId === agentFilter) &&
+    (networkFilter === 'all' || i.networkId === networkFilter) &&
     (!fatFilter || (i.fatNumber || '').toLowerCase().includes(fatFilter.toLowerCase())) &&
     (!search ||
       i.name?.includes(search) ||
+      i.username?.toLowerCase().includes(search.toLowerCase()) ||
       i.phone?.includes(search) ||
       i.ipAddress?.includes(search) ||
       i.zoneNumber?.toLowerCase().includes(search.toLowerCase()) ||
@@ -658,26 +677,43 @@ function Subscribers() {
 
   const save = async () => {
     const zone = zones.find(z => z.id === form.zoneId);
-    const payload = { ...form, zoneName: zone?.name, zoneNumber: zone?.number, fee: Number(form.fee), debt: Number(form.debt) };
+    const network = networks.find(n => n.id === form.networkId);
+    const agent = agents.find(a => a.id === form.agentId);
+    const payload = {
+      ...form,
+      zoneName: zone?.name,
+      zoneNumber: zone?.number,
+      fatNumber: network?.number || form.fatNumber,
+      agentName: agent?.name,
+      fee: Number(form.fee),
+      debt: Number(form.debt),
+      userLat: form.userLat ? Number(form.userLat) : null,
+      userLng: form.userLng ? Number(form.userLng) : null,
+      cabinetLat: form.cabinetLat ? Number(form.cabinetLat) : null,
+      cabinetLng: form.cabinetLng ? Number(form.cabinetLng) : null,
+    };
     if (editing) await api(`subscribers/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
     else await api('subscribers', { method: 'POST', body: JSON.stringify(payload) });
     toast.success('تم الحفظ'); setOpen(false); setEditing(null); load();
   };
   const remove = async (id) => { await api(`subscribers/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
-  const startEdit = (s) => { setEditing(s); setForm(s); setOpen(true); };
+  const startEdit = (s) => { setEditing(s); setForm({ ...s, userLat: s.userLat || 33.31, userLng: s.userLng || 44.40, cabinetLat: s.cabinetLat || 33.31, cabinetLng: s.cabinetLng || 44.40 }); setOpen(true); };
 
   const activeCount = items.filter(i => i.status === 'active').length;
   const totalDebt = items.reduce((s, x) => s + (x.debt || 0), 0);
   const monthlyIncome = items.filter(i => i.status === 'active').reduce((s, x) => s + (x.fee || 0), 0);
 
-  const clearFilters = () => { setSearch(''); setStatusFilter('all'); setZoneFilter('all'); setFatFilter(''); };
-  const hasActiveFilters = search || statusFilter !== 'all' || zoneFilter !== 'all' || fatFilter;
+  const clearFilters = () => { setSearch(''); setStatusFilter('all'); setZoneFilter('all'); setAgentFilter('all'); setNetworkFilter('all'); setFatFilter(''); };
+  const hasActiveFilters = search || statusFilter !== 'all' || zoneFilter !== 'all' || agentFilter !== 'all' || networkFilter !== 'all' || fatFilter;
+
+  const formZoneNetworks = networks.filter(n => !form.zoneId || n.zoneId === form.zoneId);
+  const filterZoneNetworks = networks.filter(n => zoneFilter === 'all' || n.zoneId === zoneFilter);
 
   return (
     <div className="max-w-[1600px] mx-auto space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold gold-text">مشتركو الإنترنت</h1>
-        <Button onClick={() => { setEditing(null); setForm({ name: '', phone: '', address: '', zoneId: zones[0]?.id || '', fatNumber: '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '' }); setOpen(true); }} className="btn-gold">
+        <Button onClick={() => { setEditing(null); setForm({ name: '', phone: '', username: '', address: '', zoneId: zones[0]?.id || '', networkId: '', fatNumber: '', agentId: agents[0]?.id || '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '', userLat: 33.31, userLng: 44.40, cabinetLat: 33.31, cabinetLng: 44.40 }); setOpen(true); }} className="btn-gold">
           <Plus className="w-4 h-4 ml-1" /> مشترك جديد
         </Button>
       </div>
@@ -691,36 +727,48 @@ function Subscribers() {
 
       <Card className="glass-strong border-gold-soft">
         <CardContent className="pt-6 space-y-3">
-          {/* Search Bar */}
-          <div className="flex gap-2 flex-wrap">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث شامل: اسم/هاتف/IP/زون/فاتة..." className="pr-10 bg-input/30 border-gold/20" />
-            </div>
+          <div className="relative">
+            <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث شامل: اسم/يوزر/هاتف/IP/زون/فاتة..." className="pr-10 bg-input/30 border-gold/20" />
           </div>
 
-          {/* Advanced Filters Row */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 p-3 rounded-xl bg-gold/5 border border-gold-soft">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 p-3 rounded-xl bg-gold/5 border border-gold-soft">
             <div>
-              <Label className="text-[10px] text-muted-foreground mb-1 block flex items-center gap-1"><Network className="w-3 h-3 text-gold" /> فلترة برقم الزون</Label>
-              <Select value={zoneFilter} onValueChange={setZoneFilter}>
+              <Label className="text-[10px] text-muted-foreground mb-1 block">رقم الزون</Label>
+              <Select value={zoneFilter} onValueChange={(v) => { setZoneFilter(v); setNetworkFilter('all'); }}>
                 <SelectTrigger className="bg-input/30 border-gold/20 h-9 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">جميع الزونات</SelectItem>
-                  {zones.map(z => (
-                    <SelectItem key={z.id} value={z.id}>
-                      <span className="font-mono text-gold">{z.number}</span> · {z.name}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="all">الكل</SelectItem>
+                  {zones.map(z => <SelectItem key={z.id} value={z.id}><span className="font-mono text-gold">{z.number}</span> · {z.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label className="text-[10px] text-muted-foreground mb-1 block flex items-center gap-1"><Plug className="w-3 h-3 text-neon-blue" /> فلترة برقم الفاتة</Label>
-              <Input value={fatFilter} onChange={e => setFatFilter(e.target.value)} placeholder="مثلاً: F-01" className="bg-input/30 border-gold/20 h-9 text-xs font-mono" />
+              <Label className="text-[10px] text-muted-foreground mb-1 block">الشبكة/الفاتة</Label>
+              <Select value={networkFilter} onValueChange={setNetworkFilter}>
+                <SelectTrigger className="bg-input/30 border-gold/20 h-9 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent className="max-h-80">
+                  <SelectItem value="all">الكل</SelectItem>
+                  {filterZoneNetworks.map(n => <SelectItem key={n.id} value={n.id}><span className="font-mono text-purple-400">{n.number}</span></SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
             <div>
-              <Label className="text-[10px] text-muted-foreground mb-1 block flex items-center gap-1"><Activity className="w-3 h-3 text-emerald-400" /> الحالة</Label>
+              <Label className="text-[10px] text-muted-foreground mb-1 block">رقم الفاتة (نص)</Label>
+              <Input value={fatFilter} onChange={e => setFatFilter(e.target.value)} placeholder="F-01" className="bg-input/30 border-gold/20 h-9 text-xs font-mono" />
+            </div>
+            <div>
+              <Label className="text-[10px] text-muted-foreground mb-1 block">الوكيل</Label>
+              <Select value={agentFilter} onValueChange={setAgentFilter}>
+                <SelectTrigger className="bg-input/30 border-gold/20 h-9 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">الكل</SelectItem>
+                  {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-[10px] text-muted-foreground mb-1 block">الحالة</Label>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="bg-input/30 border-gold/20 h-9 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -732,56 +780,41 @@ function Subscribers() {
             </div>
             <div className="flex items-end">
               <Button onClick={clearFilters} variant="outline" size="sm" disabled={!hasActiveFilters} className="w-full h-9 text-xs border-gold/30 disabled:opacity-40">
-                <X className="w-3 h-3 ml-1" /> مسح الفلاتر
+                <X className="w-3 h-3 ml-1" /> مسح
               </Button>
             </div>
           </div>
 
-          {/* Result Count */}
-          <div className="flex items-center justify-between text-xs">
-            <p className="text-muted-foreground">
-              عدد النتائج: <span className="text-gold font-bold">{filtered.length}</span> من {items.length}
-            </p>
-            {hasActiveFilters && (
-              <div className="flex flex-wrap gap-1">
-                {zoneFilter !== 'all' && (
-                  <Badge variant="outline" className="border-gold/30 text-[10px]">
-                    زون: {zones.find(z => z.id === zoneFilter)?.number}
-                  </Badge>
-                )}
-                {fatFilter && <Badge variant="outline" className="border-cyan-500/30 text-[10px]">فاتة: {fatFilter}</Badge>}
-                {statusFilter !== 'all' && <Badge variant="outline" className="border-emerald-500/30 text-[10px]">{statusFilter === 'active' ? 'نشط' : 'موقف'}</Badge>}
-              </div>
-            )}
-          </div>
+          <p className="text-xs text-muted-foreground">عدد النتائج: <span className="text-gold font-bold">{filtered.length}</span> من {items.length}</p>
 
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gold-soft text-right text-xs text-muted-foreground">
-                  <th className="p-2">المشترك</th><th>الهاتف</th><th>الباقة</th><th>الزون</th><th>الفاتة</th><th>IP</th><th>الحالة</th><th>الدين</th><th></th>
+                  <th className="p-2">المشترك / اليوزر</th><th>الهاتف</th><th>الباقة</th><th>الزون</th><th>الفاتة</th><th>الوكيل</th><th>IP</th><th>الحالة</th><th>ينتهي</th><th>الدين</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan="9" className="text-center py-8 text-muted-foreground">لا توجد نتائج مطابقة 🔍</td></tr>
+                  <tr><td colSpan="11" className="text-center py-8 text-muted-foreground">لا توجد نتائج 🔍</td></tr>
                 ) : filtered.map(s => (
                   <tr key={s.id} className="border-b border-gold-soft/30 hover:bg-gold/5">
-                    <td className="p-2 font-semibold">{s.name}</td>
-                    <td className="text-xs">{s.phone}</td>
-                    <td><Badge variant="outline" className="border-cyan-500/30 text-cyan-400">{s.package}</Badge></td>
-                    <td>
-                      <div className="flex flex-col">
-                        <span className="text-xs font-mono text-gold">{s.zoneNumber || '—'}</span>
-                        <span className="text-[10px] text-muted-foreground">{s.zoneName}</span>
-                      </div>
+                    <td className="p-2">
+                      <div className="font-semibold">{s.name}</div>
+                      <div className="text-[10px] font-mono text-cyan-400">@{s.username || '—'}</div>
                     </td>
+                    <td className="text-xs">{s.phone}</td>
+                    <td><Badge variant="outline" className="border-cyan-500/30 text-cyan-400 text-[10px]">{s.package}</Badge></td>
+                    <td><span className="font-mono text-xs text-gold">{s.zoneNumber || '—'}</span></td>
                     <td><Badge variant="outline" className="border-purple-500/30 text-purple-400 font-mono text-[10px]">{s.fatNumber || '—'}</Badge></td>
+                    <td className="text-[10px] text-muted-foreground">{s.agentName || '—'}</td>
                     <td className="text-xs font-mono">{s.ipAddress}</td>
                     <td><Badge className={s.status === 'active' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'}>{s.status === 'active' ? 'نشط' : 'موقف'}</Badge></td>
+                    <td className="text-[10px] text-muted-foreground">{s.dueDate || '—'}</td>
                     <td className={s.debt > 0 ? 'text-red-400 font-bold' : 'text-muted-foreground'}>{fmt(s.debt)}</td>
                     <td>
                       <div className="flex gap-1">
+                        <Button size="sm" onClick={() => setActivatingSub(s)} className="h-7 text-[10px] btn-gold px-2"><Zap className="w-3 h-3 ml-1" /> تفعيل</Button>
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => startEdit(s)}><Edit2 className="w-3 h-3" /></Button>
                         <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(s.id)}><Trash2 className="w-3 h-3" /></Button>
                       </div>
@@ -794,52 +827,251 @@ function Subscribers() {
         </CardContent>
       </Card>
 
+      {/* Add/Edit Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="glass-strong border-gold/40 max-w-xl">
+        <DialogContent className="glass-strong border-gold/40 max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle className="gold-text">{editing ? 'تعديل المشترك' : 'مشترك جديد'}</DialogTitle></DialogHeader>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2"><Label>الاسم</Label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>الهاتف</Label><Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>الزون</Label>
-              <Select value={form.zoneId} onValueChange={v => setForm({ ...form, zoneId: v })}>
-                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر زون" /></SelectTrigger>
-                <SelectContent>{zones.map(z => (
-                  <SelectItem key={z.id} value={z.id}>
-                    <span className="font-mono text-gold">{z.number}</span> · {z.name}
-                  </SelectItem>
-                ))}</SelectContent>
-              </Select>
-            </div>
-            <div className="col-span-2"><Label>رقم الفاتة (FAT)</Label><Input value={form.fatNumber} onChange={e => setForm({ ...form, fatNumber: e.target.value })} placeholder="مثلاً: F-01-03" className="bg-input/30 border-gold/20 font-mono" /></div>
-            <div className="col-span-2"><Label>العنوان</Label><Input value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>الباقة</Label>
-              <Select value={form.package} onValueChange={v => setForm({ ...form, package: v, fee: v === '25 Mbps' ? 25000 : v === '50 Mbps' ? 35000 : v === '100 Mbps' ? 50000 : 75000 })}>
-                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="25 Mbps">25 Mbps - 25,000</SelectItem>
-                  <SelectItem value="50 Mbps">50 Mbps - 35,000</SelectItem>
-                  <SelectItem value="100 Mbps">100 Mbps - 50,000</SelectItem>
-                  <SelectItem value="200 Mbps">200 Mbps - 75,000</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div><Label>الرسوم الشهرية</Label><Input type="number" value={form.fee} onChange={e => setForm({ ...form, fee: e.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>IP Address</Label><Input value={form.ipAddress} onChange={e => setForm({ ...form, ipAddress: e.target.value })} placeholder="10.10.1.1" className="bg-input/30 border-gold/20" /></div>
-            <div><Label>MAC Address</Label><Input value={form.macAddress} onChange={e => setForm({ ...form, macAddress: e.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>الحالة</Label>
-              <Select value={form.status} onValueChange={v => setForm({ ...form, status: v })}>
-                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="active">نشط</SelectItem><SelectItem value="suspended">موقف</SelectItem></SelectContent>
-              </Select>
-            </div>
-            <div><Label>الدين</Label><Input type="number" value={form.debt} onChange={e => setForm({ ...form, debt: e.target.value })} className="bg-input/30 border-gold/20" /></div>
-          </div>
+          <Tabs defaultValue="basic" className="w-full">
+            <TabsList className="grid grid-cols-3 bg-input/30">
+              <TabsTrigger value="basic">معلومات أساسية</TabsTrigger>
+              <TabsTrigger value="network">الشبكة</TabsTrigger>
+              <TabsTrigger value="location">المواقع GPS</TabsTrigger>
+            </TabsList>
+            <TabsContent value="basic" className="grid grid-cols-2 gap-3 mt-3">
+              <div className="col-span-2"><Label>الاسم</Label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>اليوزر</Label><Input value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="user_1234" className="bg-input/30 border-gold/20 font-mono" /></div>
+              <div><Label>الهاتف</Label><Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div className="col-span-2"><Label>العنوان</Label><Input value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>الباقة</Label>
+                <Select value={form.package} onValueChange={v => setForm({ ...form, package: v, fee: v === '25 Mbps' ? 25000 : v === '50 Mbps' ? 35000 : v === '100 Mbps' ? 50000 : 75000 })}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="25 Mbps">25 Mbps</SelectItem>
+                    <SelectItem value="50 Mbps">50 Mbps</SelectItem>
+                    <SelectItem value="100 Mbps">100 Mbps</SelectItem>
+                    <SelectItem value="200 Mbps">200 Mbps</SelectItem>
+                    <SelectItem value="500 Mbps">500 Mbps</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div><Label>الرسوم الشهرية</Label><Input type="number" value={form.fee} onChange={e => setForm({ ...form, fee: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>الحالة</Label>
+                <Select value={form.status} onValueChange={v => setForm({ ...form, status: v })}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="active">نشط</SelectItem><SelectItem value="suspended">موقف</SelectItem></SelectContent>
+                </Select>
+              </div>
+              <div><Label>الدين</Label><Input type="number" value={form.debt} onChange={e => setForm({ ...form, debt: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            </TabsContent>
+            <TabsContent value="network" className="grid grid-cols-2 gap-3 mt-3">
+              <div><Label>الوكيل</Label>
+                <Select value={form.agentId} onValueChange={v => setForm({ ...form, agentId: v })}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر وكيل" /></SelectTrigger>
+                  <SelectContent>{agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div><Label>الزون</Label>
+                <Select value={form.zoneId} onValueChange={v => setForm({ ...form, zoneId: v, networkId: '' })}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر زون" /></SelectTrigger>
+                  <SelectContent>{zones.map(z => <SelectItem key={z.id} value={z.id}><span className="font-mono text-gold">{z.number}</span> · {z.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-2"><Label>الشبكة / الفاتة</Label>
+                <Select value={form.networkId} onValueChange={v => { const n = networks.find(x => x.id === v); setForm({ ...form, networkId: v, fatNumber: n?.number || '', cabinetLat: n?.lat || form.cabinetLat, cabinetLng: n?.lng || form.cabinetLng }); }}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر فاتة" /></SelectTrigger>
+                  <SelectContent className="max-h-80">{formZoneNetworks.map(n => <SelectItem key={n.id} value={n.id}><span className="font-mono text-purple-400">{n.number}</span> · {n.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div><Label>IP Address</Label><Input value={form.ipAddress} onChange={e => setForm({ ...form, ipAddress: e.target.value })} placeholder="10.10.1.1" className="bg-input/30 border-gold/20 font-mono" /></div>
+              <div><Label>MAC Address</Label><Input value={form.macAddress} onChange={e => setForm({ ...form, macAddress: e.target.value })} className="bg-input/30 border-gold/20 font-mono" /></div>
+            </TabsContent>
+            <TabsContent value="location" className="grid grid-cols-2 gap-3 mt-3">
+              <div className="col-span-2 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                <p className="text-xs font-bold text-emerald-400 mb-2 flex items-center gap-1"><MapPin className="w-3 h-3" /> موقع المشترك (اليوز)</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label className="text-[10px]">خط العرض (Lat)</Label><Input type="number" step="0.000001" value={form.userLat} onChange={e => setForm({ ...form, userLat: e.target.value })} className="bg-input/30 border-gold/20 font-mono text-xs" /></div>
+                  <div><Label className="text-[10px]">خط الطول (Lng)</Label><Input type="number" step="0.000001" value={form.userLng} onChange={e => setForm({ ...form, userLng: e.target.value })} className="bg-input/30 border-gold/20 font-mono text-xs" /></div>
+                </div>
+                <Button size="sm" type="button" onClick={() => navigator.geolocation?.getCurrentPosition(p => setForm(f => ({ ...f, userLat: p.coords.latitude, userLng: p.coords.longitude })))} className="mt-2 w-full text-[10px] h-7 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30">
+                  <MapPin className="w-3 h-3 ml-1" /> استخدم موقعي الحالي
+                </Button>
+              </div>
+              <div className="col-span-2 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
+                <p className="text-xs font-bold text-purple-400 mb-2 flex items-center gap-1"><Plug className="w-3 h-3" /> موقع الكابينة / الفاتة</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label className="text-[10px]">خط العرض (Lat)</Label><Input type="number" step="0.000001" value={form.cabinetLat} onChange={e => setForm({ ...form, cabinetLat: e.target.value })} className="bg-input/30 border-gold/20 font-mono text-xs" /></div>
+                  <div><Label className="text-[10px]">خط الطول (Lng)</Label><Input type="number" step="0.000001" value={form.cabinetLng} onChange={e => setForm({ ...form, cabinetLng: e.target.value })} className="bg-input/30 border-gold/20 font-mono text-xs" /></div>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-2">💡 يتم تعبئته تلقائياً عند اختيار الفاتة</p>
+              </div>
+              {(form.userLat && form.userLng) && (
+                <a href={`https://www.openstreetmap.org/?mlat=${form.userLat}&mlon=${form.userLng}#map=17/${form.userLat}/${form.userLng}`} target="_blank" rel="noreferrer" className="col-span-2 text-center text-xs text-cyan-400 underline hover:text-cyan-300">🗺️ عرض موقع المشترك على الخريطة</a>
+              )}
+            </TabsContent>
+          </Tabs>
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ActivationDialog
+        subscriber={activatingSub}
+        packages={packages}
+        agents={agents}
+        onClose={() => setActivatingSub(null)}
+        onDone={() => { setActivatingSub(null); load(); }}
+      />
     </div>
   );
 }
+
+// ============ ACTIVATION DIALOG ============
+function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
+  const [pkgId, setPkgId] = useState('');
+  const [speed, setSpeed] = useState('');
+  const [amount, setAmount] = useState(0);
+  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [durationMonths, setDurationMonths] = useState(1);
+  const [agentId, setAgentId] = useState('');
+  const [notes, setNotes] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    if (subscriber) {
+      setPkgId(''); setSpeed(subscriber.package || ''); setAmount(subscriber.fee || 0);
+      setPaymentMethod('cash'); setDurationMonths(1);
+      setAgentId(subscriber.agentId || (agents[0]?.id) || '');
+      setNotes(''); setResult(null);
+    }
+  }, [subscriber, agents]);
+
+  if (!subscriber) return null;
+
+  const onPkgChange = (id) => {
+    setPkgId(id);
+    const p = packages.find(x => x.id === id);
+    if (p) { setSpeed(p.speed); setAmount(p.monthlyFee * durationMonths); }
+  };
+
+  const onDurationChange = (m) => {
+    setDurationMonths(Number(m));
+    const p = packages.find(x => x.id === pkgId);
+    if (p) setAmount(p.monthlyFee * Number(m));
+  };
+
+  const endDate = new Date(Date.now() + durationMonths * 30 * 86400000).toLocaleDateString('ar-IQ');
+
+  const submit = async () => {
+    setLoading(true);
+    const r = await api(`subscribers/${subscriber.id}/activate`, {
+      method: 'POST',
+      body: JSON.stringify({ packageId: pkgId, speed, amount: Number(amount), paymentMethod, durationMonths, agentId: agentId || null, notes }),
+    });
+    setLoading(false);
+    if (r.error) { toast.error(r.error); return; }
+    toast.success('✅ تم التفعيل بنجاح');
+    setResult(r);
+  };
+
+  return (
+    <Dialog open={!!subscriber} onOpenChange={(o) => { if (!o) { onClose(); if (result) onDone(); } }}>
+      <DialogContent className="glass-strong border-gold/40 max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="gold-text flex items-center gap-2">
+            <Zap className="w-5 h-5" /> تفعيل اشتراك - {subscriber.name}
+          </DialogTitle>
+        </DialogHeader>
+
+        {!result ? (
+          <>
+            <div className="p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/20 text-xs space-y-1">
+              <p><strong>المشترك:</strong> {subscriber.name} · <span className="font-mono text-cyan-400">@{subscriber.username}</span></p>
+              <p><strong>الهاتف:</strong> {subscriber.phone} · <strong>الزون:</strong> {subscriber.zoneName} · <strong>الفاتة:</strong> {subscriber.fatNumber}</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <Label>اختر الباقة</Label>
+                <Select value={pkgId} onValueChange={onPkgChange}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر باقة" /></SelectTrigger>
+                  <SelectContent>
+                    {packages.map(p => (
+                      <SelectItem key={p.id} value={p.id}>
+                        <span className="font-bold text-gold">{p.name}</span> · {p.speed} · {p.monthlyFee.toLocaleString()} د.ع
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div><Label>السرعة</Label><Input value={speed} onChange={e => setSpeed(e.target.value)} placeholder="50 Mbps" className="bg-input/30 border-gold/20" /></div>
+              <div>
+                <Label>المدة</Label>
+                <Select value={String(durationMonths)} onValueChange={onDurationChange}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">شهر واحد</SelectItem>
+                    <SelectItem value="3">3 أشهر</SelectItem>
+                    <SelectItem value="6">6 أشهر</SelectItem>
+                    <SelectItem value="12">سنة كاملة</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div><Label>المبلغ الإجمالي</Label><Input type="number" value={amount} onChange={e => setAmount(e.target.value)} className="bg-input/30 border-gold/20 text-lg font-bold gold-text" /></div>
+              <div>
+                <Label>طريقة الدفع</Label>
+                <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">💵 كاش</SelectItem>
+                    <SelectItem value="master">💳 ماستر كارد</SelectItem>
+                    <SelectItem value="fastpay">⚡ فاست باي</SelectItem>
+                    <SelectItem value="transfer">🏦 تحويل</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-2">
+                <Label>الوكيل</Label>
+                <Select value={agentId} onValueChange={setAgentId}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر الوكيل" /></SelectTrigger>
+                  <SelectContent>
+                    {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name} (عمولة {a.commission}%)</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-2"><Label>ملاحظات</Label><Textarea value={notes} onChange={e => setNotes(e.target.value)} className="bg-input/30 border-gold/20 h-16" placeholder="اختياري..." /></div>
+              <div className="col-span-2 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs text-emerald-400">
+                ✅ تاريخ الانتهاء التلقائي: <strong className="text-emerald-300">{endDate}</strong>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button onClick={submit} disabled={loading || !amount} className="btn-gold w-full h-12 text-base">
+                {loading ? 'جاري التفعيل...' : <><Zap className="w-4 h-4 ml-2" /> تفعيل الاشتراك وإرسال إشعار</>}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <div className="text-center p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+              <CheckCircle2 className="w-12 h-12 mx-auto mb-2 text-emerald-400" />
+              <h3 className="text-lg font-bold text-emerald-400">تم التفعيل بنجاح</h3>
+              <p className="text-xs text-muted-foreground">تم حفظ التفعيل في السجل وإضافة رسالة واتساب للطابور</p>
+            </div>
+            <div className="p-3 rounded-lg bg-input/30 border border-gold-soft">
+              <p className="text-[10px] text-muted-foreground mb-2">📱 رسالة الواتساب المرسلة:</p>
+              <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed">{result.whatsappMessage}</pre>
+            </div>
+            <DialogFooter className="gap-2">
+              <Button onClick={() => { navigator.clipboard?.writeText(result.whatsappMessage); toast.success('تم نسخ الرسالة'); }} variant="outline" className="border-gold/30">نسخ الرسالة</Button>
+              <Button onClick={() => { onClose(); onDone(); }} className="btn-gold flex-1">إغلاق</Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 
 // ============ ZONES ============
 function Zones() {
@@ -1445,6 +1677,487 @@ function SettingsPage() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ============ ACTIVATIONS LOG ============
+function ActivationsLog() {
+  const [items, setItems] = useState([]);
+  const [search, setSearch] = useState('');
+  const [payFilter, setPayFilter] = useState('all');
+
+  useEffect(() => { api('activations').then(setItems); }, []);
+
+  const filtered = items.filter(a =>
+    (payFilter === 'all' || a.paymentMethod === payFilter) &&
+    (!search || a.subscriberName?.includes(search) || a.subscriberPhone?.includes(search) || a.username?.toLowerCase().includes(search.toLowerCase()) || a.agentName?.includes(search))
+  );
+
+  const totalRevenue = filtered.reduce((s, x) => s + (x.amount || 0), 0);
+  const totalAgentProfit = filtered.reduce((s, x) => s + (x.agentProfit || 0), 0);
+  const totalCompanyProfit = filtered.reduce((s, x) => s + (x.companyProfit || 0), 0);
+
+  const payLabel = { cash: '💵 كاش', master: '💳 ماستر', fastpay: '⚡ فاست باي', transfer: '🏦 تحويل' };
+
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <h1 className="text-2xl font-bold gold-text flex items-center gap-2"><CheckCircle2 className="w-6 h-6" /> سجل التفعيلات</h1>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي التفعيلات</p><p className="text-2xl font-bold gold-text">{filtered.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الإيرادات</p><p className="text-xl font-bold neon-text">{fmtCurrency(totalRevenue)}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">أرباح الوكلاء</p><p className="text-xl font-bold text-purple-400">{fmtCurrency(totalAgentProfit)}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">صافي ربح الشركة</p><p className="text-xl font-bold text-emerald-400">{fmtCurrency(totalCompanyProfit)}</p></div>
+      </div>
+
+      <Card className="glass-strong border-gold-soft">
+        <CardContent className="pt-6 space-y-3">
+          <div className="flex gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث: اسم/يوزر/هاتف/وكيل..." className="pr-10 bg-input/30 border-gold/20" />
+            </div>
+            <Select value={payFilter} onValueChange={setPayFilter}>
+              <SelectTrigger className="w-44 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل طرق الدفع</SelectItem>
+                <SelectItem value="cash">💵 كاش</SelectItem>
+                <SelectItem value="master">💳 ماستر</SelectItem>
+                <SelectItem value="fastpay">⚡ فاست باي</SelectItem>
+                <SelectItem value="transfer">🏦 تحويل</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gold-soft text-right text-xs text-muted-foreground">
+                  <th className="p-2">التاريخ</th><th>المشترك</th><th>الباقة/السرعة</th><th>المدة</th><th>المبلغ</th><th>الدفع</th><th>الوكيل</th><th>عمولة</th><th>ينتهي</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr><td colSpan="9" className="text-center py-12 text-muted-foreground">
+                    <CheckCircle2 className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                    لا توجد تفعيلات بعد. ابدأ بتفعيل مشترك من قسم &quot;مشتركو الإنترنت&quot; 🚀
+                  </td></tr>
+                ) : filtered.map(a => (
+                  <tr key={a.id} className="border-b border-gold-soft/30 hover:bg-gold/5">
+                    <td className="p-2 text-xs">{new Date(a.createdAt).toLocaleDateString('ar-IQ')}</td>
+                    <td>
+                      <div className="font-semibold text-xs">{a.subscriberName}</div>
+                      <div className="text-[10px] font-mono text-cyan-400">@{a.username}</div>
+                    </td>
+                    <td>
+                      <div className="text-xs">{a.packageName}</div>
+                      <Badge variant="outline" className="border-cyan-500/30 text-cyan-400 text-[10px]">{a.speed}</Badge>
+                    </td>
+                    <td className="text-xs">{a.durationMonths} شهر</td>
+                    <td className="font-bold gold-text">{fmt(a.amount)}</td>
+                    <td><Badge variant="outline" className="text-[10px]">{payLabel[a.paymentMethod] || a.paymentMethod}</Badge></td>
+                    <td className="text-xs">{a.agentName}</td>
+                    <td className="text-xs text-purple-400">{fmt(a.agentProfit)}</td>
+                    <td className="text-[10px] text-muted-foreground">{new Date(a.endDate).toLocaleDateString('ar-IQ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ============ AGENTS ============
+function Agents() {
+  const [items, setItems] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [statsDialog, setStatsDialog] = useState(null);
+  const [form, setForm] = useState({ name: '', username: '', password: '', phone: '', branch: '', commission: 20, status: 'active' });
+
+  const load = () => api('agents').then(setItems);
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    const payload = { ...form, commission: Number(form.commission) };
+    if (editing) await api(`agents/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    else await api('agents', { method: 'POST', body: JSON.stringify({ ...payload, balance: 0, totalActivations: 0, totalProfit: 0 }) });
+    toast.success('تم الحفظ'); setOpen(false); setEditing(null); load();
+  };
+  const remove = async (id) => { await api(`agents/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
+  const openStats = async (id) => { const r = await api(`agents/${id}/stats`); setStatsDialog(r); };
+  const portalLink = (a) => typeof window !== 'undefined' ? `${window.location.origin}/agent?u=${a.username}` : `/agent?u=${a.username}`;
+
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold gold-text flex items-center gap-2"><UserCheck className="w-6 h-6" /> الوكلاء</h1>
+        <Button onClick={() => { setEditing(null); setForm({ name: '', username: '', password: '', phone: '', branch: '', commission: 20, status: 'active' }); setOpen(true); }} className="btn-gold"><Plus className="w-4 h-4 ml-1" /> وكيل جديد</Button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الوكلاء</p><p className="text-2xl font-bold gold-text">{items.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي تفعيلاتهم</p><p className="text-2xl font-bold neon-text">{items.reduce((s, a) => s + (a.totalActivations || 0), 0)}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي عمولاتهم</p><p className="text-xl font-bold text-purple-400">{fmtCurrency(items.reduce((s, a) => s + (a.totalProfit || 0), 0))}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">رصيد إجمالي</p><p className="text-xl font-bold text-emerald-400">{fmtCurrency(items.reduce((s, a) => s + (a.balance || 0), 0))}</p></div>
+      </div>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {items.map(a => (
+          <Card key={a.id} className="glass-card border-gold-soft hover:border-gold/50">
+            <CardContent className="p-5 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="w-14 h-14 rounded-xl bg-neon-gradient flex items-center justify-center text-2xl font-black text-background">{a.name[0]}</div>
+                <div className="flex-1">
+                  <h3 className="font-bold">{a.name}</h3>
+                  <p className="text-[10px] text-muted-foreground">@{a.username} · {a.branch}</p>
+                  <p className="text-xs text-cyan-400">{a.phone}</p>
+                </div>
+                <Badge className={a.status === 'active' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'}>{a.status === 'active' ? 'نشط' : 'موقف'}</Badge>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="glass-card rounded-lg p-2"><p className="text-[9px] text-muted-foreground">تفعيلات</p><p className="text-base font-bold gold-text">{a.totalActivations || 0}</p></div>
+                <div className="glass-card rounded-lg p-2"><p className="text-[9px] text-muted-foreground">عمولة</p><p className="text-base font-bold neon-text">{a.commission}%</p></div>
+                <div className="glass-card rounded-lg p-2"><p className="text-[9px] text-muted-foreground">الرصيد</p><p className="text-xs font-bold text-emerald-400">{fmt(a.balance || 0)}</p></div>
+              </div>
+              <div className="p-2 rounded-lg bg-cyan-500/5 border border-cyan-500/20 text-[10px] flex items-center justify-between gap-2">
+                <span className="font-mono truncate">{portalLink(a)}</span>
+                <Button size="icon" variant="ghost" className="h-6 w-6 flex-shrink-0" onClick={() => { navigator.clipboard?.writeText(portalLink(a)); toast.success('تم نسخ الرابط'); }}><FileText className="w-3 h-3" /></Button>
+              </div>
+              <div className="flex gap-2 pt-2 border-t border-gold-soft">
+                <Button size="sm" variant="outline" className="flex-1 border-gold/30" onClick={() => openStats(a.id)}><BarChart3 className="w-3 h-3 ml-1" /> إحصائيات</Button>
+                <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => { setEditing(a); setForm(a); setOpen(true); }}><Edit2 className="w-3 h-3" /></Button>
+                <Button size="icon" variant="ghost" className="h-9 w-9 hover:text-red-500" onClick={() => remove(a.id)}><Trash2 className="w-3 h-3" /></Button>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="gold-text">{editing ? 'تعديل الوكيل' : 'وكيل جديد'}</DialogTitle></DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2"><Label>اسم الوكيل</Label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div><Label>اسم المستخدم</Label><Input value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} className="bg-input/30 border-gold/20 font-mono" /></div>
+            <div><Label>كلمة المرور</Label><Input value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className="bg-input/30 border-gold/20 font-mono" /></div>
+            <div><Label>الهاتف</Label><Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div><Label>الفرع</Label><Input value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div><Label>نسبة العمولة %</Label><Input type="number" value={form.commission} onChange={e => setForm({ ...form, commission: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div><Label>الحالة</Label>
+              <Select value={form.status} onValueChange={v => setForm({ ...form, status: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="active">نشط</SelectItem><SelectItem value="suspended">موقف</SelectItem></SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!statsDialog} onOpenChange={() => setStatsDialog(null)}>
+        <DialogContent className="glass-strong border-gold/40 max-w-2xl">
+          <DialogHeader><DialogTitle className="gold-text">إحصائيات: {statsDialog?.agent?.name}</DialogTitle></DialogHeader>
+          {statsDialog && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">المشتركون</p><p className="text-xl font-bold gold-text">{statsDialog.stats.totalSubscribers}</p></div>
+                <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">النشط</p><p className="text-xl font-bold text-emerald-400">{statsDialog.stats.activeSubscribers}</p></div>
+                <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">التفعيلات</p><p className="text-xl font-bold neon-text">{statsDialog.stats.totalActivations}</p></div>
+                <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">إيراداته</p><p className="text-sm font-bold gold-text">{fmt(statsDialog.stats.totalRevenue)}</p></div>
+                <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">عمولاته</p><p className="text-sm font-bold text-purple-400">{fmt(statsDialog.stats.totalProfit)}</p></div>
+                <div className="stat-card text-center"><p className="text-[10px] text-muted-foreground">منتهية قريباً</p><p className="text-xl font-bold text-amber-400">{statsDialog.stats.expiringSoon}</p></div>
+              </div>
+              <div>
+                <h4 className="text-sm font-bold mb-2">آخر التفعيلات:</h4>
+                <ScrollArea className="h-48">
+                  {statsDialog.activations.map(a => (
+                    <div key={a.id} className="text-xs p-2 border-b border-gold-soft/30 flex justify-between">
+                      <span>{a.subscriberName}</span>
+                      <span className="font-bold gold-text">{fmt(a.amount)} د.ع</span>
+                    </div>
+                  ))}
+                </ScrollArea>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ============ NETWORKS / FATs ============
+function Networks() {
+  const [items, setItems] = useState([]);
+  const [zones, setZones] = useState([]);
+  const [zoneFilter, setZoneFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ number: '', name: '', zoneId: '', capacity: 32, status: 'active', lat: 33.31, lng: 44.40, utilization: 50 });
+
+  const load = async () => {
+    const [n, z] = await Promise.all([api('networks'), api('zones')]);
+    setItems(n); setZones(z);
+  };
+  useEffect(() => { load(); }, []);
+
+  const filtered = items.filter(n =>
+    (zoneFilter === 'all' || n.zoneId === zoneFilter) &&
+    (statusFilter === 'all' || n.status === statusFilter) &&
+    (!search || n.number?.toLowerCase().includes(search.toLowerCase()) || n.name?.includes(search))
+  );
+
+  const save = async () => {
+    const z = zones.find(x => x.id === form.zoneId);
+    const payload = { ...form, zoneName: z?.name, zoneNumber: z?.number, capacity: Number(form.capacity), utilization: Number(form.utilization), lat: Number(form.lat), lng: Number(form.lng) };
+    if (editing) await api(`networks/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    else await api('networks', { method: 'POST', body: JSON.stringify({ ...payload, subscribers: 0 }) });
+    toast.success('تم الحفظ'); setOpen(false); setEditing(null); load();
+  };
+  const remove = async (id) => { await api(`networks/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
+
+  const statusInfo = {
+    active: { txt: 'فعالة', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
+    weak: { txt: 'ضعيفة', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/30' },
+    stopped: { txt: 'متوقفة', cls: 'bg-red-500/20 text-red-400 border-red-500/30' },
+    maintenance: { txt: 'صيانة', cls: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' },
+  };
+
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold gold-text flex items-center gap-2"><Plug className="w-6 h-6" /> الشبكات / الفاتات</h1>
+        <Button onClick={() => { setEditing(null); setForm({ number: '', name: '', zoneId: zones[0]?.id || '', capacity: 32, status: 'active', lat: 33.31, lng: 44.40, utilization: 50 }); setOpen(true); }} className="btn-gold"><Plus className="w-4 h-4 ml-1" /> فاتة جديدة</Button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الفاتات</p><p className="text-2xl font-bold gold-text">{items.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">فعالة</p><p className="text-2xl font-bold text-emerald-400">{items.filter(i => i.status === 'active').length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">ضعيفة/صيانة</p><p className="text-2xl font-bold text-amber-400">{items.filter(i => i.status === 'weak' || i.status === 'maintenance').length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">متوقفة</p><p className="text-2xl font-bold text-red-400">{items.filter(i => i.status === 'stopped').length}</p></div>
+      </div>
+
+      <Card className="glass-strong border-gold-soft">
+        <CardContent className="pt-6 space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="md:col-span-2 relative">
+              <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث: رقم/اسم الفاتة..." className="pr-10 bg-input/30 border-gold/20" />
+            </div>
+            <Select value={zoneFilter} onValueChange={setZoneFilter}>
+              <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل الزونات</SelectItem>
+                {zones.map(z => <SelectItem key={z.id} value={z.id}><span className="font-mono text-gold">{z.number}</span> · {z.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل الحالات</SelectItem>
+                <SelectItem value="active">فعالة</SelectItem>
+                <SelectItem value="weak">ضعيفة</SelectItem>
+                <SelectItem value="stopped">متوقفة</SelectItem>
+                <SelectItem value="maintenance">صيانة</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-xs text-muted-foreground">عدد النتائج: <span className="text-gold font-bold">{filtered.length}</span> من {items.length}</p>
+        </CardContent>
+      </Card>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        {filtered.slice(0, 60).map(n => {
+          const info = statusInfo[n.status] || statusInfo.active;
+          return (
+            <Card key={n.id} className="glass-card border-gold-soft hover:border-gold/50">
+              <CardContent className="p-4 space-y-2">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-mono text-base font-bold text-purple-400">{n.number}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{n.name}</p>
+                  </div>
+                  <Badge className={info.cls + ' text-[10px]'}>{info.txt}</Badge>
+                </div>
+                <div className="text-[10px] text-gold font-mono">📍 {n.zoneNumber} · {n.zoneName}</div>
+                <div className="grid grid-cols-2 gap-1 text-center">
+                  <div className="glass-card rounded p-1.5"><p className="text-[9px] text-muted-foreground">مشتركين</p><p className="text-sm font-bold neon-text">{n.subscribers || 0}/{n.capacity}</p></div>
+                  <div className="glass-card rounded p-1.5"><p className="text-[9px] text-muted-foreground">ضغط</p><p className={`text-sm font-bold ${n.utilization > 85 ? 'text-red-400' : 'text-emerald-400'}`}>{n.utilization}%</p></div>
+                </div>
+                <Progress value={n.utilization} className="h-1" />
+                <div className="flex gap-1 pt-1 border-t border-gold-soft">
+                  <a href={`https://www.openstreetmap.org/?mlat=${n.lat}&mlon=${n.lng}#map=17/${n.lat}/${n.lng}`} target="_blank" rel="noreferrer" className="flex-1 text-center text-[10px] text-cyan-400 hover:text-cyan-300 py-1">🗺️ خريطة</a>
+                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setEditing(n); setForm({ ...n }); setOpen(true); }}><Edit2 className="w-3 h-3" /></Button>
+                  <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(n.id)}><Trash2 className="w-3 h-3" /></Button>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+      {filtered.length > 60 && <p className="text-center text-xs text-muted-foreground">عرض أول 60 فاتة من {filtered.length}. استخدم الفلاتر للوصول لباقي الفاتات.</p>}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="gold-text">{editing ? 'تعديل فاتة' : 'فاتة جديدة'}</DialogTitle></DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label>رقم الفاتة</Label><Input value={form.number} onChange={e => setForm({ ...form, number: e.target.value })} placeholder="F-01-05" className="bg-input/30 border-gold/20 font-mono" /></div>
+            <div><Label>الاسم</Label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div className="col-span-2"><Label>الزون</Label>
+              <Select value={form.zoneId} onValueChange={v => setForm({ ...form, zoneId: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر زون" /></SelectTrigger>
+                <SelectContent>{zones.map(z => <SelectItem key={z.id} value={z.id}><span className="font-mono text-gold">{z.number}</span> · {z.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>السعة</Label><Input type="number" value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div><Label>الحالة</Label>
+              <Select value={form.status} onValueChange={v => setForm({ ...form, status: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">فعالة</SelectItem>
+                  <SelectItem value="weak">ضعيفة</SelectItem>
+                  <SelectItem value="stopped">متوقفة</SelectItem>
+                  <SelectItem value="maintenance">صيانة</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label>خط العرض</Label><Input type="number" step="0.000001" value={form.lat} onChange={e => setForm({ ...form, lat: e.target.value })} className="bg-input/30 border-gold/20 font-mono" /></div>
+            <div><Label>خط الطول</Label><Input type="number" step="0.000001" value={form.lng} onChange={e => setForm({ ...form, lng: e.target.value })} className="bg-input/30 border-gold/20 font-mono" /></div>
+            <div className="col-span-2"><Label>الضغط %</Label><Input type="number" value={form.utilization} onChange={e => setForm({ ...form, utilization: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+          </div>
+          <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ============ WHATSAPP LOG ============
+function WhatsAppLog() {
+  const [items, setItems] = useState([]);
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [viewing, setViewing] = useState(null);
+
+  const load = () => api('whatsapp-messages').then(setItems);
+  useEffect(() => { load(); }, []);
+
+  const filtered = items.filter(m =>
+    (typeFilter === 'all' || m.type === typeFilter) &&
+    (statusFilter === 'all' || m.status === statusFilter)
+  );
+
+  const resend = async (id) => {
+    const r = await api(`whatsapp-messages/${id}/resend`, { method: 'POST' });
+    if (r.error) toast.error(r.error);
+    else { toast.success('تم إعادة الإرسال للطابور'); load(); }
+  };
+
+  const statusInfo = {
+    sent: { txt: '✅ مرسل', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
+    queued: { txt: '⏳ في الطابور', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/30' },
+    failed: { txt: '❌ فشل', cls: 'bg-red-500/20 text-red-400 border-red-500/30' },
+  };
+  const typeLabel = { activation: '🎉 تفعيل', manager_alert: '🔔 إشعار مدير', expiry: '⏰ تنبيه انتهاء', debt: '💰 دين' };
+
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <div className="flex justify-between items-center flex-wrap gap-2">
+        <h1 className="text-2xl font-bold gold-text flex items-center gap-2"><Send className="w-6 h-6" /> سجل رسائل الواتساب</h1>
+        <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30">⚠️ يحتاج تكامل WhatsApp API لتفعيل الإرسال الفعلي</Badge>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الرسائل</p><p className="text-2xl font-bold gold-text">{items.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">في الطابور</p><p className="text-2xl font-bold text-amber-400">{items.filter(i => i.status === 'queued').length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">مرسلة</p><p className="text-2xl font-bold text-emerald-400">{items.filter(i => i.status === 'sent').length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">فشلت</p><p className="text-2xl font-bold text-red-400">{items.filter(i => i.status === 'failed').length}</p></div>
+      </div>
+
+      <Card className="glass-strong border-gold-soft">
+        <CardContent className="pt-6 space-y-3">
+          <div className="flex gap-2 flex-wrap">
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="w-40 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل الأنواع</SelectItem>
+                <SelectItem value="activation">🎉 تفعيل</SelectItem>
+                <SelectItem value="manager_alert">🔔 إشعار مدير</SelectItem>
+                <SelectItem value="expiry">⏰ انتهاء</SelectItem>
+                <SelectItem value="debt">💰 دين</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="w-40 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">كل الحالات</SelectItem>
+                <SelectItem value="queued">في الطابور</SelectItem>
+                <SelectItem value="sent">مرسل</SelectItem>
+                <SelectItem value="failed">فشل</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gold-soft text-right text-xs text-muted-foreground">
+                  <th className="p-2">التاريخ</th><th>النوع</th><th>إلى</th><th>الحالة</th><th>محاولات</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr><td colSpan="6" className="text-center py-12 text-muted-foreground">
+                    <Send className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                    لا توجد رسائل بعد. سيتم تسجيل الرسائل تلقائياً عند تفعيل المشتركين
+                  </td></tr>
+                ) : filtered.map(m => (
+                  <tr key={m.id} className="border-b border-gold-soft/30 hover:bg-gold/5">
+                    <td className="p-2 text-xs">{new Date(m.createdAt).toLocaleString('ar-IQ')}</td>
+                    <td className="text-xs">{typeLabel[m.type] || m.type}</td>
+                    <td className="text-xs">
+                      <div>{m.subscriberName || '-'}</div>
+                      <div className="text-[10px] font-mono text-muted-foreground">{m.phone}</div>
+                    </td>
+                    <td><Badge className={(statusInfo[m.status] || statusInfo.queued).cls + ' text-[10px]'}>{(statusInfo[m.status] || statusInfo.queued).txt}</Badge></td>
+                    <td className="text-xs text-center">{m.retries || 0}</td>
+                    <td>
+                      <div className="flex gap-1">
+                        <Button size="sm" variant="outline" className="h-7 text-[10px] border-cyan-500/30 text-cyan-400" onClick={() => setViewing(m)}>عرض</Button>
+                        <Button size="sm" variant="outline" className="h-7 text-[10px] border-gold/30" onClick={() => resend(m.id)}><Send className="w-3 h-3 ml-1" />إرسال</Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={!!viewing} onOpenChange={() => setViewing(null)}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="gold-text">محتوى الرسالة</DialogTitle></DialogHeader>
+          {viewing && (
+            <div className="space-y-3">
+              <div className="p-2 rounded bg-input/30 text-xs">
+                <strong>إلى:</strong> {viewing.subscriberName} ({viewing.phone}) · <strong>التاريخ:</strong> {new Date(viewing.createdAt).toLocaleString('ar-IQ')}
+              </div>
+              <div className="p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed">{viewing.message}</pre>
+              </div>
+              <Button onClick={() => { navigator.clipboard?.writeText(viewing.message); toast.success('تم النسخ'); }} className="btn-gold w-full">نسخ الرسالة</Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
