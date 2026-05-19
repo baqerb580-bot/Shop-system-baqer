@@ -173,8 +173,11 @@ const SETTINGS_DEFAULTS = {
     kpiTarget: 80,
     lateGraceMinutes: 10,
     lateDeductionAmount: 25000,
+    lateDeductionMode: 'fixed', // 'fixed' or 'per_minute'
+    lateDeductionPerMinute: 500,
     absentDeductionAmount: 50000,
     autoCalculatePayroll: true,
+    autoDeductionEnabled: true,
   },
 };
 
@@ -736,14 +739,25 @@ async function handle(request, params) {
     const existing = await db.collection('attendance').findOne({ employeeId, date: today });
     if (existing && existing.checkIn) return err('تم تسجيل الحضور مسبقاً اليوم', 400);
     const now = new Date();
-    const [shiftH, shiftM] = (emp.shiftStart || '08:00').split(':').map(Number);
+    // Use settings shift if available
+    const settings = await db.collection('settings').findOne({ id: 'system' });
+    const empSettings = settings?.employees || {};
+    const globalShiftStart = empSettings.workStart || '08:00';
+    const [shiftH, shiftM] = (emp.shiftStart || globalShiftStart).split(':').map(Number);
     const shiftStart = new Date(now); shiftStart.setHours(shiftH, shiftM, 0, 0);
     const lateMinutes = Math.max(0, Math.floor((now - shiftStart) / 60000));
-    // Late deduction from settings
-    const settings = await db.collection('settings').findOne({ id: 'system' });
-    const grace = settings?.employees?.lateGraceMinutes ?? 10;
-    const deductPerLate = settings?.employees?.lateDeductionAmount ?? 25000;
+    const grace = empSettings.lateGraceMinutes ?? 10;
     const isLate = lateMinutes > grace;
+    const autoEnabled = empSettings.autoDeductionEnabled !== false; // default true
+    const mode = empSettings.lateDeductionMode || 'fixed';
+    const fixedAmount = empSettings.lateDeductionAmount ?? 25000;
+    const perMinute = empSettings.lateDeductionPerMinute ?? 500;
+    let deductionAmount = 0;
+    if (isLate && autoEnabled) {
+      deductionAmount = mode === 'per_minute'
+        ? Math.max(0, (lateMinutes - grace)) * perMinute
+        : fixedAmount;
+    }
     const record = {
       id: uuidv4(),
       employeeId, employeeName: emp.name, date: today,
@@ -751,15 +765,17 @@ async function handle(request, params) {
       checkOut: null,
       lateMinutes, isLate, status: isLate ? 'late' : 'present',
       hoursWorked: 0,
-      autoDeduction: 0,
+      autoDeduction: deductionAmount,
+      deductionMode: mode,
       createdAt: now.toISOString(),
     };
-    if (isLate) {
-      record.autoDeduction = deductPerLate;
-      // Create deduction entry
+    if (deductionAmount > 0) {
       await db.collection('payroll_entries').insertOne({
         id: uuidv4(), employeeId, employeeName: emp.name, type: 'deduction',
-        amount: deductPerLate, reason: `خصم تلقائي: تأخير ${lateMinutes} دقيقة`,
+        amount: deductionAmount,
+        reason: mode === 'per_minute'
+          ? `خصم تلقائي: تأخير ${lateMinutes} دقيقة × ${perMinute} د.ع/دقيقة`
+          : `خصم تلقائي: تأخير ${lateMinutes} دقيقة (مبلغ ثابت)`,
         auto: true, date: today, createdAt: now.toISOString(),
       });
     }
@@ -999,6 +1015,167 @@ async function handle(request, params) {
       tasksCompleted: emp.tasksCompleted || 0,
     };
     return ok(safe);
+  }
+
+  // ============ SCOPED EMPLOYEE PAGES (real, permission-checked) ============
+  // Helper to validate token & permission
+  const checkEmpPermission = async (empId, requiredPerm) => {
+    const tokenHeader = request.headers.get('x-emp-token') || '';
+    // Token format: emp_<empId>_<timestamp>
+    const tokenEmpId = tokenHeader.startsWith('emp_') ? tokenHeader.split('_')[1] : null;
+    if (!tokenEmpId || tokenEmpId !== empId) return { ok: false, code: 401, msg: 'غير مصرح' };
+    const emp = await db.collection('employees').findOne({ id: empId });
+    if (!emp) return { ok: false, code: 404, msg: 'الموظف غير موجود' };
+    const perms = emp.permissions || [];
+    if (requiredPerm && !perms.includes(requiredPerm) && !perms.includes('all')) {
+      return { ok: false, code: 403, msg: 'ليس لديك صلاحية الوصول لهذا القسم' };
+    }
+    return { ok: true, emp };
+  };
+
+  // Employee's own sales
+  if (path.match(/^employees\/[^/]+\/sales$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const check = await checkEmpPermission(empId, 'pos');
+    if (!check.ok) return err(check.msg, check.code);
+    const sales = await db.collection('sales').find({ cashierId: empId }).sort({ createdAt: -1 }).limit(100).toArray();
+    const total = sales.reduce((s, x) => s + (x.total || 0), 0);
+    return ok({ sales: sales.map(s => { delete s._id; return s; }), total, count: sales.length });
+  }
+
+  // Employee records a sale (POS)
+  if (path.match(/^employees\/[^/]+\/sales$/) && method === 'POST') {
+    const empId = path.split('/')[1];
+    const check = await checkEmpPermission(empId, 'pos');
+    if (!check.ok) return err(check.msg, check.code);
+    const body = await getJsonBody(request);
+    const items = body.items || [];
+    const discount = Number(body.discount || 0);
+    let subtotal = 0;
+    for (const it of items) {
+      subtotal += (it.price || 0) * (it.quantity || 1);
+      if (it.id) {
+        await db.collection('products').updateOne({ id: it.id }, { $inc: { stock: -(it.quantity || 1) } });
+      }
+    }
+    const total = Math.max(0, subtotal - discount);
+    const sale = {
+      id: uuidv4(),
+      invoiceNumber: `INV-${Date.now()}`,
+      items, subtotal, discount, total,
+      paymentMethod: body.paymentMethod || 'cash',
+      cashier: check.emp.name, cashierId: empId,
+      customer: body.customer || '',
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('sales').insertOne(sale);
+    delete sale._id;
+    return ok(sale, 201);
+  }
+
+  // Employee's repairs (technician)
+  if (path.match(/^employees\/[^/]+\/repairs$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const check = await checkEmpPermission(empId, 'repairs');
+    if (!check.ok) return err(check.msg, check.code);
+    const all = await db.collection('repairs').find({}).sort({ createdAt: -1 }).toArray();
+    // Filter by technicianId OR technician name match
+    const repairs = all.filter(r => r.technicianId === empId || r.technician === check.emp.name);
+    return ok(repairs.map(r => { delete r._id; return r; }));
+  }
+
+  // Employee updates a repair status (only own)
+  if (path.match(/^employees\/[^/]+\/repairs\/[^/]+$/) && method === 'PUT') {
+    const parts = path.split('/');
+    const empId = parts[1];
+    const repId = parts[3];
+    const check = await checkEmpPermission(empId, 'repairs');
+    if (!check.ok) return err(check.msg, check.code);
+    const repair = await db.collection('repairs').findOne({ id: repId });
+    if (!repair) return err('التذكرة غير موجودة', 404);
+    if (repair.technicianId !== empId && repair.technician !== check.emp.name) return err('غير مصرح', 403);
+    const body = await getJsonBody(request);
+    const allowed = ['status', 'cost', 'partsCost', 'notes', 'completedAt'];
+    const upd = {};
+    for (const k of allowed) if (k in body) upd[k] = body[k];
+    upd.updatedAt = new Date().toISOString();
+    if (upd.status === 'completed' && !upd.completedAt) upd.completedAt = upd.updatedAt;
+    await db.collection('repairs').updateOne({ id: repId }, { $set: upd });
+    const updated = await db.collection('repairs').findOne({ id: repId });
+    if (updated) delete updated._id;
+    return ok(updated);
+  }
+
+  // Employee's subscribers (filter by managedBy)
+  if (path.match(/^employees\/[^/]+\/subscribers$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const check = await checkEmpPermission(empId, 'subscribers');
+    if (!check.ok) return err(check.msg, check.code);
+    const all = await db.collection('subscribers').find({}).toArray();
+    const mine = all.filter(s => s.managerId === empId || s.assignedTo === empId);
+    return ok(mine.map(s => { delete s._id; return s; }));
+  }
+
+  // Employee personal report (own performance)
+  if (path.match(/^employees\/[^/]+\/report$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const url = new URL(request.url);
+    const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7);
+    const check = await checkEmpPermission(empId, 'reports');
+    if (!check.ok) return err(check.msg, check.code);
+    const emp = check.emp;
+    const attendance = await db.collection('attendance').find({ employeeId: empId, date: { $regex: `^${month}` } }).toArray();
+    const tasks = await db.collection('tasks').find({ assignedTo: empId }).toArray();
+    const sales = await db.collection('sales').find({ cashierId: empId, createdAt: { $regex: `^${month}` } }).toArray();
+    const repairs = (await db.collection('repairs').find({}).toArray()).filter(r => r.technicianId === empId || r.technician === emp.name);
+    const entries = await db.collection('payroll_entries').find({ employeeId: empId, date: { $regex: `^${month}` } }).toArray();
+
+    return ok({
+      month,
+      attendance: {
+        total: attendance.length,
+        present: attendance.filter(a => a.status === 'present').length,
+        late: attendance.filter(a => a.status === 'late').length,
+        absent: attendance.filter(a => a.status === 'absent').length,
+        totalHours: attendance.reduce((s, x) => s + (x.hoursWorked || 0), 0).toFixed(1),
+      },
+      tasks: {
+        total: tasks.length,
+        completed: tasks.filter(t => t.status === 'completed').length,
+        pending: tasks.filter(t => ['pending', 'new'].includes(t.status)).length,
+        inProgress: tasks.filter(t => ['in_progress', 'revision'].includes(t.status)).length,
+        underReview: tasks.filter(t => t.status === 'pending_review').length,
+      },
+      sales: {
+        count: sales.length,
+        total: sales.reduce((s, x) => s + (x.total || 0), 0),
+      },
+      repairs: {
+        total: repairs.length,
+        completed: repairs.filter(r => r.status === 'completed').length,
+        pending: repairs.filter(r => r.status !== 'completed').length,
+      },
+      payroll: {
+        bonuses: entries.filter(e => e.type === 'bonus').reduce((s, x) => s + x.amount, 0),
+        deductions: entries.filter(e => e.type === 'deduction').reduce((s, x) => s + x.amount, 0),
+      },
+      kpi: emp.kpi || 0,
+      ratingPoints: emp.ratingPoints || 0,
+      tasksCompletedAllTime: emp.tasksCompleted || 0,
+    });
+  }
+
+  // ISP zones (read-only) for employees with isp permission
+  if (path.match(/^employees\/[^/]+\/isp$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const check = await checkEmpPermission(empId, 'isp');
+    if (!check.ok) return err(check.msg, check.code);
+    const zones = await db.collection('zones').find({}).toArray();
+    const networks = await db.collection('networks').find({}).toArray();
+    return ok({
+      zones: zones.map(z => { delete z._id; return z; }),
+      networks: networks.map(n => { delete n._id; return n; }),
+    });
   }
 
   // Payroll calculation for employee for a month

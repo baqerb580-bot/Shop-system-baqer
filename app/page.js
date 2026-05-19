@@ -2923,6 +2923,33 @@ function EmployeesSection({ draft, update }) {
       <Field label="نهاية الدوام"><Input type="time" value={e.workEnd || '17:00'} onChange={ev => update('employees', 'workEnd', ev.target.value)} className="bg-input/30 border-gold/20" /></Field>
       <Field label="معدل الأجر الإضافي (×)"><Input type="number" step="0.1" value={e.overtimeRate || 1.5} onChange={ev => update('employees', 'overtimeRate', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
       <Field label="هدف KPI %"><Input type="number" value={e.kpiTarget || 80} onChange={ev => update('employees', 'kpiTarget', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
+
+      <div className="md:col-span-2 p-3 rounded-lg bg-amber-500/5 border border-amber-500/30 space-y-3">
+        <p className="font-bold text-amber-400 text-sm flex items-center gap-2">⏰ إعدادات خصم التأخير</p>
+        <Switch checked={e.autoDeductionEnabled !== false} onChange={v => update('employees', 'autoDeductionEnabled', v)} label="🤖 تفعيل الخصم التلقائي عند التأخير" />
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="سماحية التأخير (دقيقة)"><Input type="number" value={e.lateGraceMinutes ?? 10} onChange={ev => update('employees', 'lateGraceMinutes', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
+          <Field label="نوع الخصم">
+            <Select value={e.lateDeductionMode || 'fixed'} onValueChange={v => update('employees', 'lateDeductionMode', v)}>
+              <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fixed">💵 مبلغ ثابت</SelectItem>
+                <SelectItem value="per_minute">⏱️ حسب كل دقيقة تأخير</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          {(e.lateDeductionMode || 'fixed') === 'fixed' ? (
+            <Field label="مبلغ الخصم الثابت (د.ع)"><Input type="number" value={e.lateDeductionAmount ?? 25000} onChange={ev => update('employees', 'lateDeductionAmount', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
+          ) : (
+            <Field label="خصم لكل دقيقة (د.ع)"><Input type="number" value={e.lateDeductionPerMinute ?? 500} onChange={ev => update('employees', 'lateDeductionPerMinute', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
+          )}
+          <Field label="خصم الغياب (د.ع)"><Input type="number" value={e.absentDeductionAmount ?? 50000} onChange={ev => update('employees', 'absentDeductionAmount', Number(ev.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          💡 مثال: لو السماحية 10د والخصم {(e.lateDeductionMode || 'fixed') === 'fixed' ? `${fmt(e.lateDeductionAmount ?? 25000)} د.ع مبلغ ثابت` : `${fmt(e.lateDeductionPerMinute ?? 500)} د.ع/دقيقة`}، فالموظف اللي بصم متأخر 30 دقيقة سيخصم منه {(e.lateDeductionMode || 'fixed') === 'fixed' ? fmt(e.lateDeductionAmount ?? 25000) : fmt((30 - (e.lateGraceMinutes ?? 10)) * (e.lateDeductionPerMinute ?? 500))} د.ع
+        </p>
+      </div>
+
       <div className="md:col-span-2">
         <Label className="text-xs mb-2 block">أيام العمل</Label>
         <div className="grid grid-cols-7 gap-1">

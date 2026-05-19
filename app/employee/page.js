@@ -21,13 +21,20 @@ import {
 } from 'lucide-react';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+const getToken = () => {
+  try {
+    const s = typeof window !== 'undefined' ? localStorage.getItem('emp_session') : null;
+    return s ? (JSON.parse(s).token || '') : '';
+  } catch { return ''; }
+};
 const api = async (path, opts = {}) => {
-  const r = await fetch(`/api/${path}`, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const headers = { 'Content-Type': 'application/json', 'X-Emp-Token': getToken(), ...(opts.headers || {}) };
+  const r = await fetch(`/api/${path}`, { ...opts, headers });
   return r.json();
 };
 const uploadFile = async (file) => {
   const fd = new FormData(); fd.append('file', file);
-  const r = await fetch('/api/upload', { method: 'POST', body: fd });
+  const r = await fetch('/api/upload', { method: 'POST', body: fd, headers: { 'X-Emp-Token': getToken() } });
   return r.json();
 };
 
@@ -571,6 +578,368 @@ function PayrollTab({ payroll }) {
   );
 }
 
+// ============================== REAL EMPLOYEE PAGES ==============================
+
+// 1) POS - record sale + view own sales
+function MyPOSSection({ employee }) {
+  const [products, setProducts] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [search, setSearch] = useState('');
+  const [discount, setDiscount] = useState(0);
+  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [customer, setCustomer] = useState('');
+  const [sales, setSales] = useState([]);
+  const [total, setTotal] = useState(0);
+
+  const load = async () => {
+    const [p, s] = await Promise.all([api('products'), api(`employees/${employee.id}/sales`)]);
+    setProducts(Array.isArray(p) ? p : []);
+    if (s && !s.error) { setSales(s.sales || []); setTotal(s.total || 0); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const filtered = products.filter(p => !search || p.name?.toLowerCase().includes(search.toLowerCase()) || p.barcode?.includes(search));
+  const addItem = (p) => {
+    setCart(prev => {
+      const ex = prev.find(x => x.id === p.id);
+      if (ex) return prev.map(x => x.id === p.id ? { ...x, quantity: x.quantity + 1 } : x);
+      return [...prev, { id: p.id, name: p.name, price: p.price, quantity: 1 }];
+    });
+  };
+  const removeItem = (id) => setCart(prev => prev.filter(x => x.id !== id));
+  const changeQty = (id, q) => setCart(prev => prev.map(x => x.id === id ? { ...x, quantity: Math.max(1, q) } : x));
+  const subtotal = cart.reduce((s, x) => s + x.price * x.quantity, 0);
+  const finalTotal = Math.max(0, subtotal - discount);
+
+  const checkout = async () => {
+    if (cart.length === 0) { toast.error('السلة فارغة'); return; }
+    const r = await api(`employees/${employee.id}/sales`, { method: 'POST', body: JSON.stringify({ items: cart, discount, paymentMethod, customer }) });
+    if (r.error) toast.error(r.error);
+    else { toast.success(`✅ تم الدفع - ${r.invoiceNumber}`); setCart([]); setDiscount(0); setCustomer(''); load(); }
+  };
+
+  return (
+    <div className="grid lg:grid-cols-3 gap-4">
+      <div className="lg:col-span-2 space-y-3">
+        <Input placeholder="🔍 ابحث عن منتج أو باركود..." value={search} onChange={e => setSearch(e.target.value)} className="bg-input/30 border-gold/20" />
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-[60vh] overflow-y-auto">
+          {filtered.slice(0, 30).map(p => (
+            <Card key={p.id} onClick={() => addItem(p)} className="glass-card border-gold-soft hover:border-gold cursor-pointer transition-all">
+              <CardContent className="p-3">
+                <p className="text-xs font-bold truncate">{p.name}</p>
+                <p className="text-[10px] text-muted-foreground">{p.barcode}</p>
+                <p className="text-sm gold-text font-bold mt-1">{fmt(p.price)} د.ع</p>
+                <p className="text-[9px] text-muted-foreground">المخزون: {p.stock}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        <Card className="glass-strong border-gold-soft">
+          <CardHeader><CardTitle className="text-sm">📊 مبيعاتي ({sales.length} - إجمالي {fmt(total)} د.ع)</CardTitle></CardHeader>
+          <CardContent className="space-y-1 max-h-48 overflow-y-auto">
+            {sales.slice(0, 10).map(s => (
+              <div key={s.id} className="flex justify-between text-xs py-1 border-b border-gold-soft/30">
+                <span className="font-mono">{s.invoiceNumber}</span>
+                <span className="gold-text font-bold">{fmt(s.total)} د.ع</span>
+                <span className="text-muted-foreground">{new Date(s.createdAt).toLocaleString('ar-IQ', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}</span>
+              </div>
+            ))}
+            {sales.length === 0 && <p className="text-xs text-muted-foreground text-center py-2">لا توجد مبيعات</p>}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="glass-strong border-gold/40 h-fit sticky top-20">
+        <CardHeader><CardTitle className="text-sm flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-gold" /> السلة ({cart.length})</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {cart.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-4">السلة فارغة</p>
+          ) : cart.map(it => (
+            <div key={it.id} className="flex items-center gap-2 text-xs">
+              <button onClick={() => removeItem(it.id)} className="text-red-400"><X className="w-3 h-3" /></button>
+              <div className="flex-1">
+                <p className="font-bold truncate">{it.name}</p>
+                <p className="text-[10px] text-muted-foreground">{fmt(it.price)} د.ع</p>
+              </div>
+              <Input type="number" min="1" value={it.quantity} onChange={e => changeQty(it.id, Number(e.target.value))} className="w-14 h-7 text-xs bg-input/30 border-gold/20" />
+              <span className="w-16 text-left font-bold gold-text">{fmt(it.price * it.quantity)}</span>
+            </div>
+          ))}
+
+          <div className="border-t border-gold-soft pt-2 space-y-2">
+            <Input type="number" placeholder="خصم" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="bg-input/30 border-gold/20 h-8 text-xs" />
+            <Input placeholder="اسم الزبون (اختياري)" value={customer} onChange={e => setCustomer(e.target.value)} className="bg-input/30 border-gold/20 h-8 text-xs" />
+            <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+              <SelectTrigger className="bg-input/30 border-gold/20 h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="cash">نقدي</SelectItem>
+                <SelectItem value="master">ماستركارد</SelectItem>
+                <SelectItem value="fastpay">FastPay</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="flex justify-between text-xs"><span>المجموع</span><span className="font-bold">{fmt(subtotal)} د.ع</span></div>
+            <div className="flex justify-between text-base font-bold gold-text"><span>الإجمالي</span><span>{fmt(finalTotal)} د.ع</span></div>
+            <Button onClick={checkout} className="btn-gold w-full">دفع وإصدار فاتورة</Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// 2) Repairs - my tickets, update status
+function MyRepairsSection({ employee }) {
+  const [items, setItems] = useState([]);
+  const [filter, setFilter] = useState('all');
+  const load = async () => {
+    const r = await api(`employees/${employee.id}/repairs`);
+    if (Array.isArray(r)) setItems(r);
+    else if (r.error) toast.error(r.error);
+  };
+  useEffect(() => { load(); }, []);
+
+  const filtered = filter === 'all' ? items : items.filter(r => r.status === filter);
+
+  const updateStatus = async (id, status) => {
+    const r = await api(`employees/${employee.id}/repairs/${id}`, { method: 'PUT', body: JSON.stringify({ status }) });
+    if (r.error) toast.error(r.error);
+    else { toast.success('✅ تم التحديث'); load(); }
+  };
+
+  const statusCls = {
+    pending: 'bg-amber-500/20 text-amber-400',
+    in_progress: 'bg-cyan-500/20 text-cyan-400',
+    completed: 'bg-emerald-500/20 text-emerald-400',
+    cancelled: 'bg-red-500/20 text-red-400',
+  };
+  const statusLabel = { pending: 'بالانتظار', in_progress: 'جاري الصيانة', completed: 'مكتمل', cancelled: 'ملغي' };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {['all', 'pending', 'in_progress', 'completed'].map(s => (
+          <button key={s} onClick={() => setFilter(s)} className={`px-3 py-1.5 rounded-lg text-xs border ${filter === s ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>
+            {s === 'all' ? `📋 الكل (${items.length})` : `${statusLabel[s]} (${items.filter(x => x.status === s).length})`}
+          </button>
+        ))}
+      </div>
+      {filtered.length === 0 ? (
+        <div className="text-center py-12"><Wrench className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" /><p className="text-sm text-muted-foreground">لا توجد تذاكر صيانة مخصصة لك</p></div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-3">
+          {filtered.map(r => (
+            <Card key={r.id} className="glass-card border-gold-soft">
+              <CardContent className="p-4 space-y-2">
+                <div className="flex justify-between">
+                  <div>
+                    <p className="font-mono text-sm gold-text">{r.ticketNumber}</p>
+                    <p className="text-xs font-bold mt-1">{r.device}</p>
+                  </div>
+                  <Badge className={statusCls[r.status] || 'bg-muted'}>{statusLabel[r.status] || r.status}</Badge>
+                </div>
+                <div className="text-xs space-y-1">
+                  <p><span className="text-muted-foreground">العميل:</span> {r.customerName}</p>
+                  <p><span className="text-muted-foreground">المشكلة:</span> {r.issue}</p>
+                  <p><span className="text-muted-foreground">التكلفة:</span> <span className="gold-text font-bold">{fmt(r.cost)} د.ع</span></p>
+                </div>
+                {r.status !== 'completed' && r.status !== 'cancelled' && (
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gold-soft">
+                    {r.status === 'pending' && <Button onClick={() => updateStatus(r.id, 'in_progress')} size="sm" className="btn-neon h-8 text-xs">بدء العمل</Button>}
+                    {r.status === 'in_progress' && <Button onClick={() => updateStatus(r.id, 'completed')} size="sm" className="btn-gold h-8 text-xs">✅ إنهاء</Button>}
+                    <Button onClick={() => updateStatus(r.id, 'cancelled')} variant="outline" size="sm" className="border-red-500/30 text-red-400 h-8 text-xs">إلغاء</Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 3) Reports - personal performance
+function MyReportsSection({ employee }) {
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    api(`employees/${employee.id}/report?month=${month}`).then(r => {
+      if (r.error) { setErr(r.error); setData(null); }
+      else { setErr(null); setData(r); }
+    });
+  }, [month]);
+
+  if (err) return <div className="text-center py-12 text-red-400">{err}</div>;
+  if (!data) return <p className="text-center text-sm text-muted-foreground py-8">جاري التحميل...</p>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center flex-wrap gap-2">
+        <h2 className="text-lg font-bold gold-text">📊 تقرير الأداء الشخصي</h2>
+        <Input type="month" value={month} onChange={e => setMonth(e.target.value)} className="w-44 bg-input/30 border-gold/20" />
+      </div>
+
+      <Card className="glass-strong border-gold/40">
+        <CardContent className="pt-6 text-center">
+          <p className="text-xs text-muted-foreground">نقاط الأداء الكلي (KPI)</p>
+          <p className="text-6xl font-black gold-text mt-2">{data.kpi}<span className="text-2xl">%</span></p>
+          <p className="text-[10px] text-muted-foreground mt-2">نقاط التقييم: <span className="font-bold gold-text">{data.ratingPoints}</span> · مهام منجزة كلياً: <span className="font-bold">{data.tasksCompletedAllTime}</span></p>
+        </CardContent>
+      </Card>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <Card className="glass-card border-gold-soft">
+          <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Clock className="w-4 h-4 text-cyan-400" /> الحضور</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-2 gap-2 text-xs">
+            <div><p className="text-muted-foreground">حاضر</p><p className="font-bold text-emerald-400 text-lg">{data.attendance.present}</p></div>
+            <div><p className="text-muted-foreground">متأخر</p><p className="font-bold text-amber-400 text-lg">{data.attendance.late}</p></div>
+            <div><p className="text-muted-foreground">غياب</p><p className="font-bold text-red-400 text-lg">{data.attendance.absent}</p></div>
+            <div><p className="text-muted-foreground">الساعات</p><p className="font-bold gold-text text-lg">{data.attendance.totalHours}</p></div>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card border-gold-soft">
+          <CardHeader><CardTitle className="text-sm flex items-center gap-2"><ListTodo className="w-4 h-4 text-purple-400" /> المهام</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-2 gap-2 text-xs">
+            <div><p className="text-muted-foreground">منجزة</p><p className="font-bold text-emerald-400 text-lg">{data.tasks.completed}</p></div>
+            <div><p className="text-muted-foreground">قيد العمل</p><p className="font-bold text-cyan-400 text-lg">{data.tasks.inProgress}</p></div>
+            <div><p className="text-muted-foreground">بانتظار القبول</p><p className="font-bold text-amber-400 text-lg">{data.tasks.pending}</p></div>
+            <div><p className="text-muted-foreground">قيد المراجعة</p><p className="font-bold text-purple-400 text-lg">{data.tasks.underReview}</p></div>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card border-gold-soft">
+          <CardHeader><CardTitle className="text-sm flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-emerald-400" /> المبيعات</CardTitle></CardHeader>
+          <CardContent>
+            <p className="text-xs text-muted-foreground">عدد الفواتير</p>
+            <p className="font-bold text-2xl">{data.sales.count}</p>
+            <p className="text-xs text-muted-foreground mt-2">الإجمالي</p>
+            <p className="font-bold gold-text text-lg">{fmt(data.sales.total)} د.ع</p>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card border-gold-soft">
+          <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Wrench className="w-4 h-4 text-amber-400" /> الصيانة</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-2 gap-2 text-xs">
+            <div><p className="text-muted-foreground">منجزة</p><p className="font-bold text-emerald-400 text-lg">{data.repairs.completed}</p></div>
+            <div><p className="text-muted-foreground">معلقة</p><p className="font-bold text-amber-400 text-lg">{data.repairs.pending}</p></div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="glass-card border-gold-soft">
+        <CardHeader><CardTitle className="text-sm">💰 الراتب لهذا الشهر</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-2 gap-3">
+          <div>
+            <p className="text-xs text-muted-foreground">مكافآت</p>
+            <p className="text-lg font-bold text-emerald-400">+{fmt(data.payroll.bonuses)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">خصومات</p>
+            <p className="text-lg font-bold text-red-400">-{fmt(data.payroll.deductions)}</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// 4) ISP - read-only zones/networks
+function MyIspSection({ employee }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    api(`employees/${employee.id}/isp`).then(r => {
+      if (r.error) { setErr(r.error); }
+      else setData(r);
+    });
+  }, []);
+  if (err) return <div className="text-center py-12 text-red-400">{err}</div>;
+  if (!data) return <p className="text-center text-sm text-muted-foreground py-8">جاري التحميل...</p>;
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="stat-card text-center"><p className="text-xs text-muted-foreground">الزونات</p><p className="text-2xl font-bold gold-text">{data.zones.length}</p></div>
+        <div className="stat-card text-center"><p className="text-xs text-muted-foreground">شبكات نشطة</p><p className="text-2xl font-bold text-emerald-400">{data.networks.filter(n => n.status === 'active').length}</p></div>
+        <div className="stat-card text-center"><p className="text-xs text-muted-foreground">شبكات معطلة</p><p className="text-2xl font-bold text-red-400">{data.networks.filter(n => n.status !== 'active').length}</p></div>
+      </div>
+      <Card className="glass-strong border-gold-soft">
+        <CardHeader><CardTitle className="text-sm">🌐 الزونات</CardTitle></CardHeader>
+        <CardContent className="grid md:grid-cols-2 gap-2">
+          {data.zones.map(z => (
+            <div key={z.id} className="flex justify-between items-center p-2 rounded bg-input/30 border border-gold-soft">
+              <div>
+                <p className="text-sm font-bold">{z.name}</p>
+                <p className="text-[10px] text-muted-foreground">{z.fats || 0} فاتة · {z.subscribers || 0} مشترك</p>
+              </div>
+              <Badge className={z.status === 'online' ? 'bg-emerald-500/20 text-emerald-400' : z.status === 'warning' ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/20 text-red-400'}>{z.status}</Badge>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+      <Card className="glass-strong border-gold-soft">
+        <CardHeader><CardTitle className="text-sm">🔌 الشبكات / الفاتات</CardTitle></CardHeader>
+        <CardContent className="max-h-96 overflow-y-auto space-y-1">
+          {data.networks.slice(0, 50).map(n => (
+            <div key={n.id} className="flex justify-between text-xs p-2 border-b border-gold-soft/30">
+              <span className="font-mono">{n.number}</span>
+              <span>{n.zoneName}</span>
+              <span>{n.subscribers}/{n.capacity}</span>
+              <Badge className={n.status === 'active' ? 'bg-emerald-500/20 text-emerald-400 text-[9px]' : 'bg-amber-500/20 text-amber-400 text-[9px]'}>{n.status}</Badge>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// 5) Subscribers - read-only filtered by me
+function MySubscribersSection({ employee }) {
+  const [items, setItems] = useState([]);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    api(`employees/${employee.id}/subscribers`).then(r => {
+      if (r.error) setErr(r.error);
+      else if (Array.isArray(r)) setItems(r);
+    });
+  }, []);
+  if (err) return <div className="text-center py-12 text-red-400">{err}</div>;
+  if (items.length === 0) return <div className="text-center py-12"><Users className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" /><p className="text-sm text-muted-foreground">لا يوجد مشتركون مخصصون لك</p></div>;
+  return (
+    <div className="grid md:grid-cols-2 gap-3">
+      {items.map(s => (
+        <Card key={s.id} className="glass-card border-gold-soft">
+          <CardContent className="p-4 space-y-1">
+            <div className="flex justify-between">
+              <p className="font-bold">{s.name}</p>
+              <Badge className={s.status === 'active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}>{s.status}</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">{s.zoneName} · {s.fatNumber}</p>
+            <p className="text-xs">السرعة: <span className="font-bold">{s.speed || '-'}</span></p>
+            <p className="text-xs">انتهاء: <span className="gold-text">{s.dueDate || '-'}</span></p>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+// 6) Unauthorized fallback
+function Unauthorized({ permission }) {
+  return (
+    <div className="text-center py-16">
+      <Lock className="w-20 h-20 mx-auto text-red-500/40 mb-4" />
+      <h3 className="text-2xl font-bold text-red-400">⛔ غير مصرح لك</h3>
+      <p className="text-sm text-muted-foreground mt-2">لا تملك صلاحية الوصول إلى قسم <span className="font-bold gold-text">{permission}</span></p>
+      <p className="text-xs text-muted-foreground mt-1">تواصل مع المدير للحصول على الصلاحية</p>
+    </div>
+  );
+}
+
 // ============================== PERMISSION-BASED PLACEHOLDER TABS ==============================
 function PermissionPlaceholder({ icon: Icon, label, hint }) {
   return (
@@ -613,13 +982,14 @@ function EmployeeDashboard({ employee, onLogout }) {
     { key: 'home', label: 'الرئيسية', icon: Home, perm: null }, // always
     { key: 'tasks', label: 'المهام', icon: ListTodo, perm: 'tasks', badge: tasks.filter(t => ['pending', 'new'].includes(t.status)).length },
     { key: 'payroll', label: 'راتبي', icon: Wallet, perm: null }, // always for self
-    { key: 'pos', label: 'المبيعات', icon: ShoppingCart, perm: 'pos' },
-    { key: 'sales', label: 'الإيرادات', icon: BadgeCheck, perm: 'sales' },
+    { key: 'pos', label: 'نقاط البيع', icon: ShoppingCart, perm: 'pos' },
     { key: 'repairs', label: 'الصيانة', icon: Wrench, perm: 'repairs' },
     { key: 'isp', label: 'الإنترنت', icon: Activity, perm: 'isp' },
     { key: 'subscribers', label: 'مشتركيني', icon: Users, perm: 'subscribers' },
+    { key: 'reports', label: 'تقاريري', icon: BadgeCheck, perm: 'reports' },
   ];
   const visibleTabs = allTabs.filter(t => !t.perm || perms.includes(t.perm) || perms.includes('all'));
+  const hasPerm = (p) => perms.includes(p) || perms.includes('all');
 
   return (
     <div className="min-h-screen bg-background grid-pattern">
@@ -667,7 +1037,7 @@ function EmployeeDashboard({ employee, onLogout }) {
               <HomeTab employee={selfData} todayAtt={todayAtt} tasks={tasks} payroll={payroll} />
             </TabsContent>
 
-            {perms.includes('tasks') || perms.includes('all') ? (
+            {hasPerm('tasks') ? (
               <TabsContent value="tasks" className="mt-4">
                 <TasksSection employeeId={employee.id} />
               </TabsContent>
@@ -677,33 +1047,33 @@ function EmployeeDashboard({ employee, onLogout }) {
               <PayrollTab payroll={payroll} />
             </TabsContent>
 
-            {perms.includes('pos') || perms.includes('all') ? (
+            {hasPerm('pos') ? (
               <TabsContent value="pos" className="mt-4">
-                <PermissionPlaceholder icon={ShoppingCart} label="نقاط البيع" hint="قسم POS الخاص بك - قريباً" />
+                <MyPOSSection employee={selfData} />
               </TabsContent>
             ) : null}
 
-            {perms.includes('sales') || perms.includes('all') ? (
-              <TabsContent value="sales" className="mt-4">
-                <PermissionPlaceholder icon={BadgeCheck} label="الإيرادات والمبيعات" hint="ستظهر هنا مبيعاتك الشخصية" />
-              </TabsContent>
-            ) : null}
-
-            {perms.includes('repairs') || perms.includes('all') ? (
+            {hasPerm('repairs') ? (
               <TabsContent value="repairs" className="mt-4">
-                <PermissionPlaceholder icon={Wrench} label="الصيانة" hint="تذاكر الصيانة المخصصة لك" />
+                <MyRepairsSection employee={selfData} />
               </TabsContent>
             ) : null}
 
-            {perms.includes('isp') || perms.includes('all') ? (
+            {hasPerm('isp') ? (
               <TabsContent value="isp" className="mt-4">
-                <PermissionPlaceholder icon={Activity} label="الإنترنت / ISP" hint="مهام الإنترنت المخصصة لك" />
+                <MyIspSection employee={selfData} />
               </TabsContent>
             ) : null}
 
-            {perms.includes('subscribers') || perms.includes('all') ? (
+            {hasPerm('subscribers') ? (
               <TabsContent value="subscribers" className="mt-4">
-                <PermissionPlaceholder icon={Users} label="مشتركيني" hint="المشتركون الذين تتابعهم فقط" />
+                <MySubscribersSection employee={selfData} />
+              </TabsContent>
+            ) : null}
+
+            {hasPerm('reports') ? (
+              <TabsContent value="reports" className="mt-4">
+                <MyReportsSection employee={selfData} />
               </TabsContent>
             ) : null}
           </Tabs>

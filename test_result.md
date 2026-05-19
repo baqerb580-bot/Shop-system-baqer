@@ -1146,3 +1146,257 @@ agent_communication:
         Core functionality works perfectly - this only affects error message when no file provided
       
       NO CRITICAL ISSUES FOUND. All task workflow, notifications, and file upload features working perfectly.
+
+  - task: "Settings - Late deduction per_minute mode"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            PUT /api/settings with body {employees: {lateGraceMinutes: 5, lateDeductionMode: 'per_minute', 
+            lateDeductionPerMinute: 1000, autoDeductionEnabled: true}}. Settings should be applied and 
+            GET /api/settings should return these values.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Settings update working correctly. PUT /api/settings successfully updates 
+            lateGraceMinutes=5, lateDeductionMode='per_minute', lateDeductionPerMinute=1000, 
+            autoDeductionEnabled=true. GET /api/settings confirms all values applied correctly.
+            Note: Per-minute deduction calculation only applies to NEW check-ins after settings change.
+
+  - task: "Check-in with per_minute deduction calculation"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/attendance/checkin should calculate autoDeduction as (lateMinutes - graceMinutes) * 
+            lateDeductionPerMinute when lateDeductionMode='per_minute'. Payroll entry reason should mention 
+            "× 1000 د.ع/دقيقة" format.
+        - working: "NA"
+          agent: "testing"
+          comment: |
+            ⚠️ CANNOT TEST - Employee already checked in today (before settings change) with OLD fixed 
+            deduction mode (25000 IQD). The existing attendance record shows lateMinutes=447, 
+            autoDeduction=25000 (fixed mode), and payroll entry reason is "خصم تلقائي: تأخير 447 دقيقة" 
+            without per_minute notation. Cannot test NEW check-in with per_minute mode since employee 
+            already checked in today. The logic appears correct in code (lines 176-177 in SETTINGS_DEFAULTS), 
+            but needs testing with a fresh check-in tomorrow or with a different employee.
+
+  - task: "Employee Sales - Token enforcement"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/employees/:id/sales requires X-Emp-Token header in format emp_<employeeId>_<timestamp>.
+            Should return 401 without token, 401 with wrong token, 200 with correct token.
+            POST /api/employees/:id/sales creates sale with cashierId=employeeId, cashier=employee name.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Token enforcement working perfectly. GET without token returns 401 "غير مصرح". 
+            GET with wrong token (different employee ID) returns 401. GET with correct token returns 
+            {sales: [], total: 0, count: 0}. POST with correct token creates sale successfully with 
+            cashierId=employeeId, cashier=employee name, correct calculations (subtotal=10000, 
+            discount=1000, total=9000). Sale appears in subsequent GET request.
+
+  - task: "Employee Sales - Permission denied"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            When employee permissions don't include 'pos', GET /api/employees/:id/sales should return 403 
+            "ليس لديك صلاحية الوصول لهذا القسم". Same for other scoped endpoints (repairs, subscribers, 
+            report, isp) when respective permissions are missing.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Permission enforcement working correctly. After updating employee permissions to 
+            ["tasks"] only (removing "pos"), GET /api/employees/:id/sales with correct token returns 403 
+            "ليس لديك صلاحية...". Tested all scoped endpoints: /repairs, /subscribers, /report, /isp - 
+            all correctly return 403 when respective permissions are missing.
+
+  - task: "Employee Repairs - Get and Update"
+    implemented: true
+    working: false
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/employees/:id/repairs returns repairs filtered by technicianId or technician name.
+            PUT /api/employees/:id/repairs/:repairId updates repair status (only own repairs).
+            When status='completed', should set completedAt timestamp.
+        - working: false
+          agent: "testing"
+          comment: |
+            ❌ CRITICAL BUG - GET endpoint works correctly (returns repairs filtered by technicianId).
+            However, PUT /api/employees/:id/repairs/:repairId has a ROUTE ORDERING BUG. The generic CRUD 
+            route at lines 565-573 catches this request BEFORE the specific scoped employee route at 
+            line 1088. Path "/employees/{empId}/repairs/{repairId}" matches "employees/" prefix, so the 
+            generic route extracts empId as the ID and updates the EMPLOYEE record instead of the REPAIR.
+            
+            EVIDENCE:
+            - PUT request returns employee object instead of repair object
+            - Repair status remains "pending" (not updated to "completed")
+            - Employee object has status="completed" (incorrectly updated)
+            
+            ROOT CAUSE: Scoped employee routes (lines 1020-1179) are placed AFTER generic CRUD routes 
+            (lines 545-584). The generic route's path.startsWith(route + '/') check matches before the 
+            more specific regex patterns.
+            
+            FIX REQUIRED: Move all scoped employee routes (lines 1020-1179) to BEFORE the generic CRUD 
+            loop (before line 545). This ensures specific routes are checked first.
+
+  - task: "Employee Personal Report"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/employees/:id/report?month=YYYY-MM returns comprehensive personal report with 
+            attendance stats, tasks stats, sales, repairs, payroll, kpi, ratingPoints, tasksCompletedAllTime.
+            Requires 'reports' permission.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Personal report endpoint working perfectly. Returns all required fields: month, 
+            attendance (total, present, late, absent, totalHours), tasks (total, completed, pending, 
+            inProgress, underReview), sales (count, total), repairs (total, completed, pending), 
+            payroll (bonuses, deductions), kpi, ratingPoints, tasksCompletedAllTime. Tested with 
+            month=2026-05, returned KPI=85, Tasks total=1.
+
+  - task: "Employee ISP Endpoint"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/employees/:id/isp returns {zones: [...], networks: [...]} for employees with 
+            'isp' permission. Read-only access to zones and networks data.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - ISP endpoint working correctly. Returns zones array (3 zones) and networks 
+            array (144 networks). Permission enforcement working - returns 403 without 'isp' permission.
+
+  - task: "Employee Subscribers Endpoint"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/employees/:id/subscribers returns subscribers filtered by managerId or assignedTo 
+            matching employee ID. Requires 'subscribers' permission.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Subscribers endpoint working correctly. Returns array of subscribers filtered 
+            by managerId or assignedTo. Tested employee has 0 managed subscribers (expected). Permission 
+            enforcement working - returns 403 without 'subscribers' permission.
+
+agent_communication:
+  - agent: "main"
+    message: |
+      🔄 NEW: Implemented scoped employee endpoints with permission-based access using X-Emp-Token header.
+      Added endpoints for employee's own sales, repairs, subscribers, personal report, and ISP data.
+      Also added per_minute late deduction mode in settings.
+      
+      Please test:
+      1. Settings update for per_minute late deduction mode
+      2. Check-in with per_minute deduction calculation
+      3. Employee sales endpoints with token enforcement (GET/POST)
+      4. Permission denied scenarios for all scoped endpoints
+      5. Employee repairs (GET/PUT)
+      6. Employee personal report
+      7. Employee ISP and subscribers endpoints
+      
+      Employee credentials: username='ssaa', password='ssaa'
+  - agent: "testing"
+    message: |
+      🎯 SCOPED EMPLOYEE ENDPOINTS TESTING COMPLETE - 15/17 TESTS PASSED
+      
+      Tested all NEW scoped employee endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ Settings Late Deduction Config: per_minute mode applied correctly (grace=5, rate=1000/min)
+      ⚠️  Check-in per_minute Deduction: CANNOT TEST - employee already checked in today with old settings
+      ✅ Employee Sales Token Enforcement: 401 without token, 401 with wrong token, 200 with correct token
+      ✅ Employee Create Sale: Sale created with correct cashierId, cashier name, calculations
+      ✅ Permission Denied: All endpoints correctly return 403 when permissions missing
+      ✅ Employee Repairs GET: Returns repairs filtered by technicianId
+      ❌ Employee Repairs PUT: CRITICAL BUG - returns employee object instead of repair, doesn't update repair
+      ✅ Employee Personal Report: Returns all required fields (attendance, tasks, sales, repairs, payroll, kpi)
+      ✅ Employee ISP Endpoint: Returns zones and networks arrays
+      ✅ Employee Subscribers Endpoint: Returns filtered subscribers array
+      
+      🚨 CRITICAL BUG FOUND - Employee Repair Update Endpoint:
+      
+      ISSUE: PUT /api/employees/:id/repairs/:repairId returns employee object instead of repair object
+      and doesn't update the repair at all.
+      
+      ROOT CAUSE: Route ordering bug. The generic CRUD route at lines 565-573 catches the request 
+      BEFORE the specific scoped employee route at line 1088. The path "/employees/{empId}/repairs/{repairId}" 
+      matches the generic "employees/" prefix, so it extracts empId as the ID and updates the EMPLOYEE 
+      record instead of the REPAIR.
+      
+      EVIDENCE:
+      - Created repair with ID: 09157ee8-1396-4899-b5a4-11303b8ed92b, status='pending'
+      - PUT request to update status='completed' returned employee object (not repair)
+      - Repair status still 'pending' (not updated)
+      - Employee object incorrectly has status='completed'
+      
+      FIX REQUIRED: Move all scoped employee routes (lines 1020-1179) to BEFORE the generic CRUD loop 
+      (before line 545). This ensures specific routes with more complex patterns are checked first.
+      
+      AFFECTED ENDPOINT: PUT /api/employees/:id/repairs/:repairId
+      FILE: /app/app/api/[[...path]]/route.js
+      LINES: 1088-1107 (needs to be moved before line 545)
+      
+      All other scoped employee endpoints working correctly with proper token and permission enforcement.
+
+test_plan:
+  current_focus:
+    - "Fix Employee Repair Update route ordering bug"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
