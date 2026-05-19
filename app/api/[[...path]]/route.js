@@ -965,7 +965,9 @@ async function handle(request, params) {
   // ============ FILE UPLOAD (multipart) ============
   if (path === 'upload' && method === 'POST') {
     try {
-      const form = await request.formData();
+      let form;
+      try { form = await request.formData(); }
+      catch { return err('لم يتم إرسال ملف', 400); }
       const file = form.get('file');
       if (!file || typeof file === 'string') return err('لم يتم إرسال ملف', 400);
       const buf = Buffer.from(await file.arrayBuffer());
