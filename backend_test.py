@@ -1,478 +1,822 @@
 #!/usr/bin/env python3
 """
-Backend API Test Suite for HR/Employee Management System
-Tests 10 NEW endpoints for attendance, tasks, payroll, and HR reports
+Backend API Testing for Arabic ERP - Task Workflow, Notifications, File Upload, Privacy
+Tests NEW endpoints: Task Accept/Reject/Complete/Review, Notifications, File Upload, Employee Self
 """
 
 import requests
 import json
-from datetime import datetime, timedelta
+import os
+from io import BytesIO
 
-BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
+# Base URL from environment
+BASE_URL = os.getenv('NEXT_PUBLIC_BASE_URL', 'https://isp-noc-hub.preview.emergentagent.com')
+API_URL = f"{BASE_URL}/api"
 
-def print_test(name, passed, details=""):
-    status = "✅ PASSED" if passed else "❌ FAILED"
-    print(f"\n{status}: {name}")
-    if details:
-        print(f"  Details: {details}")
+print(f"🧪 Testing Arabic ERP Backend - Task Workflow & Notifications")
+print(f"📍 Base URL: {API_URL}\n")
 
-def test_hr_employee_management():
-    print("\n" + "="*80)
-    print("HR / EMPLOYEE MANAGEMENT BACKEND TESTING")
-    print("="*80)
-    
-    # Step 0: Get employees and tasks first
-    print("\n[SETUP] Getting employees and tasks from database...")
+# Test counters
+tests_passed = 0
+tests_failed = 0
+test_results = []
+
+def test(name, func):
+    """Run a test and track results"""
+    global tests_passed, tests_failed
     try:
-        resp = requests.get(f"{BASE_URL}/employees", timeout=10)
-        employees = resp.json()
-        print(f"  Found {len(employees)} employees")
-        
-        resp = requests.get(f"{BASE_URL}/tasks", timeout=10)
-        tasks = resp.json()
-        print(f"  Found {len(tasks)} tasks")
-        
-        if len(employees) == 0:
-            print("❌ CRITICAL: No employees found in database!")
-            return
-        if len(tasks) == 0:
-            print("⚠️  WARNING: No tasks found in database")
+        print(f"\n{'='*80}")
+        print(f"🧪 TEST: {name}")
+        print(f"{'='*80}")
+        func()
+        tests_passed += 1
+        test_results.append(f"✅ {name}")
+        print(f"✅ PASSED: {name}")
+    except AssertionError as e:
+        tests_failed += 1
+        test_results.append(f"❌ {name}: {str(e)}")
+        print(f"❌ FAILED: {name}")
+        print(f"   Error: {str(e)}")
     except Exception as e:
-        print(f"❌ SETUP FAILED: {e}")
-        return
+        tests_failed += 1
+        test_results.append(f"❌ {name}: {str(e)}")
+        print(f"❌ ERROR: {name}")
+        print(f"   Exception: {str(e)}")
+
+# Global variables for test data
+employee_id = None
+employee_name = None
+task_id = None
+notification_id = None
+uploaded_file_url = None
+
+# ============================================================================
+# SETUP: Get Employee Data
+# ============================================================================
+
+def setup_get_employee():
+    """Get employee with username='asas' for testing"""
+    global employee_id, employee_name
+    print("🔍 Getting employee data (username='asas')...")
     
-    # Find employee with username 'emp1' or use first employee
-    test_employee = None
+    # Get all employees
+    r = requests.get(f"{API_URL}/employees")
+    assert r.status_code == 200, f"Failed to get employees: {r.status_code}"
+    
+    employees = r.json()
+    print(f"   Found {len(employees)} employees in database")
+    
+    # Find employee with username='asas'
+    asas_emp = None
     for emp in employees:
-        if emp.get('username') == 'emp1':
-            test_employee = emp
+        if emp.get('username') == 'asas':
+            asas_emp = emp
             break
     
-    if not test_employee:
-        # Try other common usernames from seeded data
-        for username in ['karar', 'haidar', 'ali', 'zahra', 'mustafa']:
-            for emp in employees:
-                if emp.get('username') == username:
-                    test_employee = emp
-                    break
-            if test_employee:
-                break
+    assert asas_emp is not None, "Employee with username='asas' not found"
     
-    if not test_employee:
-        test_employee = employees[0]
+    employee_id = asas_emp['id']
+    employee_name = asas_emp['name']
     
-    print(f"  Using test employee: {test_employee.get('name')} (username: {test_employee.get('username')})")
-    
-    employee_id = test_employee['id']
-    employee_username = test_employee.get('username', 'emp1')
-    employee_password = test_employee.get('password', 'pass123')
-    
-    # ============================================================================
-    # TEST 1: POST /api/employees/login - Valid credentials
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 1: Employee Login - Valid Credentials")
-    print("-"*80)
-    try:
-        # First try emp1/pass123 as mentioned in review request
-        resp = requests.post(f"{BASE_URL}/employees/login", 
-                            json={"username": "emp1", "password": "pass123"},
-                            timeout=10)
-        
-        if resp.status_code == 401:
-            # Try with the actual employee credentials
-            print(f"  emp1/pass123 not found, trying {employee_username}/{employee_password}")
-            resp = requests.post(f"{BASE_URL}/employees/login", 
-                                json={"username": employee_username, "password": employee_password},
-                                timeout=10)
-        
-        data = resp.json()
-        
-        if resp.status_code == 200 and data.get('success') and 'employee' in data and 'token' in data:
-            token = data['token']
-            employee = data['employee']
-            print_test("Employee Login - Valid", True, 
-                      f"Logged in as {employee.get('name')}, token: {token[:20]}...")
-            
-            # Update employee_id if we used emp1
-            if employee.get('username') == 'emp1':
-                employee_id = employee['id']
-                test_employee = employee
-        else:
-            print_test("Employee Login - Valid", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Employee Login - Valid", False, str(e))
-    
-    # ============================================================================
-    # TEST 2: POST /api/employees/login - Invalid credentials
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 2: Employee Login - Invalid Credentials")
-    print("-"*80)
-    try:
-        resp = requests.post(f"{BASE_URL}/employees/login", 
-                            json={"username": "wronguser", "password": "wrongpass"},
-                            timeout=10)
-        
-        if resp.status_code == 401:
-            print_test("Employee Login - Invalid", True, 
-                      "Correctly returned 401 Unauthorized")
-        else:
-            print_test("Employee Login - Invalid", False, 
-                      f"Expected 401, got {resp.status_code}")
-    except Exception as e:
-        print_test("Employee Login - Invalid", False, str(e))
-    
-    # ============================================================================
-    # TEST 3: POST /api/attendance/checkin - First check-in
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 3: Attendance Check-in - First Time")
-    print("-"*80)
-    try:
-        # First, delete any existing attendance for today to ensure clean test
-        today = datetime.now().strftime('%Y-%m-%d')
-        resp_att = requests.get(f"{BASE_URL}/attendance/today", timeout=10)
-        if resp_att.status_code == 200:
-            today_records = resp_att.json()
-            for record in today_records:
-                if record.get('employeeId') == employee_id:
-                    print(f"  Cleaning up existing attendance record for today...")
-                    # Note: No DELETE endpoint for attendance, so we'll work with existing
-        
-        resp = requests.post(f"{BASE_URL}/attendance/checkin", 
-                            json={"employeeId": employee_id},
-                            timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and data.get('success') and 'record' in data:
-            record = data['record']
-            print_test("Attendance Check-in", True, 
-                      f"Check-in at {record.get('checkIn')}, Late: {record.get('isLate')}, "
-                      f"Late Minutes: {record.get('lateMinutes')}, Status: {record.get('status')}, "
-                      f"Auto Deduction: {record.get('autoDeduction')}")
-            
-            # Check if late and auto-deduction was created
-            if record.get('isLate'):
-                print(f"  ⚠️  Employee was late by {record.get('lateMinutes')} minutes")
-                print(f"  💰 Auto deduction: {record.get('autoDeduction')} IQD")
-        elif resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
-            print_test("Attendance Check-in", True, 
-                      "Already checked in today (expected if running multiple times)")
-        else:
-            print_test("Attendance Check-in", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Attendance Check-in", False, str(e))
-    
-    # ============================================================================
-    # TEST 4: POST /api/attendance/checkin - Duplicate (should fail)
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 4: Attendance Check-in - Duplicate (Should Fail)")
-    print("-"*80)
-    try:
-        resp = requests.post(f"{BASE_URL}/attendance/checkin", 
-                            json={"employeeId": employee_id},
-                            timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
-            print_test("Duplicate Check-in Prevention", True, 
-                      f"Correctly rejected: {data.get('error')}")
-        else:
-            print_test("Duplicate Check-in Prevention", False, 
-                      f"Expected 400 with Arabic error, got {resp.status_code}: {data}")
-    except Exception as e:
-        print_test("Duplicate Check-in Prevention", False, str(e))
-    
-    # ============================================================================
-    # TEST 5: GET /api/attendance/today
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 5: Get Today's Attendance")
-    print("-"*80)
-    try:
-        resp = requests.get(f"{BASE_URL}/attendance/today", timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and isinstance(data, list):
-            print_test("Get Today's Attendance", True, 
-                      f"Found {len(data)} attendance records for today")
-            
-            # Find our employee's record
-            our_record = None
-            for record in data:
-                if record.get('employeeId') == employee_id:
-                    our_record = record
-                    print(f"  Our employee: {record.get('employeeName')}, Status: {record.get('status')}, "
-                          f"Check-in: {record.get('checkIn')}, Check-out: {record.get('checkOut')}")
-                    break
-        else:
-            print_test("Get Today's Attendance", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Get Today's Attendance", False, str(e))
-    
-    # ============================================================================
-    # TEST 6: POST /api/attendance/checkout
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 6: Attendance Check-out")
-    print("-"*80)
-    try:
-        resp = requests.post(f"{BASE_URL}/attendance/checkout", 
-                            json={"employeeId": employee_id},
-                            timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and data.get('success') and 'hoursWorked' in data:
-            print_test("Attendance Check-out", True, 
-                      f"Hours worked: {data.get('hoursWorked')}")
-        elif resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
-            print_test("Attendance Check-out", True, 
-                      "Already checked out (expected if running multiple times)")
-        else:
-            print_test("Attendance Check-out", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Attendance Check-out", False, str(e))
-    
-    # ============================================================================
-    # TEST 7: POST /api/attendance/checkout - Duplicate (should fail)
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 7: Attendance Check-out - Duplicate (Should Fail)")
-    print("-"*80)
-    try:
-        resp = requests.post(f"{BASE_URL}/attendance/checkout", 
-                            json={"employeeId": employee_id},
-                            timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
-            print_test("Duplicate Check-out Prevention", True, 
-                      f"Correctly rejected: {data.get('error')}")
-        else:
-            print_test("Duplicate Check-out Prevention", False, 
-                      f"Expected 400 with Arabic error, got {resp.status_code}: {data}")
-    except Exception as e:
-        print_test("Duplicate Check-out Prevention", False, str(e))
-    
-    # ============================================================================
-    # TEST 8: GET /api/employees/:id/attendance
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 8: Get Employee's Attendance History")
-    print("-"*80)
-    try:
-        resp = requests.get(f"{BASE_URL}/employees/{employee_id}/attendance", timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and isinstance(data, list):
-            print_test("Get Employee Attendance History", True, 
-                      f"Found {len(data)} attendance records")
-            
-            if len(data) > 0:
-                latest = data[0]
-                print(f"  Latest: Date: {latest.get('date')}, Status: {latest.get('status')}, "
-                      f"Hours: {latest.get('hoursWorked')}")
-        else:
-            print_test("Get Employee Attendance History", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Get Employee Attendance History", False, str(e))
-    
-    # ============================================================================
-    # TEST 9: GET /api/employees/:id/tasks
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 9: Get Employee's Tasks")
-    print("-"*80)
-    try:
-        resp = requests.get(f"{BASE_URL}/employees/{employee_id}/tasks", timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and isinstance(data, list):
-            print_test("Get Employee Tasks", True, 
-                      f"Found {len(data)} tasks assigned to employee")
-            
-            if len(data) > 0:
-                task = data[0]
-                print(f"  Task: {task.get('title')}, Status: {task.get('status')}, "
-                      f"Progress: {task.get('progress')}%, Priority: {task.get('priority')}")
-        else:
-            print_test("Get Employee Tasks", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Get Employee Tasks", False, str(e))
-    
-    # ============================================================================
-    # TEST 10: POST /api/tasks/:id/update
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 10: Update Task")
-    print("-"*80)
-    try:
-        if len(tasks) > 0:
-            task_id = tasks[0]['id']
-            update_data = {
-                "status": "in_progress",
-                "progress": 75,
-                "notes": "تم إنجاز 75% من المهمة - اختبار تلقائي",
-                "attachments": ["test_file.pdf"]
-            }
-            
-            resp = requests.post(f"{BASE_URL}/tasks/{task_id}/update", 
-                                json=update_data,
-                                timeout=10)
-            data = resp.json()
-            
-            if resp.status_code == 200 and data.get('id') == task_id:
-                print_test("Update Task", True, 
-                          f"Updated task: Status={data.get('status')}, Progress={data.get('progress')}%, "
-                          f"Notes={data.get('notes')[:50]}...")
-            else:
-                print_test("Update Task", False, 
-                          f"Status: {resp.status_code}, Response: {data}")
-        else:
-            print_test("Update Task", False, "No tasks available to update")
-    except Exception as e:
-        print_test("Update Task", False, str(e))
-    
-    # ============================================================================
-    # TEST 11: GET /api/employees/:id/payroll?month=YYYY-MM
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 11: Get Employee Payroll")
-    print("-"*80)
-    try:
-        current_month = datetime.now().strftime('%Y-%m')
-        resp = requests.get(f"{BASE_URL}/employees/{employee_id}/payroll?month={current_month}", 
-                           timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and 'employee' in data and 'finalSalary' in data:
-            print_test("Get Employee Payroll", True, 
-                      f"Month: {data.get('month')}, Base Salary: {data.get('baseSalary')}, "
-                      f"Bonuses: {data.get('bonuses')}, Deductions: {data.get('deductions')}, "
-                      f"Final Salary: {data.get('finalSalary')}")
-            print(f"  Attendance: Present={data.get('presentDays')}, Late={data.get('lateDays')}, "
-                  f"Absent={data.get('absentDays')}, Total={data.get('totalDays')}")
-            print(f"  Payroll Entries: {len(data.get('entries', []))}")
-        else:
-            print_test("Get Employee Payroll", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Get Employee Payroll", False, str(e))
-    
-    # ============================================================================
-    # TEST 12: GET /api/hr/reports?month=YYYY-MM
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 12: Get HR Reports")
-    print("-"*80)
-    try:
-        current_month = datetime.now().strftime('%Y-%m')
-        resp = requests.get(f"{BASE_URL}/hr/reports?month={current_month}", timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and 'employeeStats' in data:
-            print_test("Get HR Reports", True, 
-                      f"Month: {data.get('month')}, Total Employees: {data.get('totalEmployees')}, "
-                      f"Total Salaries: {data.get('totalSalaries')}, "
-                      f"Total Bonuses: {data.get('totalBonuses')}, "
-                      f"Total Deductions: {data.get('totalDeductions')}")
-            print(f"  Tasks: Total={data.get('totalTasks')}, Completed={data.get('completedTasks')}")
-            print(f"  Employee Stats: {len(data.get('employeeStats', []))} employees")
-            
-            if len(data.get('topPerformers', [])) > 0:
-                top = data['topPerformers'][0]
-                print(f"  Top Performer: {top.get('name')} (KPI: {top.get('kpi')})")
-        else:
-            print_test("Get HR Reports", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("Get HR Reports", False, str(e))
-    
-    # ============================================================================
-    # TEST 13: Payroll Entries CRUD
-    # ============================================================================
-    print("\n" + "-"*80)
-    print("TEST 13: Payroll Entries CRUD")
-    print("-"*80)
-    
-    # GET all payroll entries
-    try:
-        resp = requests.get(f"{BASE_URL}/payroll-entries", timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 200 and isinstance(data, list):
-            print_test("GET Payroll Entries", True, f"Found {len(data)} payroll entries")
-        else:
-            print_test("GET Payroll Entries", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("GET Payroll Entries", False, str(e))
-    
-    # POST - Create manual bonus entry
-    try:
-        today = datetime.now().strftime('%Y-%m-%d')
-        bonus_entry = {
-            "employeeId": employee_id,
-            "employeeName": test_employee.get('name'),
-            "type": "bonus",
-            "amount": 50000,
-            "reason": "مكافأة أداء متميز - اختبار تلقائي",
-            "auto": False,
-            "date": today
-        }
-        
-        resp = requests.post(f"{BASE_URL}/payroll-entries", 
-                            json=bonus_entry,
-                            timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 201 and data.get('id'):
-            created_entry_id = data['id']
-            print_test("POST Payroll Entry (Bonus)", True, 
-                      f"Created bonus entry: {data.get('amount')} IQD, Reason: {data.get('reason')}")
-        else:
-            print_test("POST Payroll Entry (Bonus)", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("POST Payroll Entry (Bonus)", False, str(e))
-    
-    # POST - Create manual deduction entry
-    try:
-        deduction_entry = {
-            "employeeId": employee_id,
-            "employeeName": test_employee.get('name'),
-            "type": "deduction",
-            "amount": 10000,
-            "reason": "خصم يدوي - اختبار تلقائي",
-            "auto": False,
-            "date": today
-        }
-        
-        resp = requests.post(f"{BASE_URL}/payroll-entries", 
-                            json=deduction_entry,
-                            timeout=10)
-        data = resp.json()
-        
-        if resp.status_code == 201 and data.get('id'):
-            print_test("POST Payroll Entry (Deduction)", True, 
-                      f"Created deduction entry: {data.get('amount')} IQD, Reason: {data.get('reason')}")
-        else:
-            print_test("POST Payroll Entry (Deduction)", False, 
-                      f"Status: {resp.status_code}, Response: {data}")
-    except Exception as e:
-        print_test("POST Payroll Entry (Deduction)", False, str(e))
-    
-    print("\n" + "="*80)
-    print("HR / EMPLOYEE MANAGEMENT TESTING COMPLETE")
-    print("="*80)
+    print(f"   ✅ Found employee: {employee_name} (ID: {employee_id})")
+    print(f"   Employee details: role={asas_emp.get('role')}, kpi={asas_emp.get('kpi')}, tasksCompleted={asas_emp.get('tasksCompleted', 0)}")
 
-if __name__ == "__main__":
-    test_hr_employee_management()
+# ============================================================================
+# TEST 1: Task Creation with Auto-Notification
+# ============================================================================
+
+def test_task_creation_with_notification():
+    """Test POST /api/tasks - creates task with status='pending' and notifies employee"""
+    global task_id
+    
+    print(f"📝 Creating new task assigned to employee {employee_id}...")
+    
+    task_data = {
+        "title": "اختبار نظام المهام الجديد",
+        "description": "مهمة اختبار لنظام قبول ورفض المهام",
+        "priority": "high",
+        "dueDate": "2026-05-25",
+        "assignedTo": employee_id,
+        "assignedToName": employee_name,
+        "createdBy": "مدير النظام",
+        "createdById": "manager-test-id"
+    }
+    
+    r = requests.post(f"{API_URL}/tasks", json=task_data)
+    assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.text}"
+    
+    task = r.json()
+    print(f"   ✅ Task created: {task['id']}")
+    print(f"   Title: {task['title']}")
+    print(f"   Status: {task['status']}")
+    print(f"   Priority: {task['priority']}")
+    
+    # Verify status is 'pending'
+    assert task['status'] == 'pending', f"Expected status='pending', got '{task['status']}'"
+    print(f"   ✅ Status is 'pending' (default)")
+    
+    task_id = task['id']
+    
+    # Verify notification was created for employee
+    print(f"\n🔔 Checking if notification was created for employee...")
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    assert r.status_code == 200, f"Failed to get notifications: {r.status_code}"
+    
+    notifications = r.json()
+    print(f"   Found {len(notifications)} notifications for employee")
+    
+    # Find notification for this task
+    task_notification = None
+    for notif in notifications:
+        if notif.get('taskId') == task_id and notif.get('type') == 'task_new':
+            task_notification = notif
+            break
+    
+    assert task_notification is not None, "No notification found for new task"
+    print(f"   ✅ Notification created:")
+    print(f"      Type: {task_notification['type']}")
+    print(f"      Title: {task_notification['title']}")
+    print(f"      Message: {task_notification['message']}")
+    print(f"      Read: {task_notification['read']}")
+
+# ============================================================================
+# TEST 2: Task Accept (Employee)
+# ============================================================================
+
+def test_task_accept():
+    """Test POST /api/tasks/:id/accept - employee accepts task"""
+    
+    print(f"✅ Employee accepting task {task_id}...")
+    
+    r = requests.post(f"{API_URL}/tasks/{task_id}/accept", json={"employeeId": employee_id})
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    print(f"   ✅ Task accepted successfully")
+    
+    # Verify task status changed to 'in_progress'
+    print(f"\n🔍 Verifying task status changed to 'in_progress'...")
+    r = requests.get(f"{API_URL}/tasks")
+    tasks = r.json()
+    task = next((t for t in tasks if t['id'] == task_id), None)
+    
+    assert task is not None, "Task not found"
+    assert task['status'] == 'in_progress', f"Expected status='in_progress', got '{task['status']}'"
+    assert 'acceptedAt' in task, "acceptedAt field not set"
+    print(f"   ✅ Task status: {task['status']}")
+    print(f"   ✅ Accepted at: {task['acceptedAt']}")
+    
+    # Verify manager notification was created
+    print(f"\n🔔 Checking if manager notification was created...")
+    manager_id = "manager-test-id"
+    r = requests.get(f"{API_URL}/notifications?userId={manager_id}")
+    assert r.status_code == 200, f"Failed to get manager notifications: {r.status_code}"
+    
+    notifications = r.json()
+    print(f"   Found {len(notifications)} notifications for manager")
+    
+    # Find notification for task acceptance
+    accept_notif = None
+    for notif in notifications:
+        if notif.get('taskId') == task_id and notif.get('type') == 'task_accepted':
+            accept_notif = notif
+            break
+    
+    assert accept_notif is not None, "No notification found for task acceptance"
+    print(f"   ✅ Manager notification created:")
+    print(f"      Type: {accept_notif['type']}")
+    print(f"      Title: {accept_notif['title']}")
+    print(f"      Message: {accept_notif['message']}")
+
+# ============================================================================
+# TEST 3: Task Accept - Validation Tests
+# ============================================================================
+
+def test_task_accept_validation():
+    """Test task accept validation (wrong employee, wrong status)"""
+    
+    # Test 1: Wrong employee ID (should return 403)
+    print(f"🔒 Testing accept with wrong employeeId (should fail with 403)...")
+    r = requests.post(f"{API_URL}/tasks/{task_id}/accept", json={"employeeId": "wrong-employee-id"})
+    assert r.status_code == 403, f"Expected 403, got {r.status_code}"
+    print(f"   ✅ Correctly rejected with 403 (unauthorized)")
+    
+    # Test 2: Task already accepted (should return 400)
+    print(f"\n🔒 Testing accept on already accepted task (should fail with 400)...")
+    r = requests.post(f"{API_URL}/tasks/{task_id}/accept", json={"employeeId": employee_id})
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}"
+    print(f"   ✅ Correctly rejected with 400 (invalid status)")
+
+# ============================================================================
+# TEST 4: Task Reject with Reason
+# ============================================================================
+
+def test_task_reject():
+    """Test POST /api/tasks/:id/reject - employee rejects task with reason"""
+    
+    # First, create a new task to reject
+    print(f"📝 Creating new task to test rejection...")
+    task_data = {
+        "title": "مهمة للرفض",
+        "description": "مهمة سيتم رفضها",
+        "priority": "medium",
+        "dueDate": "2026-05-26",
+        "assignedTo": employee_id,
+        "assignedToName": employee_name,
+        "createdBy": "مدير النظام",
+        "createdById": "manager-test-id"
+    }
+    
+    r = requests.post(f"{API_URL}/tasks", json=task_data)
+    assert r.status_code == 201, f"Failed to create task: {r.status_code}"
+    reject_task_id = r.json()['id']
+    print(f"   ✅ Task created: {reject_task_id}")
+    
+    # Test rejection with short reason (should fail)
+    print(f"\n🔒 Testing reject with short reason (should fail with 400)...")
+    r = requests.post(f"{API_URL}/tasks/{reject_task_id}/reject", json={
+        "employeeId": employee_id,
+        "reason": "ab"  # Too short
+    })
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}"
+    print(f"   ✅ Correctly rejected with 400 (reason too short)")
+    
+    # Test rejection with valid reason
+    print(f"\n❌ Employee rejecting task with valid reason...")
+    reason = "لا أملك الخبرة الكافية لإنجاز هذه المهمة"
+    r = requests.post(f"{API_URL}/tasks/{reject_task_id}/reject", json={
+        "employeeId": employee_id,
+        "reason": reason
+    })
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    print(f"   ✅ Task rejected successfully")
+    
+    # Verify task status and reason
+    print(f"\n🔍 Verifying task status and rejection reason...")
+    r = requests.get(f"{API_URL}/tasks")
+    tasks = r.json()
+    task = next((t for t in tasks if t['id'] == reject_task_id), None)
+    
+    assert task is not None, "Task not found"
+    assert task['status'] == 'rejected_by_employee', f"Expected status='rejected_by_employee', got '{task['status']}'"
+    assert task.get('rejectionReason') == reason, "Rejection reason not saved correctly"
+    assert 'rejectedAt' in task, "rejectedAt field not set"
+    print(f"   ✅ Task status: {task['status']}")
+    print(f"   ✅ Rejection reason: {task['rejectionReason']}")
+    print(f"   ✅ Rejected at: {task['rejectedAt']}")
+    
+    # Verify manager notification with reason
+    print(f"\n🔔 Checking if manager notification includes rejection reason...")
+    r = requests.get(f"{API_URL}/notifications?userId=manager-test-id")
+    notifications = r.json()
+    
+    reject_notif = None
+    for notif in notifications:
+        if notif.get('taskId') == reject_task_id and notif.get('type') == 'task_rejected':
+            reject_notif = notif
+            break
+    
+    assert reject_notif is not None, "No notification found for task rejection"
+    assert reason in reject_notif['message'], "Rejection reason not in notification message"
+    print(f"   ✅ Manager notification created with reason:")
+    print(f"      Message: {reject_notif['message']}")
+
+# ============================================================================
+# TEST 5: Task Complete (Submit Report)
+# ============================================================================
+
+def test_task_complete():
+    """Test POST /api/tasks/:id/complete - employee submits completion report"""
+    
+    print(f"📋 Employee submitting completion report for task {task_id}...")
+    
+    report_data = {
+        "employeeId": employee_id,
+        "summary": "تم إنجاز المهمة بنجاح وفق المطلوب",
+        "notes": "تمت المهمة بدون مشاكل",
+        "progress": 100,
+        "attachments": ["/uploads/report1.pdf", "/uploads/screenshot.png"],
+        "problems": "لا توجد مشاكل",
+        "completionTime": "2026-05-20T14:30:00.000Z"
+    }
+    
+    r = requests.post(f"{API_URL}/tasks/{task_id}/complete", json=report_data)
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    print(f"   ✅ Completion report submitted successfully")
+    
+    # Verify task status and report
+    print(f"\n🔍 Verifying task status and report data...")
+    r = requests.get(f"{API_URL}/tasks")
+    tasks = r.json()
+    task = next((t for t in tasks if t['id'] == task_id), None)
+    
+    assert task is not None, "Task not found"
+    assert task['status'] == 'pending_review', f"Expected status='pending_review', got '{task['status']}'"
+    assert 'report' in task, "Report not saved"
+    
+    report = task['report']
+    assert report['summary'] == report_data['summary'], "Summary not saved correctly"
+    assert report['notes'] == report_data['notes'], "Notes not saved correctly"
+    assert report['progress'] == report_data['progress'], "Progress not saved correctly"
+    assert report['attachments'] == report_data['attachments'], "Attachments not saved correctly"
+    assert report['problems'] == report_data['problems'], "Problems not saved correctly"
+    assert 'submittedAt' in report, "submittedAt not set"
+    
+    print(f"   ✅ Task status: {task['status']}")
+    print(f"   ✅ Report saved:")
+    print(f"      Summary: {report['summary']}")
+    print(f"      Progress: {report['progress']}%")
+    print(f"      Attachments: {len(report['attachments'])} files")
+    print(f"      Submitted at: {report['submittedAt']}")
+    
+    # Verify manager notification
+    print(f"\n🔔 Checking if manager notification was created...")
+    r = requests.get(f"{API_URL}/notifications?userId=manager-test-id")
+    notifications = r.json()
+    
+    submit_notif = None
+    for notif in notifications:
+        if notif.get('taskId') == task_id and notif.get('type') == 'task_submitted':
+            submit_notif = notif
+            break
+    
+    assert submit_notif is not None, "No notification found for task submission"
+    print(f"   ✅ Manager notification created:")
+    print(f"      Type: {submit_notif['type']}")
+    print(f"      Title: {submit_notif['title']}")
+    print(f"      Message: {submit_notif['message']}")
+
+# ============================================================================
+# TEST 6: Task Review - Approve with Rating
+# ============================================================================
+
+def test_task_review_approve():
+    """Test POST /api/tasks/:id/review - manager approves with rating"""
+    
+    print(f"⭐ Manager reviewing and approving task {task_id}...")
+    
+    # Get employee's current KPI and tasksCompleted before approval
+    r = requests.get(f"{API_URL}/employees")
+    employees = r.json()
+    emp_before = next((e for e in employees if e['id'] == employee_id), None)
+    kpi_before = emp_before.get('kpi', 0)
+    tasks_completed_before = emp_before.get('tasksCompleted', 0)
+    rating_points_before = emp_before.get('ratingPoints', 0)
+    
+    print(f"   Employee stats before approval:")
+    print(f"      KPI: {kpi_before}")
+    print(f"      Tasks Completed: {tasks_completed_before}")
+    print(f"      Rating Points: {rating_points_before}")
+    
+    review_data = {
+        "action": "approve",
+        "rating": {
+            "speed": 5,
+            "quality": 4,
+            "commitment": 5,
+            "delay": 4
+        },
+        "notes": "عمل ممتاز، استمر",
+        "reviewerName": "مدير النظام"
+    }
+    
+    r = requests.post(f"{API_URL}/tasks/{task_id}/review", json=review_data)
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    print(f"   ✅ Task approved successfully")
+    
+    # Verify task status and review
+    print(f"\n🔍 Verifying task status and review data...")
+    r = requests.get(f"{API_URL}/tasks")
+    tasks = r.json()
+    task = next((t for t in tasks if t['id'] == task_id), None)
+    
+    assert task is not None, "Task not found"
+    assert task['status'] == 'completed', f"Expected status='completed', got '{task['status']}'"
+    assert 'review' in task, "Review not saved"
+    
+    review = task['review']
+    assert review['action'] == 'approve', "Action not saved correctly"
+    assert review['rating'] == review_data['rating'], "Rating not saved correctly"
+    assert review['notes'] == review_data['notes'], "Notes not saved correctly"
+    
+    print(f"   ✅ Task status: {task['status']}")
+    print(f"   ✅ Review saved:")
+    print(f"      Action: {review['action']}")
+    print(f"      Rating: speed={review['rating']['speed']}, quality={review['rating']['quality']}, commitment={review['rating']['commitment']}, delay={review['rating']['delay']}")
+    print(f"      Notes: {review['notes']}")
+    
+    # Verify employee KPI updated
+    print(f"\n📊 Verifying employee KPI and stats updated...")
+    r = requests.get(f"{API_URL}/employees")
+    employees = r.json()
+    emp_after = next((e for e in employees if e['id'] == employee_id), None)
+    
+    assert emp_after is not None, "Employee not found"
+    
+    kpi_after = emp_after.get('kpi', 0)
+    tasks_completed_after = emp_after.get('tasksCompleted', 0)
+    rating_points_after = emp_after.get('ratingPoints', 0)
+    
+    # Calculate expected score: (5+4+5+4)/4 * 20 = 4.5 * 20 = 90
+    expected_score = round(((5 + 4 + 5 + 4) / 4) * 20)
+    
+    assert tasks_completed_after == tasks_completed_before + 1, f"Tasks completed not incremented: {tasks_completed_after} vs {tasks_completed_before}"
+    assert rating_points_after == rating_points_before + expected_score, f"Rating points not updated correctly: {rating_points_after} vs {rating_points_before + expected_score}"
+    
+    print(f"   ✅ Employee stats after approval:")
+    print(f"      KPI: {kpi_before} → {kpi_after}")
+    print(f"      Tasks Completed: {tasks_completed_before} → {tasks_completed_after}")
+    print(f"      Rating Points: {rating_points_before} → {rating_points_after} (+{expected_score})")
+    
+    # Verify employee notification
+    print(f"\n🔔 Checking if employee notification was created...")
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    notifications = r.json()
+    
+    approve_notif = None
+    for notif in notifications:
+        if notif.get('taskId') == task_id and notif.get('type') == 'task_approve':
+            approve_notif = notif
+            break
+    
+    assert approve_notif is not None, "No notification found for task approval"
+    print(f"   ✅ Employee notification created:")
+    print(f"      Type: {approve_notif['type']}")
+    print(f"      Title: {approve_notif['title']}")
+    print(f"      Message: {approve_notif['message']}")
+
+# ============================================================================
+# TEST 7: Task Review - Revise (back to in_progress)
+# ============================================================================
+
+def test_task_review_revise():
+    """Test POST /api/tasks/:id/review - manager requests revisions"""
+    
+    # Create and complete a new task for revise test
+    print(f"📝 Creating new task for revise test...")
+    task_data = {
+        "title": "مهمة للمراجعة",
+        "description": "مهمة سيتم طلب تعديلات عليها",
+        "priority": "medium",
+        "dueDate": "2026-05-27",
+        "assignedTo": employee_id,
+        "assignedToName": employee_name,
+        "createdBy": "مدير النظام",
+        "createdById": "manager-test-id"
+    }
+    
+    r = requests.post(f"{API_URL}/tasks", json=task_data)
+    revise_task_id = r.json()['id']
+    print(f"   ✅ Task created: {revise_task_id}")
+    
+    # Accept task
+    r = requests.post(f"{API_URL}/tasks/{revise_task_id}/accept", json={"employeeId": employee_id})
+    assert r.status_code == 200, "Failed to accept task"
+    print(f"   ✅ Task accepted")
+    
+    # Complete task
+    r = requests.post(f"{API_URL}/tasks/{revise_task_id}/complete", json={
+        "employeeId": employee_id,
+        "summary": "تم الإنجاز",
+        "notes": "ملاحظات",
+        "progress": 100
+    })
+    assert r.status_code == 200, "Failed to complete task"
+    print(f"   ✅ Task completed")
+    
+    # Manager requests revisions
+    print(f"\n🔄 Manager requesting revisions...")
+    review_data = {
+        "action": "revise",
+        "notes": "يرجى إعادة العمل على النقاط التالية: 1) تحسين الجودة 2) إضافة تفاصيل أكثر",
+        "reviewerName": "مدير النظام"
+    }
+    
+    r = requests.post(f"{API_URL}/tasks/{revise_task_id}/review", json=review_data)
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    print(f"   ✅ Revisions requested successfully")
+    
+    # Verify task status went back to 'in_progress'
+    print(f"\n🔍 Verifying task status went back to 'in_progress'...")
+    r = requests.get(f"{API_URL}/tasks")
+    tasks = r.json()
+    task = next((t for t in tasks if t['id'] == revise_task_id), None)
+    
+    assert task is not None, "Task not found"
+    assert task['status'] == 'in_progress', f"Expected status='in_progress', got '{task['status']}'"
+    print(f"   ✅ Task status: {task['status']} (back to work)")
+    
+    # Verify employee notification
+    print(f"\n🔔 Checking if employee notification was created...")
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    notifications = r.json()
+    
+    revise_notif = None
+    for notif in notifications:
+        if notif.get('taskId') == revise_task_id and notif.get('type') == 'task_revise':
+            revise_notif = notif
+            break
+    
+    assert revise_notif is not None, "No notification found for task revise"
+    print(f"   ✅ Employee notification created:")
+    print(f"      Type: {revise_notif['type']}")
+    print(f"      Title: {revise_notif['title']}")
+    print(f"      Message: {revise_notif['message']}")
+
+# ============================================================================
+# TEST 8: Task Review - Invalid Action
+# ============================================================================
+
+def test_task_review_invalid_action():
+    """Test task review with invalid action (should return 400)"""
+    
+    print(f"🔒 Testing review with invalid action (should fail with 400)...")
+    
+    review_data = {
+        "action": "invalid_action",  # Invalid
+        "notes": "test"
+    }
+    
+    r = requests.post(f"{API_URL}/tasks/{task_id}/review", json=review_data)
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}"
+    print(f"   ✅ Correctly rejected with 400 (invalid action)")
+
+# ============================================================================
+# TEST 9: Notifications - GET with userId
+# ============================================================================
+
+def test_notifications_get():
+    """Test GET /api/notifications?userId=X"""
+    
+    print(f"🔔 Getting notifications for employee {employee_id}...")
+    
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    notifications = r.json()
+    assert isinstance(notifications, list), "Expected array of notifications"
+    print(f"   ✅ Retrieved {len(notifications)} notifications")
+    
+    # Verify notifications are sorted by createdAt desc
+    if len(notifications) > 1:
+        for i in range(len(notifications) - 1):
+            assert notifications[i]['createdAt'] >= notifications[i+1]['createdAt'], "Notifications not sorted by createdAt desc"
+        print(f"   ✅ Notifications sorted by createdAt (descending)")
+    
+    # Verify structure
+    if len(notifications) > 0:
+        notif = notifications[0]
+        assert 'id' in notif, "Notification missing 'id'"
+        assert 'userId' in notif, "Notification missing 'userId'"
+        assert 'type' in notif, "Notification missing 'type'"
+        assert 'title' in notif, "Notification missing 'title'"
+        assert 'message' in notif, "Notification missing 'message'"
+        assert 'read' in notif, "Notification missing 'read'"
+        assert 'createdAt' in notif, "Notification missing 'createdAt'"
+        print(f"   ✅ Notification structure valid")
+        print(f"      Sample: {notif['type']} - {notif['title']}")
+    
+    # Test without userId (should return 400)
+    print(f"\n🔒 Testing GET without userId (should fail with 400)...")
+    r = requests.get(f"{API_URL}/notifications")
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}"
+    print(f"   ✅ Correctly rejected with 400 (userId required)")
+
+# ============================================================================
+# TEST 10: Notifications - Mark Single as Read
+# ============================================================================
+
+def test_notifications_mark_read():
+    """Test POST /api/notifications/:id/read"""
+    global notification_id
+    
+    print(f"📖 Marking single notification as read...")
+    
+    # Get unread notifications
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    notifications = r.json()
+    
+    unread = [n for n in notifications if not n.get('read')]
+    assert len(unread) > 0, "No unread notifications found"
+    
+    notification_id = unread[0]['id']
+    print(f"   Found unread notification: {notification_id}")
+    print(f"   Type: {unread[0]['type']}, Title: {unread[0]['title']}")
+    
+    # Mark as read
+    r = requests.post(f"{API_URL}/notifications/{notification_id}/read")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    print(f"   ✅ Notification marked as read")
+    
+    # Verify it's marked as read
+    print(f"\n🔍 Verifying notification is marked as read...")
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    notifications = r.json()
+    
+    notif = next((n for n in notifications if n['id'] == notification_id), None)
+    assert notif is not None, "Notification not found"
+    assert notif['read'] == True, f"Expected read=true, got {notif['read']}"
+    print(f"   ✅ Notification read status: {notif['read']}")
+
+# ============================================================================
+# TEST 11: Notifications - Mark All as Read
+# ============================================================================
+
+def test_notifications_mark_all_read():
+    """Test POST /api/notifications/read-all"""
+    
+    print(f"📖 Marking all notifications as read for employee...")
+    
+    # Get current unread count
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    notifications = r.json()
+    unread_before = len([n for n in notifications if not n.get('read')])
+    print(f"   Unread notifications before: {unread_before}")
+    
+    # Mark all as read
+    r = requests.post(f"{API_URL}/notifications/read-all", json={"userId": employee_id})
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    print(f"   ✅ All notifications marked as read")
+    
+    # Verify all are read
+    print(f"\n🔍 Verifying all notifications are marked as read...")
+    r = requests.get(f"{API_URL}/notifications?userId={employee_id}")
+    notifications = r.json()
+    
+    unread_after = len([n for n in notifications if not n.get('read')])
+    assert unread_after == 0, f"Expected 0 unread, found {unread_after}"
+    print(f"   ✅ Unread notifications after: {unread_after}")
+
+# ============================================================================
+# TEST 12: File Upload
+# ============================================================================
+
+def test_file_upload():
+    """Test POST /api/upload - multipart file upload"""
+    global uploaded_file_url
+    
+    print(f"📤 Testing file upload...")
+    
+    # Create a test file
+    file_content = b"This is a test file for upload testing.\nLine 2\nLine 3"
+    file_name = "test_document.txt"
+    
+    files = {'file': (file_name, BytesIO(file_content), 'text/plain')}
+    
+    r = requests.post(f"{API_URL}/upload", files=files)
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    result = r.json()
+    assert result.get('success') == True, "Expected success=true"
+    assert 'url' in result, "Missing 'url' in response"
+    assert 'name' in result, "Missing 'name' in response"
+    assert 'size' in result, "Missing 'size' in response"
+    
+    uploaded_file_url = result['url']
+    
+    print(f"   ✅ File uploaded successfully:")
+    print(f"      URL: {result['url']}")
+    print(f"      Name: {result['name']}")
+    print(f"      Size: {result['size']} bytes")
+    
+    # Verify URL format
+    assert result['url'].startswith('/uploads/'), f"URL should start with '/uploads/', got {result['url']}"
+    assert result['url'].endswith('.txt'), f"URL should end with '.txt', got {result['url']}"
+    print(f"   ✅ URL format valid")
+    
+    # Verify file exists on disk
+    import os
+    file_path = f"/app/public{result['url']}"
+    assert os.path.exists(file_path), f"File not found at {file_path}"
+    print(f"   ✅ File exists on disk: {file_path}")
+    
+    # Verify file content
+    with open(file_path, 'rb') as f:
+        saved_content = f.read()
+    assert saved_content == file_content, "File content doesn't match"
+    print(f"   ✅ File content verified")
+    
+    # Test upload without file (should return 400)
+    print(f"\n🔒 Testing upload without file (should fail with 400)...")
+    r = requests.post(f"{API_URL}/upload", data={})
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}"
+    print(f"   ✅ Correctly rejected with 400 (no file)")
+
+# ============================================================================
+# TEST 13: Employee Self (Privacy)
+# ============================================================================
+
+def test_employee_self():
+    """Test GET /api/employees/:id/self - returns safe fields only"""
+    
+    print(f"🔒 Testing employee self endpoint (privacy)...")
+    
+    r = requests.get(f"{API_URL}/employees/{employee_id}/self")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    
+    emp = r.json()
+    
+    # Verify required fields are present
+    required_fields = ['id', 'employeeId', 'name', 'role', 'photo', 'shiftStart', 
+                      'shiftEnd', 'permissions', 'status', 'salary', 'kpi', 
+                      'ratingPoints', 'tasksCompleted']
+    
+    for field in required_fields:
+        assert field in emp, f"Missing required field: {field}"
+    
+    print(f"   ✅ All required fields present:")
+    print(f"      ID: {emp['id']}")
+    print(f"      Employee ID: {emp['employeeId']}")
+    print(f"      Name: {emp['name']}")
+    print(f"      Role: {emp['role']}")
+    print(f"      Salary: {emp['salary']}")
+    print(f"      KPI: {emp['kpi']}")
+    print(f"      Tasks Completed: {emp['tasksCompleted']}")
+    
+    # Verify sensitive fields are NOT present
+    sensitive_fields = ['password', 'phone']
+    for field in sensitive_fields:
+        assert field not in emp, f"Sensitive field '{field}' should not be exposed"
+    
+    print(f"   ✅ Sensitive fields (password, phone) NOT exposed")
+    
+    # Test with invalid ID (should return 404)
+    print(f"\n🔒 Testing with invalid employee ID (should fail with 404)...")
+    r = requests.get(f"{API_URL}/employees/invalid-id-12345/self")
+    assert r.status_code == 404, f"Expected 404, got {r.status_code}"
+    print(f"   ✅ Correctly returned 404 (not found)")
+
+# ============================================================================
+# RUN ALL TESTS
+# ============================================================================
+
+print("\n" + "="*80)
+print("🚀 STARTING BACKEND TESTS")
+print("="*80)
+
+# Setup
+test("Setup: Get Employee Data", setup_get_employee)
+
+# Task Workflow Tests
+test("1. Task Creation with Auto-Notification", test_task_creation_with_notification)
+test("2. Task Accept (Employee)", test_task_accept)
+test("3. Task Accept - Validation Tests", test_task_accept_validation)
+test("4. Task Reject with Reason", test_task_reject)
+test("5. Task Complete (Submit Report)", test_task_complete)
+test("6. Task Review - Approve with Rating", test_task_review_approve)
+test("7. Task Review - Revise (back to in_progress)", test_task_review_revise)
+test("8. Task Review - Invalid Action", test_task_review_invalid_action)
+
+# Notifications Tests
+test("9. Notifications - GET with userId", test_notifications_get)
+test("10. Notifications - Mark Single as Read", test_notifications_mark_read)
+test("11. Notifications - Mark All as Read", test_notifications_mark_all_read)
+
+# File Upload Test
+test("12. File Upload", test_file_upload)
+
+# Privacy Test
+test("13. Employee Self (Privacy)", test_employee_self)
+
+# ============================================================================
+# SUMMARY
+# ============================================================================
+
+print("\n" + "="*80)
+print("📊 TEST SUMMARY")
+print("="*80)
+
+for result in test_results:
+    print(result)
+
+print(f"\n{'='*80}")
+print(f"✅ PASSED: {tests_passed}")
+print(f"❌ FAILED: {tests_failed}")
+print(f"📊 TOTAL:  {tests_passed + tests_failed}")
+print(f"{'='*80}")
+
+if tests_failed == 0:
+    print("\n🎉 ALL TESTS PASSED! 🎉")
+else:
+    print(f"\n⚠️  {tests_failed} TEST(S) FAILED")
+
+exit(0 if tests_failed == 0 else 1)

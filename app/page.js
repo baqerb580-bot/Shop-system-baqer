@@ -1683,48 +1683,78 @@ function TasksManager() {
   const [employees, setEmployees] = useState([]);
   const [statusFilter, setStatusFilter] = useState('all');
   const [open, setOpen] = useState(false);
-  const blank = { title: '', description: '', priority: 'medium', dueDate: new Date().toISOString().slice(0, 10), assignedTo: '', notes: '', status: 'new', progress: 0, attachments: [] };
+  const [reviewTask, setReviewTask] = useState(null);
+  const blank = { title: '', description: '', priority: 'medium', dueDate: new Date().toISOString().slice(0, 10), assignedTo: '', notes: '', status: 'pending', progress: 0, attachments: [] };
   const [form, setForm] = useState(blank);
   const load = async () => {
     const [t, e] = await Promise.all([api('tasks'), api('employees')]);
     setItems(t); setEmployees(e);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); const i = setInterval(load, 15000); return () => clearInterval(i); }, []);
 
-  const filtered = statusFilter === 'all' ? items : items.filter(t => t.status === statusFilter);
+  const filtered = statusFilter === 'all' ? items
+    : statusFilter === 'awaiting_review' ? items.filter(t => t.status === 'pending_review')
+    : items.filter(t => t.status === statusFilter);
 
   const save = async () => {
     if (!form.title || !form.assignedTo) { toast.error('العنوان والموظف مطلوبان'); return; }
     const emp = employees.find(e => e.id === form.assignedTo);
-    await api('tasks', { method: 'POST', body: JSON.stringify({ ...form, assignedToName: emp?.name, createdBy: 'المدير' }) });
-    toast.success('✅ تم إنشاء المهمة'); setOpen(false); setForm(blank); load();
+    await api('tasks', { method: 'POST', body: JSON.stringify({ ...form, assignedToName: emp?.name, createdBy: 'المدير', createdById: 'manager' }) });
+    toast.success('✅ تم إنشاء المهمة وإرسال إشعار للموظف'); setOpen(false); setForm(blank); load();
   };
   const remove = async (id) => { await api(`tasks/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
 
   const priorityCls = { high: 'bg-red-500/20 text-red-400 border-red-500/30', medium: 'bg-amber-500/20 text-amber-400 border-amber-500/30', low: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' };
-  const statusCls = { new: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30', in_progress: 'bg-amber-500/20 text-amber-400 border-amber-500/30', completed: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30', overdue: 'bg-red-500/20 text-red-400 border-red-500/30', failed: 'bg-red-500/30 text-red-300 border-red-500/40' };
-  const statusLabel = { new: 'جديدة', in_progress: 'جاري العمل', completed: 'مكتملة', overdue: 'متأخرة', failed: 'فشلت' };
+  const statusCls = {
+    pending: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+    new: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+    in_progress: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+    pending_review: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+    completed: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+    rejected_by_employee: 'bg-red-500/20 text-red-400 border-red-500/30',
+    rejected_by_manager: 'bg-red-500/30 text-red-300 border-red-500/40',
+    revision: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  };
+  const statusLabel = {
+    pending: 'بانتظار القبول', new: 'بانتظار القبول',
+    in_progress: 'جاري العمل', pending_review: 'بانتظار المراجعة',
+    completed: 'مكتملة', rejected_by_employee: 'رفض الموظف',
+    rejected_by_manager: 'مرفوضة', revision: 'إعادة تعديل',
+  };
+
+  const counts = {
+    all: items.length,
+    pending_review: items.filter(t => t.status === 'pending_review').length,
+    pending: items.filter(t => ['pending', 'new'].includes(t.status)).length,
+    in_progress: items.filter(t => t.status === 'in_progress').length,
+    completed: items.filter(t => t.status === 'completed').length,
+    rejected_by_employee: items.filter(t => t.status === 'rejected_by_employee').length,
+  };
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between gap-2 flex-wrap">
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-44 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">كل الحالات</SelectItem>
-            <SelectItem value="new">جديدة</SelectItem>
-            <SelectItem value="in_progress">جاري العمل</SelectItem>
-            <SelectItem value="completed">مكتملة</SelectItem>
-            <SelectItem value="overdue">متأخرة</SelectItem>
-            <SelectItem value="failed">فشلت</SelectItem>
-          </SelectContent>
-        </Select>
+      <div className="flex flex-wrap gap-2 justify-between">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { k: 'all', l: '📋 الكل', c: counts.all },
+            { k: 'pending_review', l: '🟣 بانتظار المراجعة', c: counts.pending_review },
+            { k: 'pending', l: '🟡 بانتظار القبول', c: counts.pending },
+            { k: 'in_progress', l: '🔵 جاري العمل', c: counts.in_progress },
+            { k: 'completed', l: '✅ مكتملة', c: counts.completed },
+            { k: 'rejected_by_employee', l: '❌ رفض الموظف', c: counts.rejected_by_employee },
+          ].map(b => (
+            <button key={b.k} onClick={() => setStatusFilter(b.k)}
+              className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${statusFilter === b.k ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground hover:text-gold'}`}>
+              {b.l} {b.c > 0 && <span className="font-bold">({b.c})</span>}
+            </button>
+          ))}
+        </div>
         <Button onClick={() => { setForm(blank); setOpen(true); }} className="btn-gold"><Plus className="w-4 h-4 ml-1" /> مهمة جديدة</Button>
       </div>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
         {filtered.map(t => (
-          <Card key={t.id} className="glass-card border-gold-soft hover:border-gold/50">
+          <Card key={t.id} className={`glass-card border-gold-soft hover:border-gold/50 ${t.status === 'pending_review' ? 'ring-2 ring-purple-500/40' : ''}`}>
             <CardContent className="p-4 space-y-2">
               <div className="flex justify-between items-start gap-2">
                 <h3 className="font-bold text-sm flex-1">{t.title}</h3>
@@ -1739,15 +1769,45 @@ function TasksManager() {
                 <div className="flex justify-between text-[10px]"><span className="text-muted-foreground">التقدم</span><span className="font-bold">{t.progress || 0}%</span></div>
                 <Progress value={t.progress || 0} className="h-1.5" />
               </div>
+
+              {t.status === 'rejected_by_employee' && t.rejectionReason && (
+                <div className="p-2 rounded bg-red-500/10 border border-red-500/30 text-[10px]">
+                  <span className="font-bold text-red-400">سبب الرفض: </span>{t.rejectionReason}
+                </div>
+              )}
+
+              {t.report && t.status === 'pending_review' && (
+                <div className="p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[10px] space-y-1">
+                  <p className="font-bold text-purple-400">📋 تقرير الإنجاز:</p>
+                  <p className="line-clamp-2">{t.report.summary}</p>
+                  {t.report.attachments?.length > 0 && <p>📎 {t.report.attachments.length} مرفق</p>}
+                </div>
+              )}
+
+              {t.review && (t.status === 'completed' || t.status === 'rejected_by_manager') && t.review.rating && (
+                <div className="text-[10px] grid grid-cols-2 gap-1 p-2 rounded bg-input/30 border border-gold-soft">
+                  <span>السرعة: {'⭐'.repeat(t.review.rating.speed || 0)}</span>
+                  <span>الجودة: {'⭐'.repeat(t.review.rating.quality || 0)}</span>
+                </div>
+              )}
+
               <div className="flex justify-between items-center pt-2 border-t border-gold-soft">
-                <Badge className={statusCls[t.status] + ' text-[10px]'}>{statusLabel[t.status]}</Badge>
-                <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(t.id)}><Trash2 className="w-3 h-3" /></Button>
+                <Badge className={statusCls[t.status] + ' text-[10px]'}>{statusLabel[t.status] || t.status}</Badge>
+                <div className="flex gap-1">
+                  {t.status === 'pending_review' && (
+                    <Button size="sm" className="btn-gold h-7 text-[10px]" onClick={() => setReviewTask(t)}>
+                      مراجعة
+                    </Button>
+                  )}
+                  <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(t.id)}><Trash2 className="w-3 h-3" /></Button>
+                </div>
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
 
+      {/* Create Task Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="glass-strong border-gold/40">
           <DialogHeader><DialogTitle className="gold-text">مهمة جديدة</DialogTitle></DialogHeader>
@@ -1772,10 +1832,120 @@ function TasksManager() {
             </div>
             <div className="col-span-2"><Label>تاريخ التسليم</Label><Input type="date" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} className="bg-input/30 border-gold/20" /></div>
           </div>
-          <DialogFooter><Button onClick={save} className="btn-gold w-full">إنشاء المهمة</Button></DialogFooter>
+          <DialogFooter><Button onClick={save} className="btn-gold w-full">إنشاء المهمة وإرسال للموظف</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <TaskReviewDialog task={reviewTask} onClose={() => setReviewTask(null)} onDone={() => { setReviewTask(null); load(); }} />
     </div>
+  );
+}
+
+function TaskReviewDialog({ task, onClose, onDone }) {
+  const [notes, setNotes] = useState('');
+  const [speed, setSpeed] = useState(4);
+  const [quality, setQuality] = useState(4);
+  const [commitment, setCommitment] = useState(4);
+  const [delay, setDelay] = useState(4);
+  useEffect(() => { if (task) { setNotes(''); setSpeed(4); setQuality(4); setCommitment(4); setDelay(4); } }, [task]);
+  if (!task) return null;
+
+  const submit = async (action) => {
+    const rating = { speed, quality, commitment, delay };
+    const r = await api(`tasks/${task.id}/review`, { method: 'POST', body: JSON.stringify({ action, rating, notes, reviewerName: 'المدير' }) });
+    if (r.error) toast.error(r.error);
+    else { toast.success(action === 'approve' ? '✅ تم قبول المهمة' : action === 'revise' ? '🔄 طُلِب التعديل' : '❌ تم الرفض'); onDone(); }
+  };
+
+  const StarBar = ({ label, value, onChange }) => (
+    <div>
+      <Label className="text-xs flex justify-between">
+        <span>{label}</span>
+        <span className="font-bold gold-text">{value}/5</span>
+      </Label>
+      <div className="flex gap-1 mt-1">
+        {[1, 2, 3, 4, 5].map(i => (
+          <button key={i} type="button" onClick={() => onChange(i)} className={`text-2xl transition-all ${i <= value ? 'opacity-100' : 'opacity-30'}`}>⭐</button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <Dialog open={!!task} onOpenChange={onClose}>
+      <DialogContent className="glass-strong border-gold/40 max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle className="gold-text">📋 مراجعة المهمة</DialogTitle></DialogHeader>
+
+        <div className="space-y-3">
+          <div className="p-3 rounded bg-input/30 border border-gold-soft">
+            <h3 className="font-bold">{task.title}</h3>
+            <p className="text-xs text-muted-foreground mt-1">{task.description}</p>
+            <p className="text-[10px] text-cyan-400 mt-1">👤 {task.assignedToName} · 📅 {task.dueDate}</p>
+          </div>
+
+          {task.report && (
+            <div className="p-3 rounded bg-purple-500/10 border border-purple-500/30 space-y-2">
+              <p className="font-bold text-purple-400 text-sm">📋 تقرير الموظف</p>
+              <div>
+                <p className="text-[10px] text-muted-foreground">ما تم إنجازه:</p>
+                <p className="text-xs">{task.report.summary}</p>
+              </div>
+              {task.report.notes && (
+                <div>
+                  <p className="text-[10px] text-muted-foreground">ملاحظات:</p>
+                  <p className="text-xs">{task.report.notes}</p>
+                </div>
+              )}
+              {task.report.problems && (
+                <div>
+                  <p className="text-[10px] text-muted-foreground">مشاكل واجهها:</p>
+                  <p className="text-xs">{task.report.problems}</p>
+                </div>
+              )}
+              <p className="text-[10px]">نسبة الإنجاز: <span className="font-bold gold-text">{task.report.progress}%</span></p>
+              {task.report.attachments?.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-muted-foreground mb-1">📎 المرفقات ({task.report.attachments.length}):</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {task.report.attachments.map((f, i) => (
+                      <a key={i} href={f.url} target="_blank" rel="noreferrer" className="block">
+                        {f.url?.match(/\.(jpg|jpeg|png|webp|gif)$/i) ? (
+                          <img src={f.url} alt={f.name} className="w-full h-16 object-cover rounded border border-gold/20" />
+                        ) : (
+                          <div className="w-full h-16 flex items-center justify-center bg-input/30 rounded border border-gold/20">
+                            <FileText className="w-6 h-6 text-cyan-400" />
+                          </div>
+                        )}
+                        <p className="text-[9px] truncate mt-1">{f.name}</p>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 p-3 rounded border border-gold-soft">
+            <p className="col-span-2 font-bold text-sm gold-text">⭐ تقييم الموظف</p>
+            <StarBar label="سرعة الإنجاز" value={speed} onChange={setSpeed} />
+            <StarBar label="جودة العمل" value={quality} onChange={setQuality} />
+            <StarBar label="الالتزام" value={commitment} onChange={setCommitment} />
+            <StarBar label="عدم التأخير" value={delay} onChange={setDelay} />
+          </div>
+
+          <div>
+            <Label className="text-xs">ملاحظات المدير (للموظف)</Label>
+            <Textarea value={notes} onChange={e => setNotes(e.target.value)} className="bg-input/30 border-gold/20 h-20 mt-1" placeholder="ملاحظاتك ستظهر للموظف..." />
+          </div>
+        </div>
+
+        <DialogFooter className="grid grid-cols-3 gap-2">
+          <Button onClick={() => submit('reject')} variant="outline" className="border-red-500/30 text-red-400 hover:bg-red-500/10">❌ رفض</Button>
+          <Button onClick={() => submit('revise')} variant="outline" className="border-orange-500/30 text-orange-400 hover:bg-orange-500/10">🔄 إعادة تعديل</Button>
+          <Button onClick={() => submit('approve')} className="btn-gold">✅ قبول</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

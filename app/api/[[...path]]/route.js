@@ -312,9 +312,9 @@ async function seedDefaults(db) {
     const emps = await db.collection('employees').find({}).toArray();
     if (emps.length >= 2) {
       await db.collection('tasks').insertMany([
-        { id: uuidv4(), title: 'صيانة فاتة الكرادة F-01-03', description: 'فحص الكابل وإعادة الاتصال', priority: 'high', dueDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10), assignedTo: emps[1].id, assignedToName: emps[1].name, status: 'in_progress', progress: 60, notes: '', attachments: [], createdBy: emps[0].name, createdAt: new Date(Date.now() - 86400000).toISOString() },
-        { id: uuidv4(), title: 'تركيب كاميرا مطعم الذهبي', description: '8 كاميرات + NVR', priority: 'medium', dueDate: new Date(Date.now() + 86400000 * 3).toISOString().slice(0, 10), assignedTo: emps[2].id, assignedToName: emps[2].name, status: 'new', progress: 0, notes: '', attachments: [], createdBy: emps[0].name, createdAt: new Date().toISOString() },
-        { id: uuidv4(), title: 'جرد المخزون الأسبوعي', description: 'جرد كل الإكسسوارات', priority: 'low', dueDate: new Date(Date.now() + 86400000 * 5).toISOString().slice(0, 10), assignedTo: emps.length > 3 ? emps[3].id : emps[1].id, assignedToName: emps.length > 3 ? emps[3].name : emps[1].name, status: 'new', progress: 0, notes: '', attachments: [], createdBy: emps[0].name, createdAt: new Date().toISOString() },
+        { id: uuidv4(), title: 'صيانة فاتة الكرادة F-01-03', description: 'فحص الكابل وإعادة الاتصال', priority: 'high', dueDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10), assignedTo: emps[1].id, assignedToName: emps[1].name, status: 'in_progress', progress: 60, notes: '', attachments: [], createdBy: emps[0].name, createdById: emps[0].id, acceptedAt: new Date(Date.now() - 3600000).toISOString(), createdAt: new Date(Date.now() - 86400000).toISOString() },
+        { id: uuidv4(), title: 'تركيب كاميرا مطعم الذهبي', description: '8 كاميرات + NVR', priority: 'medium', dueDate: new Date(Date.now() + 86400000 * 3).toISOString().slice(0, 10), assignedTo: emps[2].id, assignedToName: emps[2].name, status: 'pending', progress: 0, notes: '', attachments: [], createdBy: emps[0].name, createdById: emps[0].id, createdAt: new Date().toISOString() },
+        { id: uuidv4(), title: 'جرد المخزون الأسبوعي', description: 'جرد كل الإكسسوارات', priority: 'low', dueDate: new Date(Date.now() + 86400000 * 5).toISOString().slice(0, 10), assignedTo: emps.length > 3 ? emps[3].id : emps[1].id, assignedToName: emps.length > 3 ? emps[3].name : emps[1].name, status: 'pending', progress: 0, notes: '', attachments: [], createdBy: emps[0].name, createdById: emps[0].id, createdAt: new Date().toISOString() },
       ]);
     }
   }
@@ -512,6 +512,32 @@ async function handle(request, params) {
     'tasks': 'tasks',
     'payroll-entries': 'payroll_entries',
   };
+
+  // Special-case: when creating a task, default status='pending' and notify assignee
+  if (path === 'tasks' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const now = new Date().toISOString();
+    const doc = {
+      id: uuidv4(),
+      ...body,
+      status: body.status || 'pending',
+      progress: body.progress || 0,
+      attachments: body.attachments || [],
+      notes: body.notes || '',
+      createdAt: now,
+    };
+    await db.collection('tasks').insertOne(doc);
+    delete doc._id;
+    // Notify the assigned employee
+    if (doc.assignedTo) {
+      await db.collection('notifications').insertOne({
+        id: uuidv4(), userId: doc.assignedTo, type: 'task_new', title: '📋 مهمة جديدة',
+        message: `وُكِّلت إليك مهمة "${doc.title}" بأولوية ${doc.priority || 'متوسطة'}. يرجى القبول أو الرفض`,
+        taskId: doc.id, read: false, createdAt: now,
+      });
+    }
+    return ok(doc, 201);
+  }
 
   for (const [route, coll] of Object.entries(collections)) {
     if (path === route && method === 'GET') {
@@ -792,6 +818,185 @@ async function handle(request, params) {
     const updated = await db.collection('tasks').findOne({ id: taskId });
     if (updated) delete updated._id;
     return ok(updated);
+  }
+
+  // ============ INTERACTIVE TASK WORKFLOW ============
+  // Accept task (employee)
+  if (path.match(/^tasks\/[^/]+\/accept$/) && method === 'POST') {
+    const taskId = path.split('/')[1];
+    const { employeeId } = await getJsonBody(request);
+    const task = await db.collection('tasks').findOne({ id: taskId });
+    if (!task) return err('المهمة غير موجودة', 404);
+    if (task.assignedTo !== employeeId) return err('غير مخوّل', 403);
+    if (!['pending', 'new'].includes(task.status || 'pending')) return err('لا يمكن قبول هذه المهمة في حالتها الحالية', 400);
+    const now = new Date().toISOString();
+    await db.collection('tasks').updateOne({ id: taskId }, { $set: { status: 'in_progress', acceptedAt: now, updatedAt: now } });
+    // Notify manager
+    if (task.createdById) {
+      await db.collection('notifications').insertOne({
+        id: uuidv4(), userId: task.createdById, type: 'task_accepted', title: 'تم قبول المهمة',
+        message: `قبل ${task.assignedToName} المهمة: ${task.title}`, taskId, read: false, createdAt: now,
+      });
+    }
+    return ok({ success: true });
+  }
+
+  // Reject task (employee) with reason
+  if (path.match(/^tasks\/[^/]+\/reject$/) && method === 'POST') {
+    const taskId = path.split('/')[1];
+    const { employeeId, reason } = await getJsonBody(request);
+    if (!reason || reason.trim().length < 3) return err('سبب الرفض مطلوب', 400);
+    const task = await db.collection('tasks').findOne({ id: taskId });
+    if (!task) return err('المهمة غير موجودة', 404);
+    if (task.assignedTo !== employeeId) return err('غير مخوّل', 403);
+    if (!['pending', 'new'].includes(task.status || 'pending')) return err('لا يمكن رفض هذه المهمة', 400);
+    const now = new Date().toISOString();
+    await db.collection('tasks').updateOne({ id: taskId }, { $set: { status: 'rejected_by_employee', rejectionReason: reason, rejectedAt: now, updatedAt: now } });
+    if (task.createdById) {
+      await db.collection('notifications').insertOne({
+        id: uuidv4(), userId: task.createdById, type: 'task_rejected', title: 'رفض الموظف المهمة',
+        message: `رفض ${task.assignedToName} المهمة "${task.title}" بسبب: ${reason}`,
+        taskId, read: false, createdAt: now,
+      });
+    }
+    return ok({ success: true });
+  }
+
+  // Complete task (employee submits report)
+  if (path.match(/^tasks\/[^/]+\/complete$/) && method === 'POST') {
+    const taskId = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const { employeeId, summary, notes, progress, attachments, problems, completionTime } = body;
+    const task = await db.collection('tasks').findOne({ id: taskId });
+    if (!task) return err('المهمة غير موجودة', 404);
+    if (task.assignedTo !== employeeId) return err('غير مخوّل', 403);
+    if (!summary || summary.trim().length < 3) return err('وصف الإنجاز مطلوب', 400);
+    const now = new Date().toISOString();
+    const report = {
+      summary, notes: notes || '', progress: Number(progress || 100),
+      attachments: Array.isArray(attachments) ? attachments : [],
+      problems: problems || '', completionTime: completionTime || now,
+      submittedAt: now,
+    };
+    await db.collection('tasks').updateOne({ id: taskId }, {
+      $set: { status: 'pending_review', report, progress: report.progress, submittedAt: now, updatedAt: now },
+    });
+    if (task.createdById) {
+      await db.collection('notifications').insertOne({
+        id: uuidv4(), userId: task.createdById, type: 'task_submitted', title: 'تقرير مهمة جاهز للمراجعة',
+        message: `أنهى ${task.assignedToName} المهمة "${task.title}" وأرسل التقرير`,
+        taskId, read: false, createdAt: now,
+      });
+    }
+    return ok({ success: true });
+  }
+
+  // Manager reviews task
+  if (path.match(/^tasks\/[^/]+\/review$/) && method === 'POST') {
+    const taskId = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const { action, rating, notes, reviewerName } = body;
+    const task = await db.collection('tasks').findOne({ id: taskId });
+    if (!task) return err('المهمة غير موجودة', 404);
+    if (!['approve', 'reject', 'revise'].includes(action)) return err('إجراء غير صالح', 400);
+    const now = new Date().toISOString();
+    const newStatus = action === 'approve' ? 'completed' : action === 'reject' ? 'rejected_by_manager' : 'revision';
+    const review = {
+      action, notes: notes || '', reviewerName: reviewerName || 'المدير',
+      rating: rating || null, reviewedAt: now,
+    };
+    await db.collection('tasks').updateOne({ id: taskId }, { $set: { status: newStatus, review, reviewedAt: now, updatedAt: now } });
+
+    // Update employee KPI on approval
+    if (action === 'approve' && rating) {
+      const r = rating;
+      const score = Math.round(((Number(r.speed||0) + Number(r.quality||0) + Number(r.commitment||0) + Number(r.delay||0)) / 4) * 20); // 0-100
+      // Increment employee tasksCompleted & ratingPoints
+      const emp = await db.collection('employees').findOne({ id: task.assignedTo });
+      if (emp) {
+        const newRatingPoints = (emp.ratingPoints || 0) + score;
+        const newTasksCompleted = (emp.tasksCompleted || 0) + 1;
+        const avgRating = Math.round(newRatingPoints / newTasksCompleted);
+        await db.collection('employees').updateOne({ id: task.assignedTo }, {
+          $set: { ratingPoints: newRatingPoints, tasksCompleted: newTasksCompleted, kpi: Math.min(100, avgRating) },
+        });
+      }
+    }
+
+    // Notify employee
+    const msgMap = {
+      approve: { title: '✅ تم قبول مهمتك', text: `وافق المدير على إنجاز المهمة "${task.title}"` },
+      reject: { title: '❌ رُفض إنجازك', text: `رفض المدير إنجاز المهمة "${task.title}". ملاحظات: ${notes || '-'}` },
+      revise: { title: '🔄 إعادة تعديل', text: `طلب المدير تعديلات على المهمة "${task.title}". ملاحظات: ${notes || '-'}` },
+    };
+    await db.collection('notifications').insertOne({
+      id: uuidv4(), userId: task.assignedTo, type: `task_${action}`, title: msgMap[action].title,
+      message: msgMap[action].text, taskId, read: false, createdAt: now,
+    });
+
+    // If revise → put task back in_progress
+    if (action === 'revise') {
+      await db.collection('tasks').updateOne({ id: taskId }, { $set: { status: 'in_progress' } });
+    }
+
+    return ok({ success: true });
+  }
+
+  // ============ NOTIFICATIONS ============
+  if (path === 'notifications' && method === 'GET') {
+    const url = new URL(request.url);
+    const userId = url.searchParams.get('userId');
+    if (!userId) return err('userId مطلوب', 400);
+    const items = await db.collection('notifications').find({ userId }).sort({ createdAt: -1 }).limit(50).toArray();
+    return ok(items.map(n => { delete n._id; return n; }));
+  }
+  if (path.match(/^notifications\/[^/]+\/read$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    await db.collection('notifications').updateOne({ id }, { $set: { read: true } });
+    return ok({ success: true });
+  }
+  if (path === 'notifications/read-all' && method === 'POST') {
+    const { userId } = await getJsonBody(request);
+    if (!userId) return err('userId مطلوب', 400);
+    await db.collection('notifications').updateMany({ userId, read: false }, { $set: { read: true } });
+    return ok({ success: true });
+  }
+
+  // ============ FILE UPLOAD (multipart) ============
+  if (path === 'upload' && method === 'POST') {
+    try {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!file || typeof file === 'string') return err('لم يتم إرسال ملف', 400);
+      const buf = Buffer.from(await file.arrayBuffer());
+      const fs = await import('fs');
+      const pathMod = await import('path');
+      const uploadsDir = pathMod.join(process.cwd(), 'public', 'uploads');
+      if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+      const ext = (file.name || '').split('.').pop() || 'bin';
+      const filename = `${uuidv4()}.${ext}`;
+      fs.writeFileSync(pathMod.join(uploadsDir, filename), buf);
+      const url = `/uploads/${filename}`;
+      return ok({ success: true, url, name: file.name, size: buf.length });
+    } catch (e) {
+      return err('فشل الرفع: ' + e.message, 500);
+    }
+  }
+
+  // Self-data endpoint (employee can fetch own info without exposing list)
+  if (path.match(/^employees\/[^/]+\/self$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const emp = await db.collection('employees').findOne({ id: empId });
+    if (!emp) return err('غير موجود', 404);
+    // Strip sensitive fields from other contexts
+    const safe = {
+      id: emp.id, employeeId: emp.employeeId, name: emp.name, role: emp.role,
+      photo: emp.photo, shiftStart: emp.shiftStart, shiftEnd: emp.shiftEnd,
+      permissions: emp.permissions || ['tasks'], status: emp.status,
+      salary: emp.salary, kpi: emp.kpi, ratingPoints: emp.ratingPoints || 0,
+      tasksCompleted: emp.tasksCompleted || 0,
+    };
+    return ok(safe);
   }
 
   // Payroll calculation for employee for a month
