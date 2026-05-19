@@ -563,6 +563,8 @@ async function handle(request, params) {
       return ok(doc, 201);
     }
     if (path.startsWith(route + '/') && method === 'PUT') {
+      // Skip if path has sub-resources (e.g., employees/X/repairs/Y) - handled by specific routes
+      if (path.split('/').length > 2) continue;
       const id = path.split('/')[1];
       const body = await getJsonBody(request);
       delete body._id; delete body.id;
@@ -572,6 +574,7 @@ async function handle(request, params) {
       return ok(updated);
     }
     if (path.startsWith(route + '/') && method === 'DELETE') {
+      if (path.split('/').length > 2) continue;
       const id = path.split('/')[1];
       const doc = await db.collection(coll).findOne({ id });
       await db.collection(coll).deleteOne({ id });

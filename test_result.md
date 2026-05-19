@@ -1240,9 +1240,9 @@ agent_communication:
 
   - task: "Employee Repairs - Get and Update"
     implemented: true
-    working: false
+    working: true
     file: "app/api/[[...path]]/route.js"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
@@ -1272,6 +1272,41 @@ agent_communication:
             
             FIX REQUIRED: Move all scoped employee routes (lines 1020-1179) to BEFORE the generic CRUD 
             loop (before line 545). This ensures specific routes are checked first.
+        - working: true
+          agent: "main"
+          comment: |
+            Fixed route ordering bug by adding `if (path.split('/').length > 2) continue;` to generic 
+            PUT/DELETE handlers in collections loop (lines 567, 577). This skips sub-resource paths 
+            (e.g., employees/X/repairs/Y) and allows them to fall through to specific handlers.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Route ordering bug is FIXED! Comprehensive testing completed:
+            
+            TEST RESULTS:
+            1. Employee Login: Successfully logged in as ssaa/ssaa, obtained token
+            2. Permissions: Verified employee has 'repairs' permission
+            3. Repair Creation: Created test repair (RP-TEST2) assigned to employee
+            4. PUT /api/employees/:id/repairs/:repairId with status='in_progress':
+               ✅ Returns REPAIR object (not employee) - has ticketNumber, device, customerName
+               ✅ Repair status updated to 'in_progress' in database
+            5. PUT /api/employees/:id/repairs/:repairId with status='completed':
+               ✅ Returns REPAIR object with status='completed'
+               ✅ completedAt timestamp set correctly (2026-05-19T15:45:58.946Z)
+            6. Employee Record Verification:
+               ✅ Employee record NOT modified (status and KPI unchanged)
+            7. Normal Employee Update:
+               ✅ PUT /api/employees/:id still works correctly (updated KPI to 95)
+            
+            VERIFICATION:
+            - Endpoint now correctly updates REPAIR records, not EMPLOYEE records
+            - Response contains repair-specific fields (ticketNumber, device, customerName)
+            - Response does NOT contain employee-specific fields (employeeId, shiftStart)
+            - completedAt timestamp automatically set when status='completed'
+            - Generic employee CRUD endpoint still functional
+            
+            The fix (path.split('/').length > 2 check) successfully prevents generic routes from 
+            intercepting sub-resource paths. All tests passed.
 
   - task: "Employee Personal Report"
     implemented: true
@@ -1400,3 +1435,38 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+
+  - agent: "main"
+    message: |
+      Fixed route ordering bug by adding path depth check to generic PUT/DELETE handlers.
+      Added `if (path.split('/').length > 2) continue;` at lines 567 and 577 to skip 
+      sub-resource paths like employees/X/repairs/Y, allowing them to fall through to 
+      specific handlers. Please retest PUT /api/employees/:id/repairs/:repairId endpoint.
+  - agent: "testing"
+    message: |
+      🎉 ROUTE ORDERING BUG FIX VERIFIED - ALL TESTS PASSED
+      
+      Retested PUT /api/employees/:id/repairs/:repairId endpoint after fix:
+      
+      ✅ Employee Login: Successfully logged in as ssaa/ssaa
+      ✅ Permissions: Verified employee has 'repairs' permission
+      ✅ Repair Creation: Created test repair (RP-TEST2)
+      ✅ PUT with status='in_progress':
+         - Returns REPAIR object (not employee) ✅
+         - Has repair fields: ticketNumber, device, customerName ✅
+         - Does NOT have employee fields: employeeId, shiftStart ✅
+         - Repair status updated in database ✅
+      ✅ PUT with status='completed':
+         - Returns REPAIR object with status='completed' ✅
+         - completedAt timestamp set correctly ✅
+      ✅ Employee Record Unchanged:
+         - Employee status and KPI not modified ✅
+      ✅ Normal Employee Update:
+         - PUT /api/employees/:id still works correctly ✅
+      
+      FIX CONFIRMED: The path depth check (path.split('/').length > 2) successfully 
+      prevents generic routes from intercepting sub-resource paths. The endpoint now 
+      correctly updates REPAIR records instead of EMPLOYEE records.
+      
+      NO CRITICAL ISSUES REMAINING. All employee scoped endpoints working correctly.
