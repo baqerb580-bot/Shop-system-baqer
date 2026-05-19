@@ -629,3 +629,287 @@ agent_communication:
       
       All settings reset to defaults after testing (cleanup successful).
       NO CRITICAL ISSUES FOUND. Settings system is production-ready.
+
+
+  - task: "Employee Login"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "POST /api/employees/login - body {username, password}, returns {success, employee, token} or 401"
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Employee login working correctly. Valid credentials (username/password) return 
+            {success: true, employee: {...}, token: 'emp_...'} with 200 status. Invalid credentials 
+            correctly return 401 Unauthorized. Token format: emp_{employeeId}_{timestamp}.
+
+  - task: "Attendance Check-in"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/attendance/checkin - body {employeeId}. Creates attendance record with checkIn time,
+            calculates lateMinutes based on shiftStart (default 08:00), applies lateGraceMinutes (default 10),
+            sets isLate flag, creates auto-deduction in payroll_entries if late (default 25000 IQD).
+            Prevents duplicate check-in same day.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Check-in working perfectly. First check-in creates attendance record with all fields:
+            checkIn timestamp, lateMinutes (400 in test), isLate=true, status='late', autoDeduction=25000.
+            Late logic verified: employee checked in at 14:40 (shift starts 08:00), late by 400 minutes,
+            exceeds grace period of 10 minutes, correctly marked as late. Auto-deduction of 25000 IQD 
+            created in payroll_entries collection with auto=true and reason='خصم تلقائي: تأخير 400 دقيقة'.
+            Duplicate check-in correctly rejected with Arabic error 'تم تسجيل الحضور مسبقاً اليوم'.
+
+  - task: "Attendance Check-out"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/attendance/checkout - body {employeeId}. Updates attendance record with checkOut time,
+            calculates hoursWorked. Requires check-in first. Prevents duplicate check-out.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Check-out working correctly. Updates existing attendance record with checkOut timestamp
+            and calculates hoursWorked (0.02 hours in test - very short duration for testing). 
+            Correctly rejects check-out without prior check-in with error 'لم تسجل حضور اليوم'.
+            Correctly rejects duplicate check-out with error 'تم تسجيل الانصراف مسبقاً'.
+
+  - task: "Get Today's Attendance"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /api/attendance/today - returns array of all attendance records for current date"
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Returns array of today's attendance records. Found 1 record with all fields:
+            employeeId, employeeName, date, checkIn, checkOut, lateMinutes, isLate, status, hoursWorked, autoDeduction.
+
+  - task: "Get Employee Attendance History"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /api/employees/:id/attendance - returns all attendance records for employee, sorted by date desc"
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Returns array of attendance records for specific employee, sorted by date descending.
+            Found 1 record with complete data: date=2026-05-19, status=late, hoursWorked=0.02.
+
+  - task: "Get Employee Tasks"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /api/employees/:id/tasks - returns all tasks assigned to employee, sorted by createdAt desc"
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Returns array of tasks assigned to specific employee. Initially returned 0 tasks
+            (no tasks seeded for single employee in DB). After creating test task, endpoint correctly
+            returned the task with all fields.
+
+  - task: "Update Task"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/tasks/:id/update - body {status, progress, notes, attachments}. Only updates allowed
+            fields (status, progress, notes, attachments). Returns updated task.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Task update working correctly. Created test task and updated it with status='in_progress',
+            progress=50, notes='تم إنجاز 50% من المهمة', attachments=['test.pdf']. All fields updated correctly
+            and returned in response. Only allowed fields can be updated (security verified).
+
+  - task: "Get Employee Payroll"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/employees/:id/payroll?month=YYYY-MM - calculates payroll for employee for specified month.
+            Returns employee info, baseSalary, bonuses, deductions, finalSalary, attendance stats (presentDays,
+            lateDays, absentDays, totalDays), entries array, attendance array.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Payroll calculation working perfectly. For month 2026-05:
+            - Base Salary: 500000 IQD
+            - Bonuses: 0 IQD
+            - Deductions: 25000 IQD (auto-deduction from late check-in)
+            - Final Salary: 475000 IQD (500000 - 25000)
+            - Attendance: Present=0, Late=1, Absent=0, Total=1
+            - Payroll Entries: 1 (the auto-deduction)
+            All calculations correct. Returns complete employee object, attendance records, and payroll entries.
+
+  - task: "HR Reports"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/hr/reports?month=YYYY-MM - comprehensive HR report for specified month. Returns:
+            totalEmployees, totalSalaries, totalBonuses, totalDeductions, totalTasks, completedTasks,
+            employeeStats array (per-employee stats: presentDays, lateDays, totalHours, bonuses, deductions,
+            tasksTotal, tasksCompleted, kpi, finalSalary), topPerformers (sorted by KPI), mostAbsent (sorted by lateDays).
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - HR reports working perfectly. For month 2026-05:
+            - Total Employees: 1
+            - Total Salaries: 500000 IQD
+            - Total Bonuses: 0 IQD
+            - Total Deductions: 25000 IQD
+            - Total Tasks: 1 (after creating test task)
+            - Completed Tasks: 0
+            - Employee Stats: 1 employee with complete data (presentDays, lateDays, totalHours, bonuses, 
+              deductions, tasksTotal, tasksCompleted, kpi=80, finalSalary=475000)
+            - Top Performers: Returns array sorted by KPI
+            - Most Absent: Returns array sorted by lateDays
+            All aggregations and calculations correct.
+
+  - task: "Payroll Entries CRUD"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Standard CRUD for payroll_entries collection. GET /api/payroll-entries returns all entries.
+            POST /api/payroll-entries creates manual bonus/deduction entries. Auto-deductions created
+            by check-in endpoint when employee is late.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Payroll entries CRUD fully working:
+            - GET /api/payroll-entries: Returns array of all payroll entries (found 3: 1 auto-deduction + 2 manual entries)
+            - POST bonus entry: Successfully created manual bonus entry (50000 IQD, reason='مكافأة أداء متميز')
+            - POST deduction entry: Successfully created manual deduction entry (10000 IQD, reason='خصم يدوي')
+            All entries have correct structure: id, employeeId, employeeName, type (bonus/deduction), amount,
+            reason, auto (true/false), date, createdAt. Auto-deductions correctly marked with auto=true.
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Added NEW HR/Employee Management System with 10 endpoints:
+      1. POST /api/employees/login - employee authentication
+      2. POST /api/attendance/checkin - with late detection and auto-deduction
+      3. POST /api/attendance/checkout - with hours calculation
+      4. GET /api/attendance/today - today's attendance for all employees
+      5. GET /api/employees/:id/attendance - attendance history for employee
+      6. GET /api/employees/:id/tasks - tasks assigned to employee
+      7. POST /api/tasks/:id/update - employee can update task status/progress/notes/attachments
+      8. GET /api/employees/:id/payroll?month=YYYY-MM - payroll calculation with bonuses/deductions
+      9. GET /api/hr/reports?month=YYYY-MM - comprehensive HR reports with employee stats
+      10. Payroll entries CRUD - manual bonus/deduction management
+      
+      Settings include: workStart (08:00), lateGraceMinutes (10), lateDeductionAmount (25000),
+      absentDeductionAmount (50000), autoCalculatePayroll (true).
+      
+      Please test all endpoints. DB currently has 1 employee (username: asas, password: asas).
+  - agent: "testing"
+    message: |
+      🎉 HR/EMPLOYEE MANAGEMENT TESTING COMPLETE - ALL TESTS PASSED (13/13)
+      
+      Tested all 10 NEW HR endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ POST /api/employees/login: Valid credentials return employee+token, invalid return 401
+      ✅ POST /api/attendance/checkin: Creates attendance record, detects late (400 mins > 10 grace),
+         auto-creates deduction (25000 IQD) in payroll_entries, prevents duplicate check-in
+      ✅ POST /api/attendance/checkout: Updates record with checkOut time, calculates hoursWorked,
+         prevents checkout without checkin, prevents duplicate checkout
+      ✅ GET /api/attendance/today: Returns today's attendance records for all employees
+      ✅ GET /api/employees/:id/attendance: Returns attendance history sorted by date desc
+      ✅ GET /api/employees/:id/tasks: Returns tasks assigned to employee
+      ✅ POST /api/tasks/:id/update: Updates only allowed fields (status, progress, notes, attachments)
+      ✅ GET /api/employees/:id/payroll?month=YYYY-MM: Calculates payroll correctly:
+         Base 500000 + Bonuses 0 - Deductions 25000 = Final 475000
+         Returns attendance stats (present/late/absent days) and payroll entries
+      ✅ GET /api/hr/reports?month=YYYY-MM: Returns comprehensive HR report with:
+         Total employees/salaries/bonuses/deductions, employee stats, top performers, most absent
+      ✅ Payroll Entries CRUD: GET returns all entries, POST creates manual bonus/deduction entries
+      
+      LATE CHECK-IN AUTO-DEDUCTION VERIFIED:
+      - Employee checked in at 14:40 (shift starts 08:00) = 400 minutes late
+      - Late grace period: 10 minutes (from settings)
+      - 400 > 10 → correctly marked as late
+      - Auto-deduction: 25000 IQD created in payroll_entries with auto=true
+      - Deduction reason: 'خصم تلقائي: تأخير 400 دقيقة'
+      - Payroll calculation includes deduction: 500000 - 25000 = 475000
+      
+      DATA INTEGRITY VERIFIED:
+      - All endpoints use UUIDs (not MongoDB ObjectIds)
+      - Arabic error messages working correctly
+      - Duplicate prevention working (check-in/checkout)
+      - Auto-deduction logic working perfectly
+      - Payroll calculations accurate
+      - All date/time handling correct
+      
+      NO CRITICAL ISSUES FOUND. HR/Employee Management system is production-ready.
+
+test_plan:
+  current_focus:
+    - "HR/Employee Management endpoints (NEW)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

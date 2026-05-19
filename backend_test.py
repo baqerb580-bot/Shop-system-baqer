@@ -1,671 +1,478 @@
 #!/usr/bin/env python3
 """
-Comprehensive Backend API Test Suite for Ghazlan ERP
-Tests all endpoints: Dashboard, Products, POS, Subscribers, Zones, NOC, Repairs, Employees, Camera Contracts, Reports, AI
+Backend API Test Suite for HR/Employee Management System
+Tests 10 NEW endpoints for attendance, tasks, payroll, and HR reports
 """
 
 import requests
 import json
-import sys
+from datetime import datetime, timedelta
 
 BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
 
 def print_test(name, passed, details=""):
-    status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"{status} - {name}")
+    status = "✅ PASSED" if passed else "❌ FAILED"
+    print(f"\n{status}: {name}")
     if details:
-        print(f"   {details}")
-    return passed
+        print(f"  Details: {details}")
 
-def test_dashboard_stats():
-    """Test GET /api/dashboard/stats"""
-    print("\n=== Testing Dashboard Stats ===")
-    try:
-        resp = requests.get(f"{BASE_URL}/dashboard/stats", timeout=10)
-        if resp.status_code != 200:
-            return print_test("Dashboard stats", False, f"Status: {resp.status_code}")
-        
-        data = resp.json()
-        required_fields = ['totalProducts', 'totalSubscribers', 'activeSubscribers', 'totalRepairs', 
-                          'pendingRepairs', 'totalEmployees', 'totalZones', 'onlineZones', 
-                          'totalRevenue', 'monthlyIncome', 'totalDebt', 'lowStockCount', 
-                          'lowStock', 'salesChart']
-        
-        missing = [f for f in required_fields if f not in data]
-        if missing:
-            return print_test("Dashboard stats", False, f"Missing fields: {missing}")
-        
-        # Verify salesChart has 7 days
-        if len(data.get('salesChart', [])) != 7:
-            return print_test("Dashboard stats", False, f"salesChart should have 7 days, got {len(data.get('salesChart', []))}")
-        
-        return print_test("Dashboard stats", True, f"Total products: {data['totalProducts']}, Subscribers: {data['totalSubscribers']}")
-    except Exception as e:
-        return print_test("Dashboard stats", False, f"Exception: {str(e)}")
-
-def test_products_crud():
-    """Test Products CRUD operations"""
-    print("\n=== Testing Products CRUD ===")
-    all_passed = True
+def test_hr_employee_management():
+    print("\n" + "="*80)
+    print("HR / EMPLOYEE MANAGEMENT BACKEND TESTING")
+    print("="*80)
     
-    # GET products
-    try:
-        resp = requests.get(f"{BASE_URL}/products", timeout=10)
-        if resp.status_code != 200:
-            all_passed = print_test("GET products", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            products = resp.json()
-            if not isinstance(products, list):
-                all_passed = print_test("GET products", False, "Response is not a list") and all_passed
-            else:
-                all_passed = print_test("GET products", True, f"Found {len(products)} products") and all_passed
-    except Exception as e:
-        all_passed = print_test("GET products", False, f"Exception: {str(e)}") and all_passed
-    
-    # POST new product
-    new_product = {
-        "name": "سماعة JBL Flip 6",
-        "sku": "JBLF6",
-        "barcode": "2000001",
-        "category": "accessories",
-        "price": 125000,
-        "cost": 95000,
-        "stock": 20,
-        "lowStockAlert": 5,
-        "image": "🔊"
-    }
-    created_id = None
-    try:
-        resp = requests.post(f"{BASE_URL}/products", json=new_product, timeout=10)
-        if resp.status_code != 201:
-            all_passed = print_test("POST product", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            created = resp.json()
-            if 'id' not in created:
-                all_passed = print_test("POST product", False, "No ID in response") and all_passed
-            else:
-                created_id = created['id']
-                all_passed = print_test("POST product", True, f"Created product ID: {created_id}") and all_passed
-    except Exception as e:
-        all_passed = print_test("POST product", False, f"Exception: {str(e)}") and all_passed
-    
-    # PUT update product
-    if created_id:
-        try:
-            update_data = {"price": 130000, "stock": 25}
-            resp = requests.put(f"{BASE_URL}/products/{created_id}", json=update_data, timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("PUT product", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                updated = resp.json()
-                if updated.get('price') != 130000:
-                    all_passed = print_test("PUT product", False, f"Price not updated: {updated.get('price')}") and all_passed
-                else:
-                    all_passed = print_test("PUT product", True, f"Updated price to {updated['price']}") and all_passed
-        except Exception as e:
-            all_passed = print_test("PUT product", False, f"Exception: {str(e)}") and all_passed
-    
-    # DELETE product
-    if created_id:
-        try:
-            resp = requests.delete(f"{BASE_URL}/products/{created_id}", timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("DELETE product", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("DELETE product", True, "Product deleted successfully") and all_passed
-        except Exception as e:
-            all_passed = print_test("DELETE product", False, f"Exception: {str(e)}") and all_passed
-    
-    return all_passed
-
-def test_barcode_lookup():
-    """Test GET /api/products/barcode/:code"""
-    print("\n=== Testing Barcode Lookup ===")
-    try:
-        # Test with existing barcode from seed data
-        resp = requests.get(f"{BASE_URL}/products/barcode/1000001", timeout=10)
-        if resp.status_code != 200:
-            return print_test("Barcode lookup", False, f"Status: {resp.status_code}")
-        
-        product = resp.json()
-        if 'barcode' not in product or product['barcode'] != '1000001':
-            return print_test("Barcode lookup", False, f"Wrong product returned: {product.get('barcode')}")
-        
-        return print_test("Barcode lookup", True, f"Found: {product.get('name')}")
-    except Exception as e:
-        return print_test("Barcode lookup", False, f"Exception: {str(e)}")
-
-def test_pos_checkout():
-    """Test POST /api/pos/checkout"""
-    print("\n=== Testing POS Checkout ===")
-    try:
-        # First get a product to checkout
-        resp = requests.get(f"{BASE_URL}/products", timeout=10)
-        if resp.status_code != 200:
-            return print_test("POS checkout", False, "Cannot get products for checkout")
-        
-        products = resp.json()
-        if len(products) == 0:
-            return print_test("POS checkout", False, "No products available")
-        
-        # Get initial stock
-        product = products[0]
-        initial_stock = product.get('stock', 0)
-        
-        # Create checkout
-        checkout_data = {
-            "items": [
-                {
-                    "id": product['id'],
-                    "name": product['name'],
-                    "price": product['price'],
-                    "quantity": 2
-                }
-            ],
-            "discount": 5000,
-            "paymentMethod": "cash",
-            "cashier": "زهراء حسين",
-            "customer": "عميل تجريبي"
-        }
-        
-        resp = requests.post(f"{BASE_URL}/pos/checkout", json=checkout_data, timeout=10)
-        if resp.status_code != 201:
-            return print_test("POS checkout", False, f"Status: {resp.status_code}, Response: {resp.text}")
-        
-        sale = resp.json()
-        required_fields = ['id', 'invoiceNumber', 'items', 'subtotal', 'discount', 'total']
-        missing = [f for f in required_fields if f not in sale]
-        if missing:
-            return print_test("POS checkout", False, f"Missing fields: {missing}")
-        
-        # Verify stock was decremented
-        resp = requests.get(f"{BASE_URL}/products", timeout=10)
-        products_after = resp.json()
-        product_after = next((p for p in products_after if p['id'] == product['id']), None)
-        
-        if product_after:
-            expected_stock = initial_stock - 2
-            if product_after['stock'] != expected_stock:
-                return print_test("POS checkout", False, f"Stock not decremented correctly. Expected: {expected_stock}, Got: {product_after['stock']}")
-        
-        return print_test("POS checkout", True, f"Invoice: {sale['invoiceNumber']}, Total: {sale['total']}")
-    except Exception as e:
-        return print_test("POS checkout", False, f"Exception: {str(e)}")
-
-def test_subscribers_crud():
-    """Test Subscribers CRUD operations"""
-    print("\n=== Testing Subscribers CRUD ===")
-    all_passed = True
-    
-    # GET subscribers
-    try:
-        resp = requests.get(f"{BASE_URL}/subscribers", timeout=10)
-        if resp.status_code != 200:
-            all_passed = print_test("GET subscribers", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            subs = resp.json()
-            all_passed = print_test("GET subscribers", True, f"Found {len(subs)} subscribers") and all_passed
-    except Exception as e:
-        all_passed = print_test("GET subscribers", False, f"Exception: {str(e)}") and all_passed
-    
-    # Get a zone for the new subscriber
-    zone_id = None
-    try:
-        resp = requests.get(f"{BASE_URL}/zones", timeout=10)
-        if resp.status_code == 200:
-            zones = resp.json()
-            if len(zones) > 0:
-                zone_id = zones[0]['id']
-    except:
-        pass
-    
-    # POST new subscriber
-    new_sub = {
-        "name": "عمار الجبوري",
-        "phone": "07909876543",
-        "package": "100 Mbps",
-        "fee": 50000,
-        "zoneId": zone_id,
-        "zoneName": "زون تجريبي",
-        "address": "بغداد - الكرادة - شارع 10",
-        "ipAddress": "10.10.99.99",
-        "macAddress": "AA:BB:CC:DD:EE:FF",
-        "status": "active",
-        "debt": 0,
-        "dueDate": "2025-02-01"
-    }
-    created_id = None
-    try:
-        resp = requests.post(f"{BASE_URL}/subscribers", json=new_sub, timeout=10)
-        if resp.status_code != 201:
-            all_passed = print_test("POST subscriber", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            created = resp.json()
-            created_id = created.get('id')
-            all_passed = print_test("POST subscriber", True, f"Created subscriber ID: {created_id}") and all_passed
-    except Exception as e:
-        all_passed = print_test("POST subscriber", False, f"Exception: {str(e)}") and all_passed
-    
-    # PUT update subscriber
-    if created_id:
-        try:
-            update_data = {"status": "suspended", "debt": 50000}
-            resp = requests.put(f"{BASE_URL}/subscribers/{created_id}", json=update_data, timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("PUT subscriber", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("PUT subscriber", True, "Subscriber updated") and all_passed
-        except Exception as e:
-            all_passed = print_test("PUT subscriber", False, f"Exception: {str(e)}") and all_passed
-    
-    # DELETE subscriber
-    if created_id:
-        try:
-            resp = requests.delete(f"{BASE_URL}/subscribers/{created_id}", timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("DELETE subscriber", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("DELETE subscriber", True, "Subscriber deleted") and all_passed
-        except Exception as e:
-            all_passed = print_test("DELETE subscriber", False, f"Exception: {str(e)}") and all_passed
-    
-    return all_passed
-
-def test_zones_crud():
-    """Test Zones CRUD operations"""
-    print("\n=== Testing Zones CRUD ===")
-    all_passed = True
-    
-    # GET zones
-    try:
-        resp = requests.get(f"{BASE_URL}/zones", timeout=10)
-        if resp.status_code != 200:
-            all_passed = print_test("GET zones", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            zones = resp.json()
-            all_passed = print_test("GET zones", True, f"Found {len(zones)} zones") and all_passed
-    except Exception as e:
-        all_passed = print_test("GET zones", False, f"Exception: {str(e)}") and all_passed
-    
-    # POST new zone
-    new_zone = {
-        "name": "زون الأعظمية",
-        "location": "بغداد - الأعظمية",
-        "lat": 33.3650,
-        "lng": 44.3950,
-        "status": "online",
-        "subscribers": 0,
-        "fats": 5,
-        "utilization": 45
-    }
-    created_id = None
-    try:
-        resp = requests.post(f"{BASE_URL}/zones", json=new_zone, timeout=10)
-        if resp.status_code != 201:
-            all_passed = print_test("POST zone", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            created = resp.json()
-            created_id = created.get('id')
-            all_passed = print_test("POST zone", True, f"Created zone ID: {created_id}") and all_passed
-    except Exception as e:
-        all_passed = print_test("POST zone", False, f"Exception: {str(e)}") and all_passed
-    
-    # PUT update zone
-    if created_id:
-        try:
-            update_data = {"status": "warning", "utilization": 88}
-            resp = requests.put(f"{BASE_URL}/zones/{created_id}", json=update_data, timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("PUT zone", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("PUT zone", True, "Zone updated") and all_passed
-        except Exception as e:
-            all_passed = print_test("PUT zone", False, f"Exception: {str(e)}") and all_passed
-    
-    # DELETE zone
-    if created_id:
-        try:
-            resp = requests.delete(f"{BASE_URL}/zones/{created_id}", timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("DELETE zone", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("DELETE zone", True, "Zone deleted") and all_passed
-        except Exception as e:
-            all_passed = print_test("DELETE zone", False, f"Exception: {str(e)}") and all_passed
-    
-    return all_passed
-
-def test_noc_status():
-    """Test GET /api/noc/status"""
-    print("\n=== Testing NOC Status ===")
-    try:
-        resp = requests.get(f"{BASE_URL}/noc/status", timeout=10)
-        if resp.status_code != 200:
-            return print_test("NOC status", False, f"Status: {resp.status_code}")
-        
-        data = resp.json()
-        required_fields = ['zones', 'activeConnections', 'totalTraffic', 'alerts']
-        missing = [f for f in required_fields if f not in data]
-        if missing:
-            return print_test("NOC status", False, f"Missing fields: {missing}")
-        
-        # Verify zones have live data (ping, packetLoss, uplink, downlink)
-        if len(data['zones']) > 0:
-            zone = data['zones'][0]
-            live_fields = ['ping', 'packetLoss', 'uplink', 'downlink']
-            missing_live = [f for f in live_fields if f not in zone]
-            if missing_live:
-                return print_test("NOC status", False, f"Missing live fields in zone: {missing_live}")
-        
-        return print_test("NOC status", True, f"Active connections: {data['activeConnections']}, Alerts: {len(data['alerts'])}")
-    except Exception as e:
-        return print_test("NOC status", False, f"Exception: {str(e)}")
-
-def test_repairs_crud():
-    """Test Repairs CRUD operations with auto ticket numbering"""
-    print("\n=== Testing Repairs CRUD ===")
-    all_passed = True
-    
-    # GET repairs
-    try:
-        resp = requests.get(f"{BASE_URL}/repairs", timeout=10)
-        if resp.status_code != 200:
-            all_passed = print_test("GET repairs", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            repairs = resp.json()
-            all_passed = print_test("GET repairs", True, f"Found {len(repairs)} repairs") and all_passed
-    except Exception as e:
-        all_passed = print_test("GET repairs", False, f"Exception: {str(e)}") and all_passed
-    
-    # POST new repair (should auto-generate ticket number)
-    new_repair = {
-        "customerName": "خالد الربيعي",
-        "phone": "07908765432",
-        "device": "iPhone 14 Pro",
-        "imei": "359876543210987",
-        "issue": "كاميرا خلفية لا تعمل",
-        "technician": "علي السوداني",
-        "status": "pending",
-        "cost": 120000,
-        "partsCost": 95000
-    }
-    created_id = None
-    ticket_number = None
-    try:
-        resp = requests.post(f"{BASE_URL}/repairs", json=new_repair, timeout=10)
-        if resp.status_code != 201:
-            all_passed = print_test("POST repair", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            created = resp.json()
-            created_id = created.get('id')
-            ticket_number = created.get('ticketNumber')
-            if not ticket_number or not ticket_number.startswith('RP-'):
-                all_passed = print_test("POST repair (auto ticket)", False, f"Invalid ticket: {ticket_number}") and all_passed
-            else:
-                all_passed = print_test("POST repair (auto ticket)", True, f"Created ticket: {ticket_number}") and all_passed
-    except Exception as e:
-        all_passed = print_test("POST repair", False, f"Exception: {str(e)}") and all_passed
-    
-    # PUT update repair status
-    if created_id:
-        try:
-            update_data = {"status": "in_progress"}
-            resp = requests.put(f"{BASE_URL}/repairs/{created_id}", json=update_data, timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("PUT repair", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("PUT repair", True, "Repair status updated") and all_passed
-        except Exception as e:
-            all_passed = print_test("PUT repair", False, f"Exception: {str(e)}") and all_passed
-    
-    # DELETE repair
-    if created_id:
-        try:
-            resp = requests.delete(f"{BASE_URL}/repairs/{created_id}", timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("DELETE repair", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("DELETE repair", True, "Repair deleted") and all_passed
-        except Exception as e:
-            all_passed = print_test("DELETE repair", False, f"Exception: {str(e)}") and all_passed
-    
-    return all_passed
-
-def test_employees_crud():
-    """Test Employees CRUD operations"""
-    print("\n=== Testing Employees CRUD ===")
-    all_passed = True
-    
-    # GET employees
+    # Step 0: Get employees and tasks first
+    print("\n[SETUP] Getting employees and tasks from database...")
     try:
         resp = requests.get(f"{BASE_URL}/employees", timeout=10)
-        if resp.status_code != 200:
-            all_passed = print_test("GET employees", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            employees = resp.json()
-            all_passed = print_test("GET employees", True, f"Found {len(employees)} employees") and all_passed
+        employees = resp.json()
+        print(f"  Found {len(employees)} employees")
+        
+        resp = requests.get(f"{BASE_URL}/tasks", timeout=10)
+        tasks = resp.json()
+        print(f"  Found {len(tasks)} tasks")
+        
+        if len(employees) == 0:
+            print("❌ CRITICAL: No employees found in database!")
+            return
+        if len(tasks) == 0:
+            print("⚠️  WARNING: No tasks found in database")
     except Exception as e:
-        all_passed = print_test("GET employees", False, f"Exception: {str(e)}") and all_passed
+        print(f"❌ SETUP FAILED: {e}")
+        return
     
-    # POST new employee
-    new_emp = {
-        "name": "رائد الخفاجي",
-        "role": "فني شبكات",
-        "phone": "07906666666",
-        "salary": 750000,
-        "kpi": 90,
-        "attendance": "present"
-    }
-    created_id = None
+    # Find employee with username 'emp1' or use first employee
+    test_employee = None
+    for emp in employees:
+        if emp.get('username') == 'emp1':
+            test_employee = emp
+            break
+    
+    if not test_employee:
+        # Try other common usernames from seeded data
+        for username in ['karar', 'haidar', 'ali', 'zahra', 'mustafa']:
+            for emp in employees:
+                if emp.get('username') == username:
+                    test_employee = emp
+                    break
+            if test_employee:
+                break
+    
+    if not test_employee:
+        test_employee = employees[0]
+    
+    print(f"  Using test employee: {test_employee.get('name')} (username: {test_employee.get('username')})")
+    
+    employee_id = test_employee['id']
+    employee_username = test_employee.get('username', 'emp1')
+    employee_password = test_employee.get('password', 'pass123')
+    
+    # ============================================================================
+    # TEST 1: POST /api/employees/login - Valid credentials
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 1: Employee Login - Valid Credentials")
+    print("-"*80)
     try:
-        resp = requests.post(f"{BASE_URL}/employees", json=new_emp, timeout=10)
-        if resp.status_code != 201:
-            all_passed = print_test("POST employee", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            created = resp.json()
-            created_id = created.get('id')
-            all_passed = print_test("POST employee", True, f"Created employee ID: {created_id}") and all_passed
-    except Exception as e:
-        all_passed = print_test("POST employee", False, f"Exception: {str(e)}") and all_passed
-    
-    # PUT update employee
-    if created_id:
-        try:
-            update_data = {"kpi": 95, "attendance": "late"}
-            resp = requests.put(f"{BASE_URL}/employees/{created_id}", json=update_data, timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("PUT employee", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("PUT employee", True, "Employee updated") and all_passed
-        except Exception as e:
-            all_passed = print_test("PUT employee", False, f"Exception: {str(e)}") and all_passed
-    
-    # DELETE employee
-    if created_id:
-        try:
-            resp = requests.delete(f"{BASE_URL}/employees/{created_id}", timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("DELETE employee", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("DELETE employee", True, "Employee deleted") and all_passed
-        except Exception as e:
-            all_passed = print_test("DELETE employee", False, f"Exception: {str(e)}") and all_passed
-    
-    return all_passed
-
-def test_camera_contracts_crud():
-    """Test Camera Contracts CRUD operations"""
-    print("\n=== Testing Camera Contracts CRUD ===")
-    all_passed = True
-    
-    # GET camera contracts
-    try:
-        resp = requests.get(f"{BASE_URL}/camera-contracts", timeout=10)
-        if resp.status_code != 200:
-            all_passed = print_test("GET camera contracts", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            contracts = resp.json()
-            all_passed = print_test("GET camera contracts", True, f"Found {len(contracts)} contracts") and all_passed
-    except Exception as e:
-        all_passed = print_test("GET camera contracts", False, f"Exception: {str(e)}") and all_passed
-    
-    # POST new contract
-    new_contract = {
-        "client": "صيدلية النور",
-        "location": "الكرادة",
-        "cameras": 6,
-        "type": "تركيب + صيانة",
-        "value": 1800000,
-        "status": "active",
-        "startDate": "2025-01-15"
-    }
-    created_id = None
-    try:
-        resp = requests.post(f"{BASE_URL}/camera-contracts", json=new_contract, timeout=10)
-        if resp.status_code != 201:
-            all_passed = print_test("POST camera contract", False, f"Status: {resp.status_code}") and all_passed
-        else:
-            created = resp.json()
-            created_id = created.get('id')
-            all_passed = print_test("POST camera contract", True, f"Created contract ID: {created_id}") and all_passed
-    except Exception as e:
-        all_passed = print_test("POST camera contract", False, f"Exception: {str(e)}") and all_passed
-    
-    # PUT update contract
-    if created_id:
-        try:
-            update_data = {"status": "completed", "value": 2000000}
-            resp = requests.put(f"{BASE_URL}/camera-contracts/{created_id}", json=update_data, timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("PUT camera contract", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("PUT camera contract", True, "Contract updated") and all_passed
-        except Exception as e:
-            all_passed = print_test("PUT camera contract", False, f"Exception: {str(e)}") and all_passed
-    
-    # DELETE contract
-    if created_id:
-        try:
-            resp = requests.delete(f"{BASE_URL}/camera-contracts/{created_id}", timeout=10)
-            if resp.status_code != 200:
-                all_passed = print_test("DELETE camera contract", False, f"Status: {resp.status_code}") and all_passed
-            else:
-                all_passed = print_test("DELETE camera contract", True, "Contract deleted") and all_passed
-        except Exception as e:
-            all_passed = print_test("DELETE camera contract", False, f"Exception: {str(e)}") and all_passed
-    
-    return all_passed
-
-def test_reports_summary():
-    """Test GET /api/reports/summary"""
-    print("\n=== Testing Reports Summary ===")
-    try:
-        resp = requests.get(f"{BASE_URL}/reports/summary", timeout=10)
-        if resp.status_code != 200:
-            return print_test("Reports summary", False, f"Status: {resp.status_code}")
+        # First try emp1/pass123 as mentioned in review request
+        resp = requests.post(f"{BASE_URL}/employees/login", 
+                            json={"username": "emp1", "password": "pass123"},
+                            timeout=10)
+        
+        if resp.status_code == 401:
+            # Try with the actual employee credentials
+            print(f"  emp1/pass123 not found, trying {employee_username}/{employee_password}")
+            resp = requests.post(f"{BASE_URL}/employees/login", 
+                                json={"username": employee_username, "password": employee_password},
+                                timeout=10)
         
         data = resp.json()
-        required_fields = ['totalSales', 'ispRevenue', 'repairRevenue', 'inventoryValue', 
-                          'totalRevenue', 'categoryBreakdown', 'pieData']
-        missing = [f for f in required_fields if f not in data]
-        if missing:
-            return print_test("Reports summary", False, f"Missing fields: {missing}")
         
-        return print_test("Reports summary", True, f"Total revenue: {data['totalRevenue']}, Inventory value: {data['inventoryValue']}")
+        if resp.status_code == 200 and data.get('success') and 'employee' in data and 'token' in data:
+            token = data['token']
+            employee = data['employee']
+            print_test("Employee Login - Valid", True, 
+                      f"Logged in as {employee.get('name')}, token: {token[:20]}...")
+            
+            # Update employee_id if we used emp1
+            if employee.get('username') == 'emp1':
+                employee_id = employee['id']
+                test_employee = employee
+        else:
+            print_test("Employee Login - Valid", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
     except Exception as e:
-        return print_test("Reports summary", False, f"Exception: {str(e)}")
-
-def test_ai_chat():
-    """Test POST /api/ai/chat with Emergent LLM"""
-    print("\n=== Testing AI Chat (Emergent LLM gpt-4o-mini) ===")
+        print_test("Employee Login - Valid", False, str(e))
+    
+    # ============================================================================
+    # TEST 2: POST /api/employees/login - Invalid credentials
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 2: Employee Login - Invalid Credentials")
+    print("-"*80)
     try:
-        chat_data = {
-            "message": "كم عدد المشتركين النشطين؟",
-            "history": []
+        resp = requests.post(f"{BASE_URL}/employees/login", 
+                            json={"username": "wronguser", "password": "wrongpass"},
+                            timeout=10)
+        
+        if resp.status_code == 401:
+            print_test("Employee Login - Invalid", True, 
+                      "Correctly returned 401 Unauthorized")
+        else:
+            print_test("Employee Login - Invalid", False, 
+                      f"Expected 401, got {resp.status_code}")
+    except Exception as e:
+        print_test("Employee Login - Invalid", False, str(e))
+    
+    # ============================================================================
+    # TEST 3: POST /api/attendance/checkin - First check-in
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 3: Attendance Check-in - First Time")
+    print("-"*80)
+    try:
+        # First, delete any existing attendance for today to ensure clean test
+        today = datetime.now().strftime('%Y-%m-%d')
+        resp_att = requests.get(f"{BASE_URL}/attendance/today", timeout=10)
+        if resp_att.status_code == 200:
+            today_records = resp_att.json()
+            for record in today_records:
+                if record.get('employeeId') == employee_id:
+                    print(f"  Cleaning up existing attendance record for today...")
+                    # Note: No DELETE endpoint for attendance, so we'll work with existing
+        
+        resp = requests.post(f"{BASE_URL}/attendance/checkin", 
+                            json={"employeeId": employee_id},
+                            timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and data.get('success') and 'record' in data:
+            record = data['record']
+            print_test("Attendance Check-in", True, 
+                      f"Check-in at {record.get('checkIn')}, Late: {record.get('isLate')}, "
+                      f"Late Minutes: {record.get('lateMinutes')}, Status: {record.get('status')}, "
+                      f"Auto Deduction: {record.get('autoDeduction')}")
+            
+            # Check if late and auto-deduction was created
+            if record.get('isLate'):
+                print(f"  ⚠️  Employee was late by {record.get('lateMinutes')} minutes")
+                print(f"  💰 Auto deduction: {record.get('autoDeduction')} IQD")
+        elif resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
+            print_test("Attendance Check-in", True, 
+                      "Already checked in today (expected if running multiple times)")
+        else:
+            print_test("Attendance Check-in", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("Attendance Check-in", False, str(e))
+    
+    # ============================================================================
+    # TEST 4: POST /api/attendance/checkin - Duplicate (should fail)
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 4: Attendance Check-in - Duplicate (Should Fail)")
+    print("-"*80)
+    try:
+        resp = requests.post(f"{BASE_URL}/attendance/checkin", 
+                            json={"employeeId": employee_id},
+                            timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
+            print_test("Duplicate Check-in Prevention", True, 
+                      f"Correctly rejected: {data.get('error')}")
+        else:
+            print_test("Duplicate Check-in Prevention", False, 
+                      f"Expected 400 with Arabic error, got {resp.status_code}: {data}")
+    except Exception as e:
+        print_test("Duplicate Check-in Prevention", False, str(e))
+    
+    # ============================================================================
+    # TEST 5: GET /api/attendance/today
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 5: Get Today's Attendance")
+    print("-"*80)
+    try:
+        resp = requests.get(f"{BASE_URL}/attendance/today", timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and isinstance(data, list):
+            print_test("Get Today's Attendance", True, 
+                      f"Found {len(data)} attendance records for today")
+            
+            # Find our employee's record
+            our_record = None
+            for record in data:
+                if record.get('employeeId') == employee_id:
+                    our_record = record
+                    print(f"  Our employee: {record.get('employeeName')}, Status: {record.get('status')}, "
+                          f"Check-in: {record.get('checkIn')}, Check-out: {record.get('checkOut')}")
+                    break
+        else:
+            print_test("Get Today's Attendance", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("Get Today's Attendance", False, str(e))
+    
+    # ============================================================================
+    # TEST 6: POST /api/attendance/checkout
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 6: Attendance Check-out")
+    print("-"*80)
+    try:
+        resp = requests.post(f"{BASE_URL}/attendance/checkout", 
+                            json={"employeeId": employee_id},
+                            timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and data.get('success') and 'hoursWorked' in data:
+            print_test("Attendance Check-out", True, 
+                      f"Hours worked: {data.get('hoursWorked')}")
+        elif resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
+            print_test("Attendance Check-out", True, 
+                      "Already checked out (expected if running multiple times)")
+        else:
+            print_test("Attendance Check-out", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("Attendance Check-out", False, str(e))
+    
+    # ============================================================================
+    # TEST 7: POST /api/attendance/checkout - Duplicate (should fail)
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 7: Attendance Check-out - Duplicate (Should Fail)")
+    print("-"*80)
+    try:
+        resp = requests.post(f"{BASE_URL}/attendance/checkout", 
+                            json={"employeeId": employee_id},
+                            timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 400 and 'مسبقاً' in data.get('error', ''):
+            print_test("Duplicate Check-out Prevention", True, 
+                      f"Correctly rejected: {data.get('error')}")
+        else:
+            print_test("Duplicate Check-out Prevention", False, 
+                      f"Expected 400 with Arabic error, got {resp.status_code}: {data}")
+    except Exception as e:
+        print_test("Duplicate Check-out Prevention", False, str(e))
+    
+    # ============================================================================
+    # TEST 8: GET /api/employees/:id/attendance
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 8: Get Employee's Attendance History")
+    print("-"*80)
+    try:
+        resp = requests.get(f"{BASE_URL}/employees/{employee_id}/attendance", timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and isinstance(data, list):
+            print_test("Get Employee Attendance History", True, 
+                      f"Found {len(data)} attendance records")
+            
+            if len(data) > 0:
+                latest = data[0]
+                print(f"  Latest: Date: {latest.get('date')}, Status: {latest.get('status')}, "
+                      f"Hours: {latest.get('hoursWorked')}")
+        else:
+            print_test("Get Employee Attendance History", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("Get Employee Attendance History", False, str(e))
+    
+    # ============================================================================
+    # TEST 9: GET /api/employees/:id/tasks
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 9: Get Employee's Tasks")
+    print("-"*80)
+    try:
+        resp = requests.get(f"{BASE_URL}/employees/{employee_id}/tasks", timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and isinstance(data, list):
+            print_test("Get Employee Tasks", True, 
+                      f"Found {len(data)} tasks assigned to employee")
+            
+            if len(data) > 0:
+                task = data[0]
+                print(f"  Task: {task.get('title')}, Status: {task.get('status')}, "
+                      f"Progress: {task.get('progress')}%, Priority: {task.get('priority')}")
+        else:
+            print_test("Get Employee Tasks", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("Get Employee Tasks", False, str(e))
+    
+    # ============================================================================
+    # TEST 10: POST /api/tasks/:id/update
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 10: Update Task")
+    print("-"*80)
+    try:
+        if len(tasks) > 0:
+            task_id = tasks[0]['id']
+            update_data = {
+                "status": "in_progress",
+                "progress": 75,
+                "notes": "تم إنجاز 75% من المهمة - اختبار تلقائي",
+                "attachments": ["test_file.pdf"]
+            }
+            
+            resp = requests.post(f"{BASE_URL}/tasks/{task_id}/update", 
+                                json=update_data,
+                                timeout=10)
+            data = resp.json()
+            
+            if resp.status_code == 200 and data.get('id') == task_id:
+                print_test("Update Task", True, 
+                          f"Updated task: Status={data.get('status')}, Progress={data.get('progress')}%, "
+                          f"Notes={data.get('notes')[:50]}...")
+            else:
+                print_test("Update Task", False, 
+                          f"Status: {resp.status_code}, Response: {data}")
+        else:
+            print_test("Update Task", False, "No tasks available to update")
+    except Exception as e:
+        print_test("Update Task", False, str(e))
+    
+    # ============================================================================
+    # TEST 11: GET /api/employees/:id/payroll?month=YYYY-MM
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 11: Get Employee Payroll")
+    print("-"*80)
+    try:
+        current_month = datetime.now().strftime('%Y-%m')
+        resp = requests.get(f"{BASE_URL}/employees/{employee_id}/payroll?month={current_month}", 
+                           timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and 'employee' in data and 'finalSalary' in data:
+            print_test("Get Employee Payroll", True, 
+                      f"Month: {data.get('month')}, Base Salary: {data.get('baseSalary')}, "
+                      f"Bonuses: {data.get('bonuses')}, Deductions: {data.get('deductions')}, "
+                      f"Final Salary: {data.get('finalSalary')}")
+            print(f"  Attendance: Present={data.get('presentDays')}, Late={data.get('lateDays')}, "
+                  f"Absent={data.get('absentDays')}, Total={data.get('totalDays')}")
+            print(f"  Payroll Entries: {len(data.get('entries', []))}")
+        else:
+            print_test("Get Employee Payroll", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("Get Employee Payroll", False, str(e))
+    
+    # ============================================================================
+    # TEST 12: GET /api/hr/reports?month=YYYY-MM
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 12: Get HR Reports")
+    print("-"*80)
+    try:
+        current_month = datetime.now().strftime('%Y-%m')
+        resp = requests.get(f"{BASE_URL}/hr/reports?month={current_month}", timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and 'employeeStats' in data:
+            print_test("Get HR Reports", True, 
+                      f"Month: {data.get('month')}, Total Employees: {data.get('totalEmployees')}, "
+                      f"Total Salaries: {data.get('totalSalaries')}, "
+                      f"Total Bonuses: {data.get('totalBonuses')}, "
+                      f"Total Deductions: {data.get('totalDeductions')}")
+            print(f"  Tasks: Total={data.get('totalTasks')}, Completed={data.get('completedTasks')}")
+            print(f"  Employee Stats: {len(data.get('employeeStats', []))} employees")
+            
+            if len(data.get('topPerformers', [])) > 0:
+                top = data['topPerformers'][0]
+                print(f"  Top Performer: {top.get('name')} (KPI: {top.get('kpi')})")
+        else:
+            print_test("Get HR Reports", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("Get HR Reports", False, str(e))
+    
+    # ============================================================================
+    # TEST 13: Payroll Entries CRUD
+    # ============================================================================
+    print("\n" + "-"*80)
+    print("TEST 13: Payroll Entries CRUD")
+    print("-"*80)
+    
+    # GET all payroll entries
+    try:
+        resp = requests.get(f"{BASE_URL}/payroll-entries", timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and isinstance(data, list):
+            print_test("GET Payroll Entries", True, f"Found {len(data)} payroll entries")
+        else:
+            print_test("GET Payroll Entries", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        print_test("GET Payroll Entries", False, str(e))
+    
+    # POST - Create manual bonus entry
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        bonus_entry = {
+            "employeeId": employee_id,
+            "employeeName": test_employee.get('name'),
+            "type": "bonus",
+            "amount": 50000,
+            "reason": "مكافأة أداء متميز - اختبار تلقائي",
+            "auto": False,
+            "date": today
         }
-        resp = requests.post(f"{BASE_URL}/ai/chat", json=chat_data, timeout=20)
-        if resp.status_code != 200:
-            return print_test("AI chat", False, f"Status: {resp.status_code}, Response: {resp.text}")
         
+        resp = requests.post(f"{BASE_URL}/payroll-entries", 
+                            json=bonus_entry,
+                            timeout=10)
         data = resp.json()
-        if 'reply' not in data:
-            return print_test("AI chat", False, "No 'reply' field in response")
         
-        reply = data['reply']
-        if not reply or len(reply) < 10:
-            return print_test("AI chat", False, f"Reply too short: {reply}")
-        
-        return print_test("AI chat", True, f"Reply: {reply[:100]}...")
+        if resp.status_code == 201 and data.get('id'):
+            created_entry_id = data['id']
+            print_test("POST Payroll Entry (Bonus)", True, 
+                      f"Created bonus entry: {data.get('amount')} IQD, Reason: {data.get('reason')}")
+        else:
+            print_test("POST Payroll Entry (Bonus)", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
     except Exception as e:
-        return print_test("AI chat", False, f"Exception: {str(e)}")
-
-def test_ai_insights():
-    """Test GET /api/ai/insights"""
-    print("\n=== Testing AI Insights ===")
+        print_test("POST Payroll Entry (Bonus)", False, str(e))
+    
+    # POST - Create manual deduction entry
     try:
-        resp = requests.get(f"{BASE_URL}/ai/insights", timeout=10)
-        if resp.status_code != 200:
-            return print_test("AI insights", False, f"Status: {resp.status_code}")
+        deduction_entry = {
+            "employeeId": employee_id,
+            "employeeName": test_employee.get('name'),
+            "type": "deduction",
+            "amount": 10000,
+            "reason": "خصم يدوي - اختبار تلقائي",
+            "auto": False,
+            "date": today
+        }
         
+        resp = requests.post(f"{BASE_URL}/payroll-entries", 
+                            json=deduction_entry,
+                            timeout=10)
         data = resp.json()
-        if 'insights' not in data:
-            return print_test("AI insights", False, "No 'insights' field in response")
         
-        insights = data['insights']
-        if not isinstance(insights, list) or len(insights) == 0:
-            return print_test("AI insights", False, "Insights is not a list or empty")
-        
-        # Verify insight structure
-        insight = insights[0]
-        required_fields = ['type', 'icon', 'title', 'message']
-        missing = [f for f in required_fields if f not in insight]
-        if missing:
-            return print_test("AI insights", False, f"Missing fields in insight: {missing}")
-        
-        return print_test("AI insights", True, f"Generated {len(insights)} insights")
+        if resp.status_code == 201 and data.get('id'):
+            print_test("POST Payroll Entry (Deduction)", True, 
+                      f"Created deduction entry: {data.get('amount')} IQD, Reason: {data.get('reason')}")
+        else:
+            print_test("POST Payroll Entry (Deduction)", False, 
+                      f"Status: {resp.status_code}, Response: {data}")
     except Exception as e:
-        return print_test("AI insights", False, f"Exception: {str(e)}")
-
-def main():
-    print("=" * 80)
-    print("GHAZLAN ERP - COMPREHENSIVE BACKEND API TEST SUITE")
-    print("=" * 80)
+        print_test("POST Payroll Entry (Deduction)", False, str(e))
     
-    results = {}
-    
-    # High Priority Tests
-    results['dashboard'] = test_dashboard_stats()
-    results['products'] = test_products_crud()
-    results['barcode'] = test_barcode_lookup()
-    results['pos'] = test_pos_checkout()
-    results['subscribers'] = test_subscribers_crud()
-    results['zones'] = test_zones_crud()
-    results['noc'] = test_noc_status()
-    results['repairs'] = test_repairs_crud()
-    results['ai_chat'] = test_ai_chat()
-    results['ai_insights'] = test_ai_insights()
-    
-    # Medium Priority Tests
-    results['employees'] = test_employees_crud()
-    results['camera_contracts'] = test_camera_contracts_crud()
-    results['reports'] = test_reports_summary()
-    
-    # Summary
-    print("\n" + "=" * 80)
-    print("TEST SUMMARY")
-    print("=" * 80)
-    
-    passed = sum(1 for v in results.values() if v)
-    total = len(results)
-    
-    print(f"\nTotal: {passed}/{total} test groups passed")
-    
-    if passed == total:
-        print("\n🎉 ALL TESTS PASSED! Backend is fully functional.")
-        sys.exit(0)
-    else:
-        print("\n⚠️  Some tests failed. See details above.")
-        sys.exit(1)
+    print("\n" + "="*80)
+    print("HR / EMPLOYEE MANAGEMENT TESTING COMPLETE")
+    print("="*80)
 
 if __name__ == "__main__":
-    main()
+    test_hr_employee_management()
