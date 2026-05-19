@@ -171,6 +171,10 @@ const SETTINGS_DEFAULTS = {
     requireFaceRecognition: false,
     autoAssignTasks: false,
     kpiTarget: 80,
+    lateGraceMinutes: 10,
+    lateDeductionAmount: 25000,
+    absentDeductionAmount: 50000,
+    autoCalculatePayroll: true,
   },
 };
 
@@ -275,13 +279,44 @@ async function seedDefaults(db) {
 
   const empCount = await db.collection('employees').countDocuments();
   if (empCount === 0) {
+    const PERM_ALL = ['sales','pos','subscribers','employees','tasks','reports','repairs','isp','agents','finance','settings'];
     await db.collection('employees').insertMany([
-      { id: uuidv4(), name: 'كرار الغزلان', role: 'مدير عام', phone: '07901111111', salary: 1500000, kpi: 95, attendance: 'present', createdAt: new Date().toISOString() },
-      { id: uuidv4(), name: 'حيدر الموسوي', role: 'فني شبكات أول', phone: '07902222222', salary: 800000, kpi: 88, attendance: 'present', createdAt: new Date().toISOString() },
-      { id: uuidv4(), name: 'علي السوداني', role: 'فني صيانة هواتف', phone: '07903333333', salary: 700000, kpi: 92, attendance: 'present', createdAt: new Date().toISOString() },
-      { id: uuidv4(), name: 'زهراء حسين', role: 'كاشير', phone: '07904444444', salary: 600000, kpi: 85, attendance: 'late', createdAt: new Date().toISOString() },
-      { id: uuidv4(), name: 'مصطفى الجبوري', role: 'فني كاميرات', phone: '07905555555', salary: 750000, kpi: 78, attendance: 'absent', createdAt: new Date().toISOString() },
+      { id: uuidv4(), employeeId: 'EMP-001', name: 'كرار الغزلان', username: 'karar', password: 'admin123', role: 'مدير عام', phone: '07901111111', salary: 1500000, kpi: 95, attendance: 'present', photo: '👨‍💼', shiftStart: '08:00', shiftEnd: '17:00', permissions: PERM_ALL, status: 'active', createdAt: new Date().toISOString() },
+      { id: uuidv4(), employeeId: 'EMP-002', name: 'حيدر الموسوي', username: 'haidar', password: 'tech123', role: 'فني شبكات أول', phone: '07902222222', salary: 800000, kpi: 88, attendance: 'present', photo: '👨‍🔧', shiftStart: '08:00', shiftEnd: '17:00', permissions: ['isp','repairs','tasks'], status: 'active', createdAt: new Date().toISOString() },
+      { id: uuidv4(), employeeId: 'EMP-003', name: 'علي السوداني', username: 'ali', password: 'repair123', role: 'فني صيانة هواتف', phone: '07903333333', salary: 700000, kpi: 92, attendance: 'present', photo: '🛠️', shiftStart: '09:00', shiftEnd: '18:00', permissions: ['repairs','tasks'], status: 'active', createdAt: new Date().toISOString() },
+      { id: uuidv4(), employeeId: 'EMP-004', name: 'زهراء حسين', username: 'zahra', password: 'cash123', role: 'كاشير', phone: '07904444444', salary: 600000, kpi: 85, attendance: 'late', photo: '💁‍♀️', shiftStart: '08:00', shiftEnd: '16:00', permissions: ['pos','sales','tasks'], status: 'active', createdAt: new Date().toISOString() },
+      { id: uuidv4(), employeeId: 'EMP-005', name: 'مصطفى الجبوري', username: 'mustafa', password: 'cam123', role: 'فني كاميرات', phone: '07905555555', salary: 750000, kpi: 78, attendance: 'absent', photo: '📹', shiftStart: '09:00', shiftEnd: '18:00', permissions: ['repairs','tasks'], status: 'active', createdAt: new Date().toISOString() },
     ]);
+  } else {
+    // Backfill new fields for existing employees
+    const allEmps = await db.collection('employees').find({}).toArray();
+    let i = 1;
+    for (const e of allEmps) {
+      const updates = {};
+      if (!e.employeeId) updates.employeeId = `EMP-${String(i).padStart(3, '0')}`;
+      if (!e.username) updates.username = (e.name || 'emp').toLowerCase().replace(/[^a-z]/g, '').slice(0, 8) || `emp${i}`;
+      if (!e.password) updates.password = 'pass123';
+      if (!e.photo) updates.photo = '👤';
+      if (!e.shiftStart) updates.shiftStart = '08:00';
+      if (!e.shiftEnd) updates.shiftEnd = '17:00';
+      if (!e.permissions) updates.permissions = ['tasks'];
+      if (!e.status) updates.status = 'active';
+      if (Object.keys(updates).length > 0) await db.collection('employees').updateOne({ id: e.id }, { $set: updates });
+      i++;
+    }
+  }
+
+  // Seed sample tasks
+  const tasksCount = await db.collection('tasks').countDocuments();
+  if (tasksCount === 0) {
+    const emps = await db.collection('employees').find({}).toArray();
+    if (emps.length >= 2) {
+      await db.collection('tasks').insertMany([
+        { id: uuidv4(), title: 'صيانة فاتة الكرادة F-01-03', description: 'فحص الكابل وإعادة الاتصال', priority: 'high', dueDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10), assignedTo: emps[1].id, assignedToName: emps[1].name, status: 'in_progress', progress: 60, notes: '', attachments: [], createdBy: emps[0].name, createdAt: new Date(Date.now() - 86400000).toISOString() },
+        { id: uuidv4(), title: 'تركيب كاميرا مطعم الذهبي', description: '8 كاميرات + NVR', priority: 'medium', dueDate: new Date(Date.now() + 86400000 * 3).toISOString().slice(0, 10), assignedTo: emps[2].id, assignedToName: emps[2].name, status: 'new', progress: 0, notes: '', attachments: [], createdBy: emps[0].name, createdAt: new Date().toISOString() },
+        { id: uuidv4(), title: 'جرد المخزون الأسبوعي', description: 'جرد كل الإكسسوارات', priority: 'low', dueDate: new Date(Date.now() + 86400000 * 5).toISOString().slice(0, 10), assignedTo: emps.length > 3 ? emps[3].id : emps[1].id, assignedToName: emps.length > 3 ? emps[3].name : emps[1].name, status: 'new', progress: 0, notes: '', attachments: [], createdBy: emps[0].name, createdAt: new Date().toISOString() },
+      ]);
+    }
   }
 
   const repairsCount = await db.collection('repairs').countDocuments();
@@ -473,6 +508,9 @@ async function handle(request, params) {
     'activations': 'activations',
     'whatsapp-messages': 'whatsapp_messages',
     'activity-logs': 'activity_logs',
+    'attendance': 'attendance',
+    'tasks': 'tasks',
+    'payroll-entries': 'payroll_entries',
   };
 
   for (const [route, coll] of Object.entries(collections)) {
@@ -652,6 +690,176 @@ async function handle(request, params) {
       $set: { status: 'queued', lastRetryAt: new Date().toISOString() },
     });
     return ok({ success: true, message: 'تم إعادة وضع الرسالة في الطابور' });
+  }
+
+  // ============ HR / EMPLOYEE ENDPOINTS ============
+  if (path === 'employees/login' && method === 'POST') {
+    const { username, password } = await getJsonBody(request);
+    const emp = await db.collection('employees').findOne({ username, password });
+    if (!emp) return err('بيانات الدخول خاطئة', 401);
+    delete emp._id;
+    return ok({ success: true, employee: emp, token: `emp_${emp.id}_${Date.now()}` });
+  }
+
+  // Check-in
+  if (path === 'attendance/checkin' && method === 'POST') {
+    const { employeeId } = await getJsonBody(request);
+    const emp = await db.collection('employees').findOne({ id: employeeId });
+    if (!emp) return err('الموظف غير موجود', 404);
+    const today = new Date().toISOString().slice(0, 10);
+    const existing = await db.collection('attendance').findOne({ employeeId, date: today });
+    if (existing && existing.checkIn) return err('تم تسجيل الحضور مسبقاً اليوم', 400);
+    const now = new Date();
+    const [shiftH, shiftM] = (emp.shiftStart || '08:00').split(':').map(Number);
+    const shiftStart = new Date(now); shiftStart.setHours(shiftH, shiftM, 0, 0);
+    const lateMinutes = Math.max(0, Math.floor((now - shiftStart) / 60000));
+    // Late deduction from settings
+    const settings = await db.collection('settings').findOne({ id: 'system' });
+    const grace = settings?.employees?.lateGraceMinutes ?? 10;
+    const deductPerLate = settings?.employees?.lateDeductionAmount ?? 25000;
+    const isLate = lateMinutes > grace;
+    const record = {
+      id: uuidv4(),
+      employeeId, employeeName: emp.name, date: today,
+      checkIn: now.toISOString(),
+      checkOut: null,
+      lateMinutes, isLate, status: isLate ? 'late' : 'present',
+      hoursWorked: 0,
+      autoDeduction: 0,
+      createdAt: now.toISOString(),
+    };
+    if (isLate) {
+      record.autoDeduction = deductPerLate;
+      // Create deduction entry
+      await db.collection('payroll_entries').insertOne({
+        id: uuidv4(), employeeId, employeeName: emp.name, type: 'deduction',
+        amount: deductPerLate, reason: `خصم تلقائي: تأخير ${lateMinutes} دقيقة`,
+        auto: true, date: today, createdAt: now.toISOString(),
+      });
+    }
+    await db.collection('attendance').insertOne(record);
+    await db.collection('employees').updateOne({ id: employeeId }, { $set: { attendance: record.status } });
+    delete record._id;
+    return ok({ success: true, record });
+  }
+
+  // Check-out
+  if (path === 'attendance/checkout' && method === 'POST') {
+    const { employeeId } = await getJsonBody(request);
+    const today = new Date().toISOString().slice(0, 10);
+    const existing = await db.collection('attendance').findOne({ employeeId, date: today });
+    if (!existing) return err('لم تسجل حضور اليوم', 400);
+    if (existing.checkOut) return err('تم تسجيل الانصراف مسبقاً', 400);
+    const now = new Date();
+    const checkInTime = new Date(existing.checkIn);
+    const hoursWorked = ((now - checkInTime) / 3600000).toFixed(2);
+    await db.collection('attendance').updateOne(
+      { id: existing.id },
+      { $set: { checkOut: now.toISOString(), hoursWorked: Number(hoursWorked) } }
+    );
+    return ok({ success: true, hoursWorked: Number(hoursWorked) });
+  }
+
+  // Today's attendance for all
+  if (path === 'attendance/today' && method === 'GET') {
+    const today = new Date().toISOString().slice(0, 10);
+    const records = await db.collection('attendance').find({ date: today }).toArray();
+    return ok(records.map(r => { delete r._id; return r; }));
+  }
+
+  // Employee's attendance/tasks
+  if (path.match(/^employees\/[^/]+\/attendance$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const records = await db.collection('attendance').find({ employeeId: empId }).sort({ date: -1 }).toArray();
+    return ok(records.map(r => { delete r._id; return r; }));
+  }
+
+  if (path.match(/^employees\/[^/]+\/tasks$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const tasks = await db.collection('tasks').find({ assignedTo: empId }).sort({ createdAt: -1 }).toArray();
+    return ok(tasks.map(t => { delete t._id; return t; }));
+  }
+
+  // Task update by employee
+  if (path.match(/^tasks\/[^/]+\/update$/) && method === 'POST') {
+    const taskId = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const allowedFields = ['status', 'progress', 'notes', 'attachments'];
+    const updates = {};
+    for (const k of allowedFields) if (k in body) updates[k] = body[k];
+    updates.updatedAt = new Date().toISOString();
+    await db.collection('tasks').updateOne({ id: taskId }, { $set: updates });
+    const updated = await db.collection('tasks').findOne({ id: taskId });
+    if (updated) delete updated._id;
+    return ok(updated);
+  }
+
+  // Payroll calculation for employee for a month
+  if (path.match(/^employees\/[^/]+\/payroll$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const url = new URL(request.url);
+    const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7); // YYYY-MM
+    const emp = await db.collection('employees').findOne({ id: empId });
+    if (!emp) return err('الموظف غير موجود', 404);
+    const attRecords = await db.collection('attendance').find({ employeeId: empId, date: { $regex: `^${month}` } }).toArray();
+    const entries = await db.collection('payroll_entries').find({ employeeId: empId, date: { $regex: `^${month}` } }).toArray();
+    const presentDays = attRecords.filter(a => a.status === 'present').length;
+    const lateDays = attRecords.filter(a => a.status === 'late').length;
+    const absentDays = attRecords.filter(a => a.status === 'absent').length;
+    const totalDays = attRecords.length;
+    const bonuses = entries.filter(e => e.type === 'bonus').reduce((s, x) => s + (x.amount || 0), 0);
+    const deductions = entries.filter(e => e.type === 'deduction').reduce((s, x) => s + (x.amount || 0), 0);
+    const baseSalary = emp.salary || 0;
+    const finalSalary = baseSalary + bonuses - deductions;
+    return ok({
+      employee: { id: emp.id, name: emp.name, employeeId: emp.employeeId, role: emp.role },
+      month, baseSalary, bonuses, deductions, finalSalary,
+      presentDays, lateDays, absentDays, totalDays,
+      entries: entries.map(e => { delete e._id; return e; }),
+      attendance: attRecords.map(a => { delete a._id; return a; }),
+    });
+  }
+
+  // HR Reports
+  if (path === 'hr/reports' && method === 'GET') {
+    const url = new URL(request.url);
+    const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7);
+    const employees = await db.collection('employees').find({}).toArray();
+    const attendance = await db.collection('attendance').find({ date: { $regex: `^${month}` } }).toArray();
+    const tasks = await db.collection('tasks').find({}).toArray();
+    const entries = await db.collection('payroll_entries').find({ date: { $regex: `^${month}` } }).toArray();
+
+    const byEmp = {};
+    for (const e of employees) {
+      const att = attendance.filter(a => a.employeeId === e.id);
+      const empEntries = entries.filter(x => x.employeeId === e.id);
+      const empTasks = tasks.filter(t => t.assignedTo === e.id);
+      byEmp[e.id] = {
+        id: e.id, employeeId: e.employeeId, name: e.name, role: e.role, photo: e.photo,
+        presentDays: att.filter(a => a.status === 'present').length,
+        lateDays: att.filter(a => a.status === 'late').length,
+        totalHours: att.reduce((s, x) => s + (x.hoursWorked || 0), 0),
+        bonuses: empEntries.filter(x => x.type === 'bonus').reduce((s, x) => s + x.amount, 0),
+        deductions: empEntries.filter(x => x.type === 'deduction').reduce((s, x) => s + x.amount, 0),
+        tasksTotal: empTasks.length,
+        tasksCompleted: empTasks.filter(t => t.status === 'completed').length,
+        kpi: e.kpi || 0,
+      };
+      byEmp[e.id].finalSalary = (e.salary || 0) + byEmp[e.id].bonuses - byEmp[e.id].deductions;
+    }
+    const empStats = Object.values(byEmp);
+    return ok({
+      month,
+      totalEmployees: employees.length,
+      totalSalaries: employees.reduce((s, e) => s + (e.salary || 0), 0),
+      totalBonuses: entries.filter(x => x.type === 'bonus').reduce((s, x) => s + x.amount, 0),
+      totalDeductions: entries.filter(x => x.type === 'deduction').reduce((s, x) => s + x.amount, 0),
+      totalTasks: tasks.length,
+      completedTasks: tasks.filter(t => t.status === 'completed').length,
+      employeeStats: empStats,
+      topPerformers: [...empStats].sort((a, b) => b.kpi - a.kpi).slice(0, 5),
+      mostAbsent: [...empStats].sort((a, b) => b.lateDays - a.lateDays).slice(0, 5),
+    });
   }
 
   // Agent stats

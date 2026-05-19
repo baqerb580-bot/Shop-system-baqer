@@ -1430,49 +1430,318 @@ function Cameras() {
 }
 
 // ============ EMPLOYEES ============
+// ============ HR HUB - Multi-tab Employee Management ============
+const ALL_PERMISSIONS = [
+  { id: 'sales', label: 'المبيعات' },
+  { id: 'pos', label: 'نقطة البيع POS' },
+  { id: 'subscribers', label: 'المشتركين' },
+  { id: 'employees', label: 'الموظفين' },
+  { id: 'tasks', label: 'المهام' },
+  { id: 'reports', label: 'التقارير' },
+  { id: 'repairs', label: 'الصيانة' },
+  { id: 'isp', label: 'الإنترنت' },
+  { id: 'agents', label: 'الوكلاء' },
+  { id: 'finance', label: 'المالية' },
+  { id: 'settings', label: 'الإعدادات' },
+];
+
 function Employees() {
+  const [tab, setTab] = useState('list');
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <div className="flex justify-between items-center flex-wrap gap-3">
+        <h1 className="text-2xl font-bold gold-text flex items-center gap-2"><Users className="w-6 h-6" /> إدارة الموارد البشرية HR</h1>
+        <a href="/employee" target="_blank" rel="noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300 underline">🔗 رابط لوحة الموظف /employee</a>
+      </div>
+
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="bg-input/30 border border-gold-soft w-full grid grid-cols-5">
+          <TabsTrigger value="list">👥 الموظفون</TabsTrigger>
+          <TabsTrigger value="attendance">🕐 الحضور</TabsTrigger>
+          <TabsTrigger value="tasks">📋 المهام</TabsTrigger>
+          <TabsTrigger value="payroll">💰 الرواتب</TabsTrigger>
+          <TabsTrigger value="reports">📊 التقارير</TabsTrigger>
+        </TabsList>
+        <TabsContent value="list" className="mt-4"><EmployeesList /></TabsContent>
+        <TabsContent value="attendance" className="mt-4"><AttendanceView /></TabsContent>
+        <TabsContent value="tasks" className="mt-4"><TasksManager /></TabsContent>
+        <TabsContent value="payroll" className="mt-4"><PayrollView /></TabsContent>
+        <TabsContent value="reports" className="mt-4"><HRReports /></TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function EmployeesList() {
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', role: '', phone: '', salary: 500000, kpi: 80, attendance: 'present' });
-
+  const [editing, setEditing] = useState(null);
+  const [search, setSearch] = useState('');
+  const blank = { name: '', username: '', password: '', phone: '', role: '', salary: 500000, kpi: 80, photo: '👤', shiftStart: '08:00', shiftEnd: '17:00', permissions: ['tasks'], status: 'active', attendance: 'present' };
+  const [form, setForm] = useState(blank);
   const load = () => api('employees').then(setItems);
   useEffect(() => { load(); }, []);
 
   const save = async () => {
-    await api('employees', { method: 'POST', body: JSON.stringify({ ...form, salary: Number(form.salary), kpi: Number(form.kpi) }) });
-    toast.success('تمت الإضافة'); setOpen(false); load();
+    if (!form.name || !form.username) { toast.error('الاسم واليوزر مطلوبان'); return; }
+    const payload = { ...form, salary: Number(form.salary), kpi: Number(form.kpi) };
+    if (editing) await api(`employees/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    else await api('employees', { method: 'POST', body: JSON.stringify({ ...payload, employeeId: `EMP-${String(items.length + 1).padStart(3, '0')}` }) });
+    toast.success('تم الحفظ'); setOpen(false); setEditing(null); load();
   };
   const remove = async (id) => { await api(`employees/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
+  const togglePerm = (p) => setForm(f => ({ ...f, permissions: f.permissions.includes(p) ? f.permissions.filter(x => x !== p) : [...f.permissions, p] }));
+
+  const filtered = items.filter(e => !search || e.name?.includes(search) || e.employeeId?.includes(search) || e.username?.toLowerCase().includes(search.toLowerCase()) || e.role?.includes(search));
 
   return (
-    <div className="max-w-[1600px] mx-auto space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold gold-text">الموظفون</h1>
-        <Button onClick={() => setOpen(true)} className="btn-gold"><Plus className="w-4 h-4 ml-1" /> موظف جديد</Button>
+    <div className="space-y-4">
+      <div className="flex justify-between gap-2 flex-wrap">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث: اسم/ID/يوزر/وظيفة..." className="pr-10 bg-input/30 border-gold/20" />
+        </div>
+        <Button onClick={() => { setEditing(null); setForm(blank); setOpen(true); }} className="btn-gold"><Plus className="w-4 h-4 ml-1" /> موظف جديد</Button>
       </div>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {items.map(e => (
-          <Card key={e.id} className="glass-card border-gold-soft">
+        {filtered.map(e => (
+          <Card key={e.id} className="glass-card border-gold-soft hover:border-gold/50">
             <CardContent className="p-5 space-y-3">
               <div className="flex items-center gap-3">
-                <div className="w-14 h-14 rounded-xl bg-gold-gradient flex items-center justify-center text-2xl font-black text-background">{e.name[0]}</div>
+                <div className="w-14 h-14 rounded-xl bg-gold-gradient flex items-center justify-center text-3xl">{e.photo || '👤'}</div>
                 <div className="flex-1">
                   <h3 className="font-bold">{e.name}</h3>
-                  <p className="text-xs text-muted-foreground">{e.role}</p>
-                  <p className="text-xs">{e.phone}</p>
+                  <p className="text-[10px] text-muted-foreground">{e.employeeId} · {e.role}</p>
+                  <p className="text-xs font-mono text-cyan-400">@{e.username}</p>
                 </div>
                 <Badge className={e.attendance === 'present' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : e.attendance === 'late' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'}>
                   {e.attendance === 'present' ? 'حاضر' : e.attendance === 'late' ? 'متأخر' : 'غائب'}
                 </Badge>
               </div>
-              <div>
-                <div className="flex justify-between text-xs mb-1"><span className="text-muted-foreground">KPI الأداء</span><span className="font-bold">{e.kpi}%</span></div>
-                <Progress value={e.kpi} className="h-2" />
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="glass-card rounded p-1.5"><p className="text-[9px] text-muted-foreground">الدوام</p><p className="font-bold neon-text text-[10px]">{e.shiftStart}-{e.shiftEnd}</p></div>
+                <div className="glass-card rounded p-1.5"><p className="text-[9px] text-muted-foreground">KPI</p><p className="font-bold gold-text">{e.kpi}%</p></div>
+                <div className="glass-card rounded p-1.5"><p className="text-[9px] text-muted-foreground">الراتب</p><p className="font-bold text-emerald-400 text-[10px]">{fmt(e.salary)}</p></div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {(e.permissions || []).slice(0, 4).map(p => <Badge key={p} className="bg-cyan-500/10 text-cyan-400 border-cyan-500/30 text-[9px]">{ALL_PERMISSIONS.find(x => x.id === p)?.label || p}</Badge>)}
+                {(e.permissions || []).length > 4 && <Badge className="bg-gold/10 text-gold border-gold/30 text-[9px]">+{e.permissions.length - 4}</Badge>}
+              </div>
+              <Progress value={e.kpi || 0} className="h-1.5" />
+              <div className="flex gap-1 pt-2 border-t border-gold-soft">
+                <Button size="sm" variant="outline" className="flex-1 border-gold/30 text-[10px]" onClick={() => { setEditing(e); setForm({ ...e, permissions: e.permissions || [] }); setOpen(true); }}><Edit2 className="w-3 h-3 ml-1" /> تعديل</Button>
+                <Button size="icon" variant="ghost" className="h-8 w-8 hover:text-red-500" onClick={() => remove(e.id)}><Trash2 className="w-3 h-3" /></Button>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="glass-strong border-gold/40 max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle className="gold-text">{editing ? 'تعديل موظف' : 'موظف جديد'}</DialogTitle></DialogHeader>
+          <Tabs defaultValue="basic">
+            <TabsList className="grid grid-cols-3 bg-input/30">
+              <TabsTrigger value="basic">الأساسيات</TabsTrigger>
+              <TabsTrigger value="auth">الدخول</TabsTrigger>
+              <TabsTrigger value="perms">الصلاحيات</TabsTrigger>
+            </TabsList>
+            <TabsContent value="basic" className="grid grid-cols-2 gap-3 mt-3">
+              <div className="col-span-2"><Label>الاسم الكامل</Label><Input value={form.name} onChange={ev => setForm({ ...form, name: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>الوظيفة</Label><Input value={form.role} onChange={ev => setForm({ ...form, role: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>الهاتف</Label><Input value={form.phone} onChange={ev => setForm({ ...form, phone: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>الراتب الأساسي</Label><Input type="number" value={form.salary} onChange={ev => setForm({ ...form, salary: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>KPI %</Label><Input type="number" value={form.kpi} onChange={ev => setForm({ ...form, kpi: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>بداية الدوام</Label><Input type="time" value={form.shiftStart} onChange={ev => setForm({ ...form, shiftStart: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div><Label>نهاية الدوام</Label><Input type="time" value={form.shiftEnd} onChange={ev => setForm({ ...form, shiftEnd: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div className="col-span-2"><Label>الصورة (Emoji)</Label><Input value={form.photo} onChange={ev => setForm({ ...form, photo: ev.target.value })} placeholder="👤" className="bg-input/30 border-gold/20 text-xl text-center" /></div>
+            </TabsContent>
+            <TabsContent value="auth" className="grid grid-cols-2 gap-3 mt-3">
+              <div><Label>اسم المستخدم (Username)</Label><Input value={form.username} onChange={ev => setForm({ ...form, username: ev.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') })} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></div>
+              <div><Label>كلمة المرور</Label><Input value={form.password} onChange={ev => setForm({ ...form, password: ev.target.value })} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></div>
+              <div className="col-span-2 p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/20 text-xs space-y-1">
+                <p className="text-cyan-400 font-bold">🔗 رابط دخول الموظف:</p>
+                <p className="font-mono text-[10px]">{typeof window !== 'undefined' ? window.location.origin : ''}/employee</p>
+                <p className="text-muted-foreground">يستخدم الموظف اليوزر وكلمة المرور هنا</p>
+              </div>
+              <div><Label>الحالة</Label>
+                <Select value={form.status} onValueChange={v => setForm({ ...form, status: v })}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="active">نشط</SelectItem><SelectItem value="suspended">موقوف</SelectItem></SelectContent>
+                </Select>
+              </div>
+            </TabsContent>
+            <TabsContent value="perms" className="mt-3 space-y-2">
+              <p className="text-xs text-muted-foreground">حدد الأقسام التي يمكن للموظف الوصول إليها:</p>
+              <div className="grid grid-cols-2 gap-2">
+                {ALL_PERMISSIONS.map(p => (
+                  <label key={p.id} className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-all ${form.permissions.includes(p.id) ? 'bg-gold/10 border-gold' : 'bg-input/30 border-gold-soft'}`}>
+                    <input type="checkbox" checked={form.permissions.includes(p.id)} onChange={() => togglePerm(p.id)} className="w-4 h-4" />
+                    <span className="text-sm">{p.label}</span>
+                  </label>
+                ))}
+              </div>
+            </TabsContent>
+          </Tabs>
+          <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function AttendanceView() {
+  const [today, setToday] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const load = async () => {
+    const [t, e] = await Promise.all([api('attendance/today'), api('employees')]);
+    setToday(t); setEmployees(e);
+  };
+  useEffect(() => { load(); const i = setInterval(load, 30000); return () => clearInterval(i); }, []);
+
+  const punchIn = async (employeeId) => {
+    const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId }) });
+    if (r.error) toast.error(r.error); else { toast.success(r.record?.isLate ? `حضور متأخر بـ ${r.record.lateMinutes} دقيقة` : '✅ تم تسجيل الحضور'); load(); }
+  };
+  const punchOut = async (employeeId) => {
+    const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId }) });
+    if (r.error) toast.error(r.error); else { toast.success(`✅ انصراف - عمل ${r.hoursWorked} ساعة`); load(); }
+  };
+
+  const enriched = employees.map(e => {
+    const att = today.find(t => t.employeeId === e.id);
+    return { ...e, attRecord: att };
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي اليوم</p><p className="text-2xl font-bold gold-text">{today.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">حاضرون في الوقت</p><p className="text-2xl font-bold text-emerald-400">{today.filter(t => t.status === 'present').length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">متأخرون</p><p className="text-2xl font-bold text-amber-400">{today.filter(t => t.status === 'late').length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">لم يحضروا بعد</p><p className="text-2xl font-bold text-red-400">{employees.length - today.length}</p></div>
+      </div>
+
+      <Card className="glass-strong border-gold-soft">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Activity className="w-4 h-4 text-gold animate-pulse" /> الحضور والانصراف اليومي - {new Date().toLocaleDateString('ar-IQ')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gold-soft text-right text-xs text-muted-foreground">
+                  <th className="p-2">الموظف</th><th>الدوام</th><th>الدخول</th><th>الخروج</th><th>الساعات</th><th>الحالة</th><th>إجراءات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {enriched.map(e => (
+                  <tr key={e.id} className="border-b border-gold-soft/30 hover:bg-gold/5">
+                    <td className="p-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl">{e.photo}</span>
+                        <div>
+                          <div className="text-xs font-bold">{e.name}</div>
+                          <div className="text-[10px] text-muted-foreground">{e.employeeId}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="text-xs font-mono">{e.shiftStart}-{e.shiftEnd}</td>
+                    <td className="text-xs font-mono text-emerald-400">{e.attRecord?.checkIn ? new Date(e.attRecord.checkIn).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                    <td className="text-xs font-mono text-cyan-400">{e.attRecord?.checkOut ? new Date(e.attRecord.checkOut).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                    <td className="text-xs font-bold gold-text">{e.attRecord?.hoursWorked || 0}</td>
+                    <td>
+                      {!e.attRecord ? <Badge className="bg-muted text-muted-foreground text-[10px]">لم يحضر</Badge> :
+                       e.attRecord.status === 'late' ? <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30 text-[10px]">⏰ متأخر {e.attRecord.lateMinutes}د</Badge> :
+                       <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px]">✅ حاضر</Badge>}
+                    </td>
+                    <td>
+                      {!e.attRecord ? (
+                        <Button size="sm" onClick={() => punchIn(e.id)} className="h-7 text-[10px] btn-gold"><Activity className="w-3 h-3 ml-1" /> بصمة دخول</Button>
+                      ) : !e.attRecord.checkOut ? (
+                        <Button size="sm" onClick={() => punchOut(e.id)} className="h-7 text-[10px] btn-neon"><X className="w-3 h-3 ml-1" /> بصمة خروج</Button>
+                      ) : (
+                        <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 text-[10px]">منتهي</Badge>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function TasksManager() {
+  const [items, setItems] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [open, setOpen] = useState(false);
+  const blank = { title: '', description: '', priority: 'medium', dueDate: new Date().toISOString().slice(0, 10), assignedTo: '', notes: '', status: 'new', progress: 0, attachments: [] };
+  const [form, setForm] = useState(blank);
+  const load = async () => {
+    const [t, e] = await Promise.all([api('tasks'), api('employees')]);
+    setItems(t); setEmployees(e);
+  };
+  useEffect(() => { load(); }, []);
+
+  const filtered = statusFilter === 'all' ? items : items.filter(t => t.status === statusFilter);
+
+  const save = async () => {
+    if (!form.title || !form.assignedTo) { toast.error('العنوان والموظف مطلوبان'); return; }
+    const emp = employees.find(e => e.id === form.assignedTo);
+    await api('tasks', { method: 'POST', body: JSON.stringify({ ...form, assignedToName: emp?.name, createdBy: 'المدير' }) });
+    toast.success('✅ تم إنشاء المهمة'); setOpen(false); setForm(blank); load();
+  };
+  const remove = async (id) => { await api(`tasks/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
+
+  const priorityCls = { high: 'bg-red-500/20 text-red-400 border-red-500/30', medium: 'bg-amber-500/20 text-amber-400 border-amber-500/30', low: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' };
+  const statusCls = { new: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30', in_progress: 'bg-amber-500/20 text-amber-400 border-amber-500/30', completed: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30', overdue: 'bg-red-500/20 text-red-400 border-red-500/30', failed: 'bg-red-500/30 text-red-300 border-red-500/40' };
+  const statusLabel = { new: 'جديدة', in_progress: 'جاري العمل', completed: 'مكتملة', overdue: 'متأخرة', failed: 'فشلت' };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between gap-2 flex-wrap">
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-44 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">كل الحالات</SelectItem>
+            <SelectItem value="new">جديدة</SelectItem>
+            <SelectItem value="in_progress">جاري العمل</SelectItem>
+            <SelectItem value="completed">مكتملة</SelectItem>
+            <SelectItem value="overdue">متأخرة</SelectItem>
+            <SelectItem value="failed">فشلت</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button onClick={() => { setForm(blank); setOpen(true); }} className="btn-gold"><Plus className="w-4 h-4 ml-1" /> مهمة جديدة</Button>
+      </div>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {filtered.map(t => (
+          <Card key={t.id} className="glass-card border-gold-soft hover:border-gold/50">
+            <CardContent className="p-4 space-y-2">
+              <div className="flex justify-between items-start gap-2">
+                <h3 className="font-bold text-sm flex-1">{t.title}</h3>
+                <Badge className={priorityCls[t.priority] + ' text-[9px]'}>{t.priority}</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground line-clamp-2">{t.description}</p>
+              <div className="flex justify-between text-[10px]">
+                <span className="text-cyan-400">👤 {t.assignedToName}</span>
+                <span className="text-muted-foreground">📅 {t.dueDate}</span>
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px]"><span className="text-muted-foreground">التقدم</span><span className="font-bold">{t.progress || 0}%</span></div>
+                <Progress value={t.progress || 0} className="h-1.5" />
               </div>
               <div className="flex justify-between items-center pt-2 border-t border-gold-soft">
-                <div><p className="text-[10px] text-muted-foreground">الراتب</p><p className="text-sm font-bold gold-text">{fmtCurrency(e.salary)}</p></div>
-                <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(e.id)}><Trash2 className="w-3 h-3" /></Button>
+                <Badge className={statusCls[t.status] + ' text-[10px]'}>{statusLabel[t.status]}</Badge>
+                <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(t.id)}><Trash2 className="w-3 h-3" /></Button>
               </div>
             </CardContent>
           </Card>
@@ -1481,20 +1750,178 @@ function Employees() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="glass-strong border-gold/40">
-          <DialogHeader><DialogTitle className="gold-text">موظف جديد</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle className="gold-text">مهمة جديدة</DialogTitle></DialogHeader>
           <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2"><Label>الاسم</Label><Input value={form.name} onChange={ev => setForm({ ...form, name: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>الوظيفة</Label><Input value={form.role} onChange={ev => setForm({ ...form, role: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>الهاتف</Label><Input value={form.phone} onChange={ev => setForm({ ...form, phone: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>الراتب</Label><Input type="number" value={form.salary} onChange={ev => setForm({ ...form, salary: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div><Label>KPI %</Label><Input type="number" value={form.kpi} onChange={ev => setForm({ ...form, kpi: ev.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div className="col-span-2"><Label>عنوان المهمة</Label><Input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div className="col-span-2"><Label>الوصف</Label><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-input/30 border-gold/20 h-20" /></div>
+            <div><Label>الموظف المسؤول</Label>
+              <Select value={form.assignedTo} onValueChange={v => setForm({ ...form, assignedTo: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر موظف" /></SelectTrigger>
+                <SelectContent>{employees.map(e => <SelectItem key={e.id} value={e.id}>{e.photo} {e.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>الأولوية</Label>
+              <Select value={form.priority} onValueChange={v => setForm({ ...form, priority: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="high">🔴 عالية</SelectItem>
+                  <SelectItem value="medium">🟡 متوسطة</SelectItem>
+                  <SelectItem value="low">🟢 منخفضة</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="col-span-2"><Label>تاريخ التسليم</Label><Input type="date" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} className="bg-input/30 border-gold/20" /></div>
           </div>
-          <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
+          <DialogFooter><Button onClick={save} className="btn-gold w-full">إنشاء المهمة</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
   );
 }
+
+function PayrollView() {
+  const [employees, setEmployees] = useState([]);
+  const [selectedEmp, setSelectedEmp] = useState('');
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [data, setData] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ employeeId: '', type: 'bonus', amount: 50000, reason: '' });
+
+  useEffect(() => { api('employees').then(e => { setEmployees(e); if (e.length) setSelectedEmp(e[0].id); }); }, []);
+  useEffect(() => { if (selectedEmp && month) api(`employees/${selectedEmp}/payroll?month=${month}`).then(setData); }, [selectedEmp, month]);
+
+  const addEntry = async () => {
+    if (!form.amount || !form.reason) { toast.error('املأ الحقول'); return; }
+    const emp = employees.find(e => e.id === (form.employeeId || selectedEmp));
+    await api('payroll-entries', { method: 'POST', body: JSON.stringify({ ...form, employeeId: form.employeeId || selectedEmp, employeeName: emp?.name, amount: Number(form.amount), date: new Date().toISOString().slice(0, 10), auto: false }) });
+    toast.success('تم الإضافة'); setOpen(false);
+    if (selectedEmp && month) api(`employees/${selectedEmp}/payroll?month=${month}`).then(setData);
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="glass-strong border-gold-soft">
+        <CardContent className="pt-6 grid md:grid-cols-3 gap-3">
+          <div><Label className="text-xs">الموظف</Label>
+            <Select value={selectedEmp} onValueChange={setSelectedEmp}>
+              <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+              <SelectContent>{employees.map(e => <SelectItem key={e.id} value={e.id}>{e.photo} {e.name} ({e.employeeId})</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div><Label className="text-xs">الشهر</Label><Input type="month" value={month} onChange={e => setMonth(e.target.value)} className="bg-input/30 border-gold/20" /></div>
+          <div className="flex items-end"><Button onClick={() => { setForm({ employeeId: selectedEmp, type: 'bonus', amount: 50000, reason: '' }); setOpen(true); }} className="btn-gold w-full"><Plus className="w-4 h-4 ml-1" /> إضافة خصم/مكافأة</Button></div>
+        </CardContent>
+      </Card>
+
+      {data && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="stat-card"><p className="text-xs text-muted-foreground">الراتب الأساسي</p><p className="text-lg font-bold gold-text">{fmt(data.baseSalary)}</p></div>
+            <div className="stat-card"><p className="text-xs text-muted-foreground">المكافآت</p><p className="text-lg font-bold text-emerald-400">+{fmt(data.bonuses)}</p></div>
+            <div className="stat-card"><p className="text-xs text-muted-foreground">الخصومات</p><p className="text-lg font-bold text-red-400">-{fmt(data.deductions)}</p></div>
+            <div className="stat-card"><p className="text-xs text-muted-foreground">أيام الحضور</p><p className="text-lg font-bold neon-text">{data.presentDays + data.lateDays}/{data.totalDays}</p></div>
+            <div className="stat-card border-2 border-gold"><p className="text-xs text-muted-foreground">الراتب النهائي</p><p className="text-xl font-black gold-text">{fmt(data.finalSalary)}</p></div>
+          </div>
+
+          <Card className="glass-strong border-gold-soft">
+            <CardHeader><CardTitle className="text-base">الخصومات والمكافآت</CardTitle></CardHeader>
+            <CardContent>
+              {data.entries.length === 0 ? <p className="text-xs text-muted-foreground text-center py-6">لا توجد قيود لهذا الشهر</p> :
+              <table className="w-full text-sm">
+                <thead><tr className="border-b border-gold-soft text-right text-xs text-muted-foreground"><th className="p-2">التاريخ</th><th>النوع</th><th>المبلغ</th><th>السبب</th><th>تلقائي</th></tr></thead>
+                <tbody>
+                  {data.entries.map(e => (
+                    <tr key={e.id} className="border-b border-gold-soft/30">
+                      <td className="p-2 text-xs">{e.date}</td>
+                      <td><Badge className={e.type === 'bonus' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px]' : 'bg-red-500/20 text-red-400 border-red-500/30 text-[10px]'}>{e.type === 'bonus' ? '🎁 مكافأة' : '💸 خصم'}</Badge></td>
+                      <td className={e.type === 'bonus' ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>{e.type === 'bonus' ? '+' : '-'}{fmt(e.amount)}</td>
+                      <td className="text-xs">{e.reason}</td>
+                      <td>{e.auto ? <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-[10px]">🤖 تلقائي</Badge> : <Badge variant="outline" className="text-[10px]">يدوي</Badge>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>}
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="glass-strong border-gold/40">
+          <DialogHeader><DialogTitle className="gold-text">إضافة قيد راتب</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div><Label>الموظف</Label>
+              <Select value={form.employeeId} onValueChange={v => setForm({ ...form, employeeId: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent>{employees.map(e => <SelectItem key={e.id} value={e.id}>{e.photo} {e.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>النوع</Label>
+              <Select value={form.type} onValueChange={v => setForm({ ...form, type: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="bonus">🎁 مكافأة / زيادة</SelectItem>
+                  <SelectItem value="deduction">💸 خصم</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label>المبلغ</Label><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+            <div><Label>السبب</Label><Textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className="bg-input/30 border-gold/20 h-20" placeholder="سبب الخصم أو المكافأة..." /></div>
+          </div>
+          <DialogFooter><Button onClick={addEntry} className="btn-gold w-full">حفظ</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function HRReports() {
+  const [data, setData] = useState(null);
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  useEffect(() => { api(`hr/reports?month=${month}`).then(setData); }, [month]);
+  if (!data) return <LoadingScreen />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <Input type="month" value={month} onChange={e => setMonth(e.target.value)} className="w-48 bg-input/30 border-gold/20" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الموظفين</p><p className="text-2xl font-bold gold-text">{data.totalEmployees}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الرواتب</p><p className="text-xl font-bold neon-text">{fmtCurrency(data.totalSalaries)}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي المكافآت</p><p className="text-xl font-bold text-emerald-400">{fmtCurrency(data.totalBonuses)}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الخصومات</p><p className="text-xl font-bold text-red-400">{fmtCurrency(data.totalDeductions)}</p></div>
+      </div>
+      <Card className="glass-strong border-gold-soft">
+        <CardHeader><CardTitle className="text-base">📊 أداء الموظفين</CardTitle></CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-gold-soft text-right text-xs text-muted-foreground"><th className="p-2">الموظف</th><th>الحضور</th><th>التأخير</th><th>الساعات</th><th>المهام</th><th>KPI</th><th>المكافآت</th><th>الخصومات</th><th>الراتب النهائي</th></tr></thead>
+              <tbody>
+                {data.employeeStats.map(e => (
+                  <tr key={e.id} className="border-b border-gold-soft/30">
+                    <td className="p-2"><div className="flex items-center gap-2"><span>{e.photo}</span><span className="text-xs font-bold">{e.name}</span></div></td>
+                    <td className="text-xs text-emerald-400 font-bold">{e.presentDays}</td>
+                    <td className="text-xs text-amber-400 font-bold">{e.lateDays}</td>
+                    <td className="text-xs">{e.totalHours.toFixed(1)}</td>
+                    <td className="text-xs">{e.tasksCompleted}/{e.tasksTotal}</td>
+                    <td><Badge className={e.kpi >= 80 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px]' : 'bg-amber-500/20 text-amber-400 border-amber-500/30 text-[10px]'}>{e.kpi}%</Badge></td>
+                    <td className="text-xs text-emerald-400">+{fmt(e.bonuses)}</td>
+                    <td className="text-xs text-red-400">-{fmt(e.deductions)}</td>
+                    <td className="font-bold gold-text">{fmt(e.finalSalary)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+
 
 // ============ REPORTS ============
 function Reports() {
