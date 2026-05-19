@@ -17,7 +17,7 @@ import {
   LayoutDashboard, ShoppingCart, Package, Wrench, Users, Network, Camera,
   BarChart3, Sparkles, Settings, Search, Plus, Trash2, Edit2, Phone,
   Wifi, MapPin, Activity, AlertTriangle, TrendingUp, DollarSign, Zap,
-  Send, Bot, Menu, Bell, ChevronLeft, Box, CreditCard, FileText, X,
+  Send, Bot, Menu, Bell, ChevronLeft, ChevronRight, Box, CreditCard, FileText, X,
   CheckCircle2, Clock, AlertCircle, Globe, Smartphone, Headphones,
   HardDrive, Plug, Battery, ScanLine, Receipt, ShoppingBag, UserCheck,
   Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown
@@ -59,7 +59,16 @@ const MENU = [
 // ============ MAIN APP ============
 function App() {
   const [active, setActive] = useState('dashboard');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpenRaw] = useState(true);
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('sidebar_open') : null;
+    if (saved !== null) setSidebarOpenRaw(saved === '1');
+  }, []);
+  const setSidebarOpen = (v) => {
+    const val = typeof v === 'function' ? v(sidebarOpen) : v;
+    setSidebarOpenRaw(val);
+    try { localStorage.setItem('sidebar_open', val ? '1' : '0'); } catch {}
+  };
 
   return (
     <div className="min-h-screen flex bg-background grid-pattern">
@@ -96,7 +105,15 @@ function App() {
 // ============ SIDEBAR ============
 function Sidebar({ active, setActive, open, setOpen }) {
   return (
-    <aside className={`glass-strong border-l border-gold-soft transition-all duration-300 ${open ? 'w-72' : 'w-20'} flex flex-col`}>
+    <aside className={`glass-strong border-l border-gold-soft transition-all duration-300 ${open ? 'w-72' : 'w-20'} flex flex-col relative`}>
+      {/* Collapse Toggle */}
+      <button
+        onClick={() => setOpen(!open)}
+        title={open ? 'إخفاء الشريط' : 'إظهار الشريط'}
+        className="absolute -left-3 top-7 w-7 h-7 rounded-full bg-gold-gradient shadow-gold-glow flex items-center justify-center hover:scale-110 transition-transform z-30 border-2 border-background"
+      >
+        {open ? <ChevronRight className="w-4 h-4 text-background" /> : <ChevronLeft className="w-4 h-4 text-background" />}
+      </button>
       {/* Logo */}
       <div className="p-5 border-b border-gold-soft flex items-center gap-3">
         <div className="w-12 h-12 rounded-xl bg-gold-gradient flex items-center justify-center flex-shrink-0 shadow-gold-glow animate-pulse-glow">
@@ -1678,9 +1695,63 @@ function EmployeesList() {
   );
 }
 
+// Helper: format late duration like "1 ساعة و 40 دقيقة"
+function formatLateDuration(minutes) {
+  const m = Math.max(0, Math.floor(minutes || 0));
+  if (m === 0) return '';
+  const hours = Math.floor(m / 60);
+  const mins = m % 60;
+  if (hours === 0) return `${mins} دقيقة`;
+  if (mins === 0) return hours === 1 ? 'ساعة واحدة' : hours === 2 ? 'ساعتان' : `${hours} ساعات`;
+  const hourPart = hours === 1 ? 'ساعة واحدة' : hours === 2 ? 'ساعتان' : `${hours} ساعات`;
+  return `${hourPart} و ${mins} دقيقة`;
+}
+
+// Attendance photo viewer modal
+function AttendancePhotoModal({ data, onClose }) {
+  const [zoomed, setZoomed] = useState(false);
+  if (!data) return null;
+  const isCheckIn = data.type === 'in';
+  const photoUrl = isCheckIn ? data.record.checkInPhoto : data.record.checkOutPhoto;
+  const timeStr = isCheckIn ? data.record.checkIn : data.record.checkOut;
+  return (
+    <Dialog open={!!data} onOpenChange={onClose}>
+      <DialogContent className={`glass-strong border-gold/40 ${zoomed ? 'max-w-4xl' : 'max-w-md'}`}>
+        <DialogHeader>
+          <DialogTitle className="gold-text flex items-center gap-2">
+            {isCheckIn ? '📸 صورة الحضور' : '📸 صورة الانصراف'}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="p-3 rounded-lg bg-input/30 border border-gold-soft grid grid-cols-2 gap-2 text-xs">
+            <div><span className="text-muted-foreground">الموظف:</span> <span className="font-bold">{data.record.employeeName}</span></div>
+            <div><span className="text-muted-foreground">النوع:</span> <Badge className={isCheckIn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-cyan-500/20 text-cyan-400'}>{isCheckIn ? 'حضور' : 'انصراف'}</Badge></div>
+            <div><span className="text-muted-foreground">التاريخ:</span> <span className="font-bold">{data.record.date}</span></div>
+            <div><span className="text-muted-foreground">الوقت:</span> <span className="font-mono font-bold">{new Date(timeStr).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
+            {isCheckIn && data.record.isLate && (
+              <div className="col-span-2"><span className="text-muted-foreground">التأخير:</span> <span className="font-bold text-amber-400">{formatLateDuration(data.record.lateMinutes)}</span></div>
+            )}
+          </div>
+          {photoUrl ? (
+            <div className="rounded-2xl overflow-hidden bg-black border-2 border-gold-soft cursor-zoom-in" onClick={() => setZoomed(!zoomed)}>
+              <img src={photoUrl} alt="بصمة" className="w-full max-h-[70vh] object-contain" />
+            </div>
+          ) : (
+            <div className="p-8 text-center bg-input/30 rounded-lg">
+              <p className="text-sm text-muted-foreground">لا توجد صورة محفوظة لهذه البصمة</p>
+            </div>
+          )}
+          <p className="text-[10px] text-center text-muted-foreground">انقر على الصورة للتكبير</p>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AttendanceView() {
   const [today, setToday] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [photoData, setPhotoData] = useState(null);
   const load = async () => {
     const [t, e] = await Promise.all([api('attendance/today'), api('employees')]);
     setToday(t); setEmployees(e);
@@ -1688,11 +1759,11 @@ function AttendanceView() {
   useEffect(() => { load(); const i = setInterval(load, 30000); return () => clearInterval(i); }, []);
 
   const punchIn = async (employeeId) => {
-    const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId }) });
-    if (r.error) toast.error(r.error); else { toast.success(r.record?.isLate ? `حضور متأخر بـ ${r.record.lateMinutes} دقيقة` : '✅ تم تسجيل الحضور'); load(); }
+    const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId, photoUrl: '/uploads/admin-manual.jpg' }) });
+    if (r.error) toast.error(r.error); else { toast.success(r.record?.isLate ? `حضور متأخر بـ ${formatLateDuration(r.record.lateMinutes)}` : '✅ تم تسجيل الحضور'); load(); }
   };
   const punchOut = async (employeeId) => {
-    const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId }) });
+    const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId, photoUrl: '/uploads/admin-manual.jpg' }) });
     if (r.error) toast.error(r.error); else { toast.success(`✅ انصراف - عمل ${r.hoursWorked} ساعة`); load(); }
   };
 
@@ -1721,7 +1792,7 @@ function AttendanceView() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gold-soft text-right text-xs text-muted-foreground">
-                  <th className="p-2">الموظف</th><th>الدوام</th><th>الدخول</th><th>الخروج</th><th>الساعات</th><th>الحالة</th><th>إجراءات</th>
+                  <th className="p-2">الموظف</th><th>الدوام</th><th>الدخول</th><th>الخروج</th><th>الساعات</th><th>الحالة</th><th>الصور</th><th>إجراءات</th>
                 </tr>
               </thead>
               <tbody>
@@ -1742,8 +1813,23 @@ function AttendanceView() {
                     <td className="text-xs font-bold gold-text">{e.attRecord?.hoursWorked || 0}</td>
                     <td>
                       {!e.attRecord ? <Badge className="bg-muted text-muted-foreground text-[10px]">لم يحضر</Badge> :
-                       e.attRecord.status === 'late' ? <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30 text-[10px]">⏰ متأخر {e.attRecord.lateMinutes}د</Badge> :
+                       e.attRecord.status === 'late' ? <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30 text-[10px]" title={`متأخر ${formatLateDuration(e.attRecord.lateMinutes)}`}>⏰ متأخر {formatLateDuration(e.attRecord.lateMinutes)}</Badge> :
                        <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px]">✅ حاضر</Badge>}
+                    </td>
+                    <td>
+                      <div className="flex gap-1">
+                        {e.attRecord?.checkInPhoto && (
+                          <Button size="sm" variant="outline" className="h-6 text-[9px] border-emerald-500/30 hover:bg-emerald-500/10 px-2" onClick={() => setPhotoData({ record: e.attRecord, type: 'in' })}>
+                            <Camera className="w-3 h-3 ml-0.5" /> دخول
+                          </Button>
+                        )}
+                        {e.attRecord?.checkOutPhoto && (
+                          <Button size="sm" variant="outline" className="h-6 text-[9px] border-cyan-500/30 hover:bg-cyan-500/10 px-2" onClick={() => setPhotoData({ record: e.attRecord, type: 'out' })}>
+                            <Camera className="w-3 h-3 ml-0.5" /> خروج
+                          </Button>
+                        )}
+                        {!e.attRecord?.checkInPhoto && !e.attRecord?.checkOutPhoto && <span className="text-[10px] text-muted-foreground">—</span>}
+                      </div>
                     </td>
                     <td>
                       {!e.attRecord ? (
@@ -1761,6 +1847,8 @@ function AttendanceView() {
           </div>
         </CardContent>
       </Card>
+
+      <AttendancePhotoModal data={photoData} onClose={() => setPhotoData(null)} />
     </div>
   );
 }

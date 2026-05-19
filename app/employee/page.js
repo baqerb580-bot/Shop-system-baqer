@@ -21,6 +21,16 @@ import {
 } from 'lucide-react';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+function formatLateDuration(minutes) {
+  const m = Math.max(0, Math.floor(minutes || 0));
+  if (m === 0) return '';
+  const hours = Math.floor(m / 60);
+  const mins = m % 60;
+  if (hours === 0) return `${mins} دقيقة`;
+  if (mins === 0) return hours === 1 ? 'ساعة واحدة' : hours === 2 ? 'ساعتان' : `${hours} ساعات`;
+  const hourPart = hours === 1 ? 'ساعة واحدة' : hours === 2 ? 'ساعتان' : `${hours} ساعات`;
+  return `${hourPart} و ${mins} دقيقة`;
+}
 const getToken = () => {
   try {
     const s = typeof window !== 'undefined' ? localStorage.getItem('emp_session') : null;
@@ -584,7 +594,7 @@ function AttendanceBanner({ employee, todayAtt, onRefresh }) {
     if (cameraMode === 'in') {
       const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl }) });
       if (r.error) toast.error(r.error);
-      else { toast.success(r.record?.isLate ? `⏰ حضور متأخر بـ ${r.record.lateMinutes} دقيقة` : '✅ تم تسجيل الحضور'); onRefresh(); }
+      else { toast.success(r.record?.isLate ? `⏰ حضور متأخر بـ ${formatLateDuration(r.record.lateMinutes)}` : '✅ تم تسجيل الحضور'); onRefresh(); }
     } else {
       const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl }) });
       if (r.error) toast.error(r.error);
@@ -641,7 +651,7 @@ function HomeTab({ employee, todayAtt, tasks, payroll }) {
               <div className="grid grid-cols-3 gap-3">
                 <div className="glass-card rounded-lg p-3 text-center"><p className="text-[10px] text-muted-foreground">الدخول</p><p className="text-lg font-bold text-emerald-400 font-mono">{new Date(todayAtt.checkIn).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' })}</p></div>
                 <div className="glass-card rounded-lg p-3 text-center"><p className="text-[10px] text-muted-foreground">الخروج</p><p className="text-lg font-bold text-cyan-400 font-mono">{todayAtt.checkOut ? new Date(todayAtt.checkOut).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }) : '—'}</p></div>
-                <div className="glass-card rounded-lg p-3 text-center"><p className="text-[10px] text-muted-foreground">الحالة</p><Badge className={todayAtt.status === 'late' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'}>{todayAtt.status === 'late' ? `متأخر ${todayAtt.lateMinutes}د` : 'حاضر'}</Badge></div>
+                <div className="glass-card rounded-lg p-3 text-center"><p className="text-[10px] text-muted-foreground">الحالة</p><Badge className={todayAtt.status === 'late' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'}>{todayAtt.status === 'late' ? `متأخر ${formatLateDuration(todayAtt.lateMinutes)}` : 'حاضر'}</Badge></div>
               </div>
             ) : <p className="text-sm text-muted-foreground text-center py-2">لم يتم تسجيل حضور بعد</p>}
           </CardContent>
