@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { GPSMap, Barcode } from '@/components/maps-barcode';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -53,6 +54,7 @@ const MENU = [
   { id: 'reports', label: 'التقارير والتحليلات', icon: BarChart3, color: 'neon' },
   { id: 'ai', label: 'المساعد الذكي AI', icon: Sparkles, color: 'gold' },
   { id: 'tg-bot', label: 'بوت الإحصائيات (تليجرام)', icon: Send, color: 'neon' },
+  { id: 'orders', label: 'المتجر والطلبات', icon: ShoppingCart, color: 'gold' },
   { id: 'accounting', label: 'المحاسبة المالية', icon: CreditCard, color: 'gold' },
   { id: 'activity', label: 'سجل النشاطات والجلسات', icon: Activity, color: 'rose' },
   { id: 'settings', label: 'الإعدادات', icon: Settings, color: 'neon' },
@@ -97,6 +99,7 @@ function App() {
           {active === 'reports' && <Reports />}
           {active === 'ai' && <AIAssistant />}
           {active === 'tg-bot' && <TelegramBotPage />}
+          {active === 'orders' && <OrdersAdminPage />}
           {active === 'accounting' && <AccountingPage />}
           {active === 'activity' && <ActivityLogsPage />}
           {active === 'settings' && <SettingsPage />}
@@ -1714,13 +1717,16 @@ function formatLateDuration(minutes) {
 // Attendance photo viewer modal
 function AttendancePhotoModal({ data, onClose }) {
   const [zoomed, setZoomed] = useState(false);
+  const [showMap, setShowMap] = useState(false);
   if (!data) return null;
   const isCheckIn = data.type === 'in';
   const photoUrl = isCheckIn ? data.record.checkInPhoto : data.record.checkOutPhoto;
   const timeStr = isCheckIn ? data.record.checkIn : data.record.checkOut;
+  const lat = isCheckIn ? data.record.checkInLat : data.record.checkOutLat;
+  const lng = isCheckIn ? data.record.checkInLng : data.record.checkOutLng;
   return (
     <Dialog open={!!data} onOpenChange={onClose}>
-      <DialogContent className={`glass-strong border-gold/40 ${zoomed ? 'max-w-4xl' : 'max-w-md'}`}>
+      <DialogContent className={`glass-strong border-gold/40 ${zoomed || showMap ? 'max-w-4xl' : 'max-w-md'}`}>
         <DialogHeader>
           <DialogTitle className="gold-text flex items-center gap-2">
             {isCheckIn ? '📸 صورة الحضور' : '📸 صورة الانصراف'}
@@ -1735,8 +1741,18 @@ function AttendancePhotoModal({ data, onClose }) {
             {isCheckIn && data.record.isLate && (
               <div className="col-span-2"><span className="text-muted-foreground">التأخير:</span> <span className="font-bold text-amber-400">{formatLateDuration(data.record.lateMinutes)}</span></div>
             )}
+            {(lat && lng) && (
+              <div className="col-span-2 flex justify-between items-center">
+                <span className="text-muted-foreground text-[10px]">📍 GPS: {lat.toFixed(4)}, {lng.toFixed(4)}</span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => setShowMap(!showMap)}>
+                  {showMap ? '🖼️ الصورة' : '🗺️ الخريطة'}
+                </Button>
+              </div>
+            )}
           </div>
-          {photoUrl ? (
+          {showMap && lat && lng ? (
+            <GPSMap lat={lat} lng={lng} label={`${data.record.employeeName} - ${isCheckIn ? 'حضور' : 'انصراف'}`} height={400} />
+          ) : photoUrl ? (
             <div className="rounded-2xl overflow-hidden bg-black border-2 border-gold-soft cursor-zoom-in" onClick={() => setZoomed(!zoomed)}>
               <img src={photoUrl} alt="بصمة" className="w-full max-h-[70vh] object-contain" />
             </div>
@@ -1745,7 +1761,7 @@ function AttendancePhotoModal({ data, onClose }) {
               <p className="text-sm text-muted-foreground">لا توجد صورة محفوظة لهذه البصمة</p>
             </div>
           )}
-          <p className="text-[10px] text-center text-muted-foreground">انقر على الصورة للتكبير</p>
+          {!showMap && <p className="text-[10px] text-center text-muted-foreground">انقر على الصورة للتكبير</p>}
         </div>
       </DialogContent>
     </Dialog>
@@ -4105,6 +4121,190 @@ function TelegramBotPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ============ ORDERS / E-COMMERCE ADMIN PAGE ============
+function OrdersAdminPage() {
+  const [items, setItems] = useState([]);
+  const [filter, setFilter] = useState('pending');
+  const [printOrder, setPrintOrder] = useState(null);
+
+  const load = async () => {
+    const r = await api('orders');
+    if (Array.isArray(r)) setItems(r);
+  };
+  useEffect(() => { load(); const i = setInterval(load, 20000); return () => clearInterval(i); }, []);
+
+  const filtered = filter === 'all' ? items : items.filter(o => o.status === filter);
+  const updateStatus = async (id, status) => {
+    const r = await api(`orders/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) });
+    if (r.error) toast.error(r.error); else { toast.success('✅ تم التحديث'); load(); }
+  };
+  const remove = async (id) => {
+    if (!confirm('حذف الطلب؟')) return;
+    await api(`orders/${id}`, { method: 'DELETE' });
+    toast.success('تم الحذف'); load();
+  };
+
+  const STATUS_META = {
+    pending: { l: '🟡 جديد', c: 'bg-amber-500/20 text-amber-400' },
+    confirmed: { l: '✅ مؤكد', c: 'bg-cyan-500/20 text-cyan-400' },
+    shipping: { l: '🚚 قيد الشحن', c: 'bg-purple-500/20 text-purple-400' },
+    delivered: { l: '🎉 تم التسليم', c: 'bg-emerald-500/20 text-emerald-400' },
+    cancelled: { l: '❌ ملغي', c: 'bg-red-500/20 text-red-400' },
+  };
+  const counts = Object.keys(STATUS_META).reduce((acc, k) => { acc[k] = items.filter(o => o.status === k).length; return acc; }, {});
+  counts.all = items.length;
+  const totalRevenue = items.filter(o => o.status === 'delivered').reduce((s, x) => s + (x.total || 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-black gold-text">🛒 المتجر والطلبات</h1>
+          <p className="text-sm text-muted-foreground mt-1">إدارة الطلبات الواردة من المتجر الإلكتروني</p>
+        </div>
+        <a href="/store" target="_blank" rel="noreferrer">
+          <Button className="btn-neon"><ShoppingCart className="w-4 h-4 ml-1" /> عرض المتجر</Button>
+        </a>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الطلبات</p><p className="text-2xl font-bold gold-text">{counts.all}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">طلبات جديدة</p><p className="text-2xl font-bold text-amber-400">{counts.pending}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">تم التسليم</p><p className="text-2xl font-bold text-emerald-400">{counts.delivered}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">إيرادات المتجر</p><p className="text-xl font-bold gold-text">{fmt(totalRevenue)}</p></div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => setFilter('all')} className={`px-3 py-1.5 rounded-lg text-xs border ${filter === 'all' ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>📋 الكل ({counts.all})</button>
+        {Object.entries(STATUS_META).map(([k, m]) => (
+          <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded-lg text-xs border ${filter === k ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground'}`}>
+            {m.l} ({counts[k] || 0})
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-12 text-sm text-muted-foreground">لا توجد طلبات في هذه الفئة</div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-3">
+          {filtered.map(o => {
+            const meta = STATUS_META[o.status] || STATUS_META.pending;
+            return (
+              <Card key={o.id} className="glass-card border-gold-soft">
+                <CardContent className="p-4 space-y-2">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="font-mono text-sm gold-text">{o.orderNumber}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(o.createdAt).toLocaleString('ar-IQ')}</p>
+                    </div>
+                    <Badge className={meta.c + ' text-[10px]'}>{meta.l}</Badge>
+                  </div>
+                  <div className="text-xs space-y-1">
+                    <p><span className="text-muted-foreground">العميل:</span> <span className="font-bold">{o.customerName}</span></p>
+                    <p><span className="text-muted-foreground">الهاتف:</span> <a href={`tel:${o.customerPhone}`} className="text-cyan-400 font-mono">{o.customerPhone}</a></p>
+                    {o.customerAddress && <p><span className="text-muted-foreground">العنوان:</span> {o.customerAddress}</p>}
+                    <p><span className="text-muted-foreground">الدفع:</span> {o.paymentMethod === 'cod' ? '💵 عند الاستلام' : o.paymentMethod}</p>
+                  </div>
+                  <div className="border-t border-gold-soft pt-2 text-xs space-y-1">
+                    {o.items.map((it, i) => (
+                      <div key={i} className="flex justify-between">
+                        <span>{it.name} × {it.quantity}</span>
+                        <span className="font-bold">{fmt(it.total)} د.ع</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between border-t border-gold-soft/30 pt-1 mt-1 text-[10px] text-muted-foreground">
+                      <span>الشحن</span>
+                      <span>{o.shipping === 0 ? 'مجاني' : `${fmt(o.shipping)} د.ع`}</span>
+                    </div>
+                    <div className="flex justify-between font-bold text-base gold-text">
+                      <span>الإجمالي</span>
+                      <span>{fmt(o.total)} د.ع</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-1 pt-2 border-t border-gold-soft flex-wrap">
+                    {o.status === 'pending' && <Button size="sm" onClick={() => updateStatus(o.id, 'confirmed')} className="btn-gold h-7 text-[10px] flex-1">✅ تأكيد</Button>}
+                    {o.status === 'confirmed' && <Button size="sm" onClick={() => updateStatus(o.id, 'shipping')} className="btn-neon h-7 text-[10px] flex-1">🚚 شحن</Button>}
+                    {o.status === 'shipping' && <Button size="sm" onClick={() => updateStatus(o.id, 'delivered')} className="btn-gold h-7 text-[10px] flex-1">🎉 تسليم</Button>}
+                    <Button size="sm" variant="outline" onClick={() => setPrintOrder(o)} className="h-7 text-[10px]"><Printer className="w-3 h-3 ml-1" /> فاتورة</Button>
+                    {o.status !== 'cancelled' && o.status !== 'delivered' && <Button size="sm" variant="outline" onClick={() => updateStatus(o.id, 'cancelled')} className="border-red-500/30 text-red-400 h-7 text-[10px]">إلغاء</Button>}
+                    <Button size="icon" variant="ghost" onClick={() => remove(o.id)} className="h-7 w-7 hover:text-red-500"><Trash2 className="w-3 h-3" /></Button>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      <ThermalReceiptModal order={printOrder} onClose={() => setPrintOrder(null)} />
+    </div>
+  );
+}
+
+// ============ THERMAL RECEIPT WITH BARCODE ============
+function ThermalReceiptModal({ order, onClose }) {
+  if (!order) return null;
+  return (
+    <Dialog open={!!order} onOpenChange={onClose}>
+      <DialogContent className="glass-strong border-gold/40 max-w-md">
+        <DialogHeader>
+          <DialogTitle className="gold-text flex justify-between items-center">
+            🧾 فاتورة حرارية
+            <Button size="sm" onClick={() => window.print()} className="btn-gold h-7 text-xs"><Printer className="w-3 h-3 ml-1" /> طباعة</Button>
+          </DialogTitle>
+        </DialogHeader>
+        <div id="thermal-receipt" className="thermal-receipt bg-white text-black p-4 font-mono text-xs leading-tight" dir="ltr" style={{ fontFamily: 'monospace' }}>
+          <div className="text-center border-b-2 border-dashed border-black pb-2 mb-2" dir="rtl">
+            <p className="text-lg font-bold">مركز الغزلان</p>
+            <p>Ghazlan Center</p>
+            <p>ERP · POS · ISP</p>
+          </div>
+          <div className="text-center mb-2">
+            <Barcode value={order.orderNumber} height={50} />
+          </div>
+          <div dir="rtl" className="space-y-0.5">
+            <p>رقم الطلب: <b>{order.orderNumber}</b></p>
+            <p>التاريخ: {new Date(order.createdAt).toLocaleString('ar-IQ')}</p>
+            <p>العميل: <b>{order.customerName}</b></p>
+            <p>الهاتف: <b dir="ltr">{order.customerPhone}</b></p>
+            {order.customerAddress && <p>العنوان: {order.customerAddress}</p>}
+          </div>
+          <div className="border-t-2 border-dashed border-black my-2 py-1" dir="rtl">
+            <p className="font-bold text-center">الأصناف</p>
+            <div className="border-t border-black mt-1 pt-1 space-y-0.5">
+              {order.items.map((it, i) => (
+                <div key={i} className="flex justify-between">
+                  <span>{it.name} × {it.quantity}</span>
+                  <span>{fmt(it.total)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="border-t-2 border-dashed border-black pt-2 space-y-0.5" dir="rtl">
+            <div className="flex justify-between"><span>المجموع:</span><span>{fmt(order.subtotal)}</span></div>
+            <div className="flex justify-between"><span>الشحن:</span><span>{order.shipping === 0 ? 'مجاني' : fmt(order.shipping)}</span></div>
+            <div className="flex justify-between text-base font-bold border-t border-black pt-1 mt-1">
+              <span>الإجمالي:</span><span>{fmt(order.total)} د.ع</span>
+            </div>
+            <p className="mt-2">طريقة الدفع: {order.paymentMethod === 'cod' ? 'عند الاستلام' : order.paymentMethod}</p>
+          </div>
+          <div className="text-center border-t-2 border-dashed border-black mt-3 pt-2" dir="rtl">
+            <p>شكراً لتعاملكم معنا</p>
+            <p className="text-[10px]">www.ghazlan.com</p>
+          </div>
+        </div>
+        <style jsx global>{`
+          @media print {
+            body * { visibility: hidden; }
+            #thermal-receipt, #thermal-receipt * { visibility: visible; }
+            #thermal-receipt { position: absolute; left: 0; top: 0; width: 80mm; background: white !important; color: black !important; padding: 8px; font-size: 11px; }
+          }
+        `}</style>
+      </DialogContent>
+    </Dialog>
   );
 }
 

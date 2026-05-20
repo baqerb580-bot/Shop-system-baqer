@@ -532,18 +532,25 @@ function CameraModal({ open, mode, onClose, onCapture }) {
       c.height = v.videoHeight || 480;
       const ctx = c.getContext('2d');
       ctx.drawImage(v, 0, 0, c.width, c.height);
-      // Overlay timestamp
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(0, c.height - 30, c.width, 30);
       ctx.fillStyle = '#fff';
       ctx.font = '14px sans-serif';
       ctx.fillText(new Date().toLocaleString('ar-IQ'), 10, c.height - 10);
-      // Convert to blob and upload
       const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
       const file = new File([blob], `att_${Date.now()}.jpg`, { type: 'image/jpeg' });
       const r = await uploadFile(file);
       if (r.error) { toast.error(r.error); setBusy(false); return; }
-      onCapture(r.url);
+      // Try to get geolocation (optional, doesn't block)
+      let lat = null, lng = null;
+      try {
+        const pos = await new Promise((resolve, reject) => {
+          if (!navigator.geolocation) return reject(new Error('no geolocation'));
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, enableHighAccuracy: true });
+        });
+        lat = pos.coords.latitude; lng = pos.coords.longitude;
+      } catch (e) { /* ignore - GPS optional */ }
+      onCapture(r.url, lat, lng);
     } catch (e) {
       toast.error('فشل الالتقاط: ' + e.message);
     } finally {
@@ -589,14 +596,14 @@ function AttendanceBanner({ employee, todayAtt, onRefresh }) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraMode, setCameraMode] = useState('in');
 
-  const handleCapture = async (photoUrl) => {
+  const handleCapture = async (photoUrl, lat, lng) => {
     setCameraOpen(false);
     if (cameraMode === 'in') {
-      const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl }) });
+      const r = await api('attendance/checkin', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl, lat, lng }) });
       if (r.error) toast.error(r.error);
       else { toast.success(r.record?.isLate ? `⏰ حضور متأخر بـ ${formatLateDuration(r.record.lateMinutes)}` : '✅ تم تسجيل الحضور'); onRefresh(); }
     } else {
-      const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl }) });
+      const r = await api('attendance/checkout', { method: 'POST', body: JSON.stringify({ employeeId: employee.id, photoUrl, lat, lng }) });
       if (r.error) toast.error(r.error);
       else { toast.success(`✅ تم الانصراف - عملت ${r.hoursWorked} ساعة`); onRefresh(); }
     }

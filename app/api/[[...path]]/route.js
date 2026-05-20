@@ -901,6 +901,71 @@ async function handle(request, params) {
     });
   }
 
+  // ============ E-COMMERCE ORDERS ============
+  if (path === 'orders' && method === 'GET') {
+    const url = new URL(request.url);
+    const phone = url.searchParams.get('phone');
+    const q = phone ? { customerPhone: phone } : {};
+    const items = await db.collection('orders').find(q).sort({ createdAt: -1 }).limit(500).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
+  }
+  if (path === 'orders' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { customerName, customerPhone, customerAddress, items, paymentMethod, notes } = body;
+    if (!customerName || !customerPhone || !Array.isArray(items) || items.length === 0) return err('بيانات الطلب ناقصة', 400);
+    let subtotal = 0;
+    const cleanItems = [];
+    for (const it of items) {
+      const p = await db.collection('products').findOne({ id: it.id });
+      if (!p) continue;
+      const qty = Math.max(1, Number(it.quantity || 1));
+      const lineTotal = p.price * qty;
+      subtotal += lineTotal;
+      cleanItems.push({ id: p.id, name: p.name, price: p.price, quantity: qty, total: lineTotal });
+    }
+    if (cleanItems.length === 0) return err('لا توجد منتجات صالحة', 400);
+    const shipping = subtotal >= 50000 ? 0 : 5000;
+    const total = subtotal + shipping;
+    const orderNumber = `ORD-${Date.now()}`;
+    const doc = {
+      id: uuidv4(), orderNumber,
+      customerName, customerPhone, customerAddress: customerAddress || '',
+      items: cleanItems, subtotal, shipping, total,
+      paymentMethod: paymentMethod || 'cod', notes: notes || '',
+      status: 'pending', createdAt: new Date().toISOString(),
+    };
+    await db.collection('orders').insertOne(doc);
+    delete doc._id;
+    await logActivity(db, { action: 'order_created', entity: 'orders', entityId: doc.id, user: customerName, details: `طلب جديد ${orderNumber} بقيمة ${fmt(total)} د.ع`, ip: clientIp });
+    await notifyManager(db, {
+      type: 'order_new', title: `🛒 طلب جديد: ${orderNumber}`,
+      message: `العميل: ${customerName}\nالهاتف: ${customerPhone}\nالمنتجات: ${cleanItems.length}\nالإجمالي: ${total.toLocaleString('en-US')} د.ع`,
+    });
+    return ok(doc, 201);
+  }
+  if (path.match(/^orders\/[^/]+\/status$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const { status, notes } = await getJsonBody(request);
+    const valid = ['pending', 'confirmed', 'shipping', 'delivered', 'cancelled'];
+    if (!valid.includes(status)) return err('حالة غير صالحة', 400);
+    const o = await db.collection('orders').findOne({ id });
+    if (!o) return err('غير موجود', 404);
+    await db.collection('orders').updateOne({ id }, { $set: { status, adminNotes: notes || o.adminNotes, statusUpdatedAt: new Date().toISOString() } });
+    // Decrement stock when delivered
+    if (status === 'delivered' && o.status !== 'delivered') {
+      for (const it of o.items) {
+        if (it.id) await db.collection('products').updateOne({ id: it.id }, { $inc: { stock: -it.quantity } });
+      }
+    }
+    await logActivity(db, { action: `order_${status}`, entity: 'orders', entityId: id, user: 'المدير', details: `${o.orderNumber} → ${status}`, ip: clientIp });
+    return ok({ success: true });
+  }
+  if (path.match(/^orders\/[^/]+$/) && method === 'DELETE') {
+    const id = path.split('/')[1];
+    await db.collection('orders').deleteOne({ id });
+    return ok({ success: true });
+  }
+
   // ============ HR / EMPLOYEE ENDPOINTS ============
   if (path === 'employees/login' && method === 'POST') {
     const { username, password } = await getJsonBody(request);
@@ -1059,7 +1124,7 @@ async function handle(request, params) {
 
   // Check-out
   if (path === 'attendance/checkout' && method === 'POST') {
-    const { employeeId, photoUrl } = await getJsonBody(request);
+    const { employeeId, photoUrl, lat, lng } = await getJsonBody(request);
     if (!photoUrl) return err('صورة الانصراف إلزامية - يرجى التقاط صورة', 400);
     const today = new Date().toISOString().slice(0, 10);
     const existing = await db.collection('attendance').findOne({ employeeId, date: today });
@@ -1070,7 +1135,7 @@ async function handle(request, params) {
     const hoursWorked = ((now - checkInTime) / 3600000).toFixed(2);
     await db.collection('attendance').updateOne(
       { id: existing.id },
-      { $set: { checkOut: now.toISOString(), checkOutPhoto: photoUrl, hoursWorked: Number(hoursWorked) } }
+      { $set: { checkOut: now.toISOString(), checkOutPhoto: photoUrl, checkOutLat: lat || null, checkOutLng: lng || null, hoursWorked: Number(hoursWorked) } }
     );
     const emp = await db.collection('employees').findOne({ id: employeeId });
     await logActivity(db, { action: 'attendance_checkout', entity: 'attendance', entityId: existing.id, user: emp?.name, userId: employeeId, details: `انصراف بعد ${hoursWorked} ساعة`, ip: clientIp });
