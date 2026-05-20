@@ -2459,23 +2459,42 @@ async function handle(request, params) {
   }
 
   if (path === 'pos/checkout' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const items = Array.isArray(body.items) ? body.items : [];
+    const discount = Number(body.discount || 0);
+    const paymentMethod = body.paymentMethod || 'cash';
+    const cashier = body.cashier || body.cashierName || null;
+    const cashierId = body.cashierId || null;
+    const customer = body.customer || 'زبون نقدي';
+    const discountReason = body.discountReason || '';
+    if (items.length === 0) return err('السلة فارغة', 400);
+
     let subtotal = 0;
     for (const it of items) {
-      subtotal += (it.price || 0) * (it.quantity || 1);
-      await db.collection('products').updateOne(
-        { id: it.id },
-        { $inc: { stock: -(it.quantity || 1) } }
-      );
+      subtotal += Number(it.price || 0) * Number(it.quantity || 1);
+      if (it.id || it.productId) {
+        await db.collection('products').updateOne(
+          { id: it.productId || it.id },
+          { $inc: { stock: -Number(it.quantity || 1) } }
+        );
+      }
     }
     const total = Math.max(0, subtotal - discount);
+    const now = new Date().toISOString();
     const sale = {
       id: uuidv4(),
       invoiceNumber: `INV-${Date.now()}`,
-      items, subtotal, discount, total, paymentMethod, cashier, customer,
-      createdAt: new Date().toISOString(),
+      items, subtotal, discount, total, paymentMethod,
+      cashier, cashierId, cashierName: cashier,
+      customer, discountReason,
+      profit: 0, status: 'completed', cancelled: false,
+      createdAt: now,
     };
     await db.collection('sales').insertOne(sale);
     delete sale._id;
+    await logActivity(db, { action: 'sale_created', entity: 'sales', entityId: sale.id, user: cashier || 'POS', details: `فاتورة ${sale.invoiceNumber} - ${total.toLocaleString()} د.ع`, ip: clientIp });
+    // Emit real-time event
+    await db.collection('events').insertOne({ id: uuidv4(), type: 'sale_new', saleId: sale.id, invoiceNumber: sale.invoiceNumber, total, cashier, ts: now });
     return ok(sale, 201);
   }
 
