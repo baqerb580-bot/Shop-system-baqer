@@ -826,6 +826,14 @@ function Products() {
             <div><Label>تنبيه نقص</Label><Input type="number" value={form.lowStockAlert} onChange={e => setForm({ ...form, lowStockAlert: e.target.value })} className="bg-input/30 border-gold/20" /></div>
             <div className="col-span-2"><Label>الإيموجي</Label><Input value={form.image} onChange={e => setForm({ ...form, image: e.target.value })} placeholder="📱" className="bg-input/30 border-gold/20" /></div>
           </div>
+
+          <CustomFieldsGrid
+            entity="products"
+            customFields={form.customFields}
+            onUpdate={(cf) => setForm({ ...form, customFields: cf })}
+            columns={2}
+          />
+
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -995,6 +1003,7 @@ function Subscribers() {
   };
   const remove = async (id) => { await api(`subscribers/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
   const startEdit = (s) => { setEditing(s); setForm({ ...s, userLat: s.userLat || 33.31, userLng: s.userLng || 44.40, cabinetLat: s.cabinetLat || 33.31, cabinetLng: s.cabinetLng || 44.40 }); setOpen(true); };
+  const [viewingCustom, setViewingCustom] = useState(null);
 
   const activeCount = items.filter(i => i.status === 'active').length;
   const totalDebt = items.reduce((s, x) => s + (x.debt || 0), 0);
@@ -1137,6 +1146,11 @@ function Subscribers() {
                     <td>
                       <div className="flex gap-1">
                         <Button size="sm" onClick={() => setActivatingSub(s)} className="h-7 text-[10px] btn-gold px-2"><Zap className="w-3 h-3 ml-1" /> تفعيل</Button>
+                        {s.customFields && Object.keys(s.customFields).length > 0 && (
+                          <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-violet-400" onClick={() => setViewingCustom(s)} title="حقول مخصصة">
+                            <span className="text-sm">📋</span>
+                          </Button>
+                        )}
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => startEdit(s)}><Edit2 className="w-3 h-3" /></Button>
                         <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(s.id)}><Trash2 className="w-3 h-3" /></Button>
                       </div>
@@ -1250,6 +1264,30 @@ function Subscribers() {
         onClose={() => setActivatingSub(null)}
         onDone={() => { setActivatingSub(null); load(); }}
       />
+
+      {/* Custom Fields Viewer Dialog */}
+      <Dialog open={!!viewingCustom} onOpenChange={() => setViewingCustom(null)}>
+        <DialogContent className="glass-strong border-violet-500/40">
+          <DialogHeader>
+            <DialogTitle className="text-violet-400 flex items-center gap-2">
+              📋 الحقول المخصصة - {viewingCustom?.name}
+            </DialogTitle>
+          </DialogHeader>
+          {viewingCustom && (
+            <div className="p-3 rounded-lg bg-violet-500/5 border border-violet-500/20">
+              <CustomFieldsDisplay entity="subscribers" customFields={viewingCustom.customFields} />
+              {(!viewingCustom.customFields || Object.keys(viewingCustom.customFields).length === 0) && (
+                <p className="text-xs text-muted-foreground text-center py-4">لا توجد حقول مخصصة مُعبّأة</p>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => { const v = viewingCustom; setViewingCustom(null); startEdit(v); }} className="btn-gold w-full">
+              <Edit2 className="w-3 h-3 ml-1" /> تعديل القيم
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1546,6 +1584,14 @@ function Zones() {
             <div><Label>عدد الفاتات</Label><Input type="number" value={form.fats} onChange={e => setForm({ ...form, fats: e.target.value })} className="bg-input/30 border-gold/20" /></div>
             <div className="col-span-2"><Label>الاستهلاك (%)</Label><Input type="number" value={form.utilization} onChange={e => setForm({ ...form, utilization: e.target.value })} className="bg-input/30 border-gold/20" /></div>
           </div>
+
+          <CustomFieldsGrid
+            entity="zones"
+            customFields={form.customFields}
+            onUpdate={(cf) => setForm({ ...form, customFields: cf })}
+            columns={2}
+          />
+
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1717,6 +1763,14 @@ function Repairs() {
             <div><Label>تكلفة القطع</Label><Input type="number" value={form.partsCost} onChange={e => setForm({ ...form, partsCost: e.target.value })} className="bg-input/30 border-gold/20" /></div>
             <div className="col-span-2"><Label>إجمالي التكلفة</Label><Input type="number" value={form.cost} onChange={e => setForm({ ...form, cost: e.target.value })} className="bg-input/30 border-gold/20" /></div>
           </div>
+
+          <CustomFieldsGrid
+            entity="repairs"
+            customFields={form.customFields}
+            onUpdate={(cf) => setForm({ ...form, customFields: cf })}
+            columns={2}
+          />
+
           <DialogFooter><Button onClick={save} className="btn-gold w-full">إنشاء تذكرة</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1978,6 +2032,14 @@ function EmployeesList() {
               </div>
             </TabsContent>
           </Tabs>
+
+          <CustomFieldsGrid
+            entity="employees"
+            customFields={form.customFields}
+            onUpdate={(cf) => setForm({ ...form, customFields: cf })}
+            columns={2}
+          />
+
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4712,6 +4774,14 @@ function Agents() {
               </Select>
             </div>
           </div>
+
+          <CustomFieldsGrid
+            entity="agents"
+            customFields={form.customFields}
+            onUpdate={(cf) => setForm({ ...form, customFields: cf })}
+            columns={2}
+          />
+
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4889,6 +4959,14 @@ function Networks() {
             <div><Label>خط الطول</Label><Input type="number" step="0.000001" value={form.lng} onChange={e => setForm({ ...form, lng: e.target.value })} className="bg-input/30 border-gold/20 font-mono" /></div>
             <div className="col-span-2"><Label>الضغط %</Label><Input type="number" value={form.utilization} onChange={e => setForm({ ...form, utilization: e.target.value })} className="bg-input/30 border-gold/20" /></div>
           </div>
+
+          <CustomFieldsGrid
+            entity="networks"
+            customFields={form.customFields}
+            onUpdate={(cf) => setForm({ ...form, customFields: cf })}
+            columns={2}
+          />
+
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
         </DialogContent>
       </Dialog>
