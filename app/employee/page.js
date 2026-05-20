@@ -133,6 +133,37 @@ const playBeep = () => {
   } catch {}
 };
 
+function EmpThemeToggle() {
+  const [theme, setTheme] = useState('dark');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = localStorage.getItem('app_theme') || 'dark';
+    setTheme(saved);
+    if (saved === 'light') document.documentElement.classList.add('theme-light');
+    else document.documentElement.classList.remove('theme-light');
+  }, []);
+  const toggle = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    try { localStorage.setItem('app_theme', next); } catch {}
+    if (next === 'light') document.documentElement.classList.add('theme-light');
+    else document.documentElement.classList.remove('theme-light');
+    sounds.click();
+    toast.success(next === 'light' ? '☀️ الثيم الفاتح' : '🌙 الثيم الداكن');
+  };
+  return (
+    <Button
+      variant="ghost"
+      onClick={toggle}
+      className="hover:bg-gold/10 px-2 gap-1.5 h-9"
+      title={theme === 'dark' ? 'تبديل إلى الثيم الفاتح' : 'تبديل إلى الثيم الداكن'}
+    >
+      <span className="text-base">{theme === 'dark' ? '☀️' : '🌙'}</span>
+      <span className="hidden sm:inline text-[10px] font-bold">{theme === 'dark' ? 'فاتح' : 'داكن'}</span>
+    </Button>
+  );
+}
+
 function NotificationsBell({ employeeId, onTaskClick }) {
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
@@ -1647,6 +1678,7 @@ function EmployeeDashboard({ employee, onLogout }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <EmpThemeToggle />
           <NotificationsBell employeeId={employee.id} onTaskClick={() => setTab('tasks')} />
           <Button onClick={onLogout} variant="outline" size="sm" className="border-red-500/30 text-red-400 hover:bg-red-500/10">
             <LogOut className="w-3 h-3 ml-1" /> خروج

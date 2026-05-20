@@ -25,7 +25,7 @@ import {
   Send, Bot, Menu, Bell, ChevronLeft, ChevronRight, Box, CreditCard, FileText, X,
   CheckCircle2, Clock, AlertCircle, Globe, Smartphone, Headphones,
   HardDrive, Plug, Battery, ScanLine, Receipt, ShoppingBag, UserCheck,
-  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer
+  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer, ListTodo, Check, XCircle, LogOut
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, BarChart as RBarChart, Bar,
@@ -43,19 +43,30 @@ const api = async (path, opts = {}) => {
 
 const MENU = [
   { id: 'dashboard', label: 'الرئيسية', icon: LayoutDashboard, color: 'gold' },
-  { id: 'pos', label: 'نقطة البيع POS', icon: ShoppingCart, color: 'gold' },
-  { id: 'pos-reports', label: 'تقارير POS الإدارية', icon: BarChart3, color: 'gold' },
-  { id: 'products', label: 'المنتجات والمخزون', icon: Package, color: 'neon' },
-  { id: 'subscribers', label: 'مشتركو الإنترنت', icon: Wifi, color: 'neon' },
-  { id: 'activations', label: 'سجل التفعيلات', icon: CheckCircle2, color: 'gold' },
-  { id: 'agents', label: 'الوكلاء', icon: UserCheck, color: 'neon' },
-  { id: 'networks', label: 'الشبكات / الفاتات', icon: Plug, color: 'neon' },
-  { id: 'zones', label: 'الزونات', icon: Network, color: 'neon' },
-  { id: 'noc', label: 'مراقبة الشبكة NOC', icon: Activity, color: 'neon' },
+  {
+    id: 'group-pos', label: 'نقطة البيع POS', icon: ShoppingCart, color: 'gold', group: true,
+    children: [
+      { id: 'pos', label: 'POS نقطة البيع', icon: ShoppingCart },
+      { id: 'pos-reports', label: 'الإدارة / تقارير POS', icon: BarChart3 },
+      { id: 'products', label: 'المنتجات والمخزون', icon: Package },
+    ]
+  },
+  {
+    id: 'group-subscribers', label: 'مشتركو الإنترنت', icon: Wifi, color: 'neon', group: true,
+    children: [
+      { id: 'subscribers', label: 'مشتركو الإنترنت', icon: Wifi },
+      { id: 'activations', label: 'سجل التفعيلات', icon: CheckCircle2 },
+      { id: 'agents', label: 'الوكلاء', icon: UserCheck },
+      { id: 'networks', label: 'الشبكات / الفاتات', icon: Plug },
+      { id: 'zones', label: 'الزونات', icon: Network },
+      { id: 'noc', label: 'مراقبة الشبكة NOC', icon: Activity },
+    ]
+  },
   { id: 'whatsapp', label: 'سجل الواتساب', icon: Send, color: 'gold' },
   { id: 'repairs', label: 'صيانة الهواتف', icon: Wrench, color: 'gold' },
   { id: 'cameras', label: 'الكاميرات', icon: Camera, color: 'gold' },
   { id: 'employees', label: 'الموظفون', icon: Users, color: 'gold' },
+  { id: 'tasks', label: 'المهام', icon: ListTodo, color: 'neon' },
   { id: 'reports', label: 'التقارير والتحليلات', icon: BarChart3, color: 'neon' },
   { id: 'ai', label: 'المساعد الذكي AI', icon: Sparkles, color: 'gold' },
   { id: 'tg-bot', label: 'بوت الإحصائيات (تليجرام)', icon: Send, color: 'neon' },
@@ -170,6 +181,29 @@ function App() {
 
 // ============ SIDEBAR ============
 function Sidebar({ active, setActive, open, setOpen }) {
+  // Tracks which group is expanded - auto-expand the group containing the active page
+  const [expanded, setExpanded] = useState(() => {
+    const init = {};
+    MENU.forEach(m => {
+      if (m.group && m.children?.some(c => c.id === active)) init[m.id] = true;
+    });
+    return init;
+  });
+
+  // Keep expanded state in sync when active changes (e.g., via dashboard quick access)
+  useEffect(() => {
+    MENU.forEach(m => {
+      if (m.group && m.children?.some(c => c.id === active) && !expanded[m.id]) {
+        setExpanded(e => ({ ...e, [m.id]: true }));
+      }
+    });
+  }, [active]);
+
+  const toggleGroup = (gid) => {
+    if (!open) { setOpen(true); setTimeout(() => setExpanded(e => ({ ...e, [gid]: true })), 50); return; }
+    setExpanded(e => ({ ...e, [gid]: !e[gid] }));
+  };
+
   return (
     <aside className={`glass-strong border-l border-gold-soft transition-all duration-300 ${open ? 'w-72' : 'w-20'} flex flex-col relative`}>
       {/* Collapse Toggle */}
@@ -198,6 +232,50 @@ function Sidebar({ active, setActive, open, setOpen }) {
         <div className="space-y-1">
           {MENU.map((item) => {
             const Icon = item.icon;
+
+            // Group with children
+            if (item.group) {
+              const isOpen = !!expanded[item.id];
+              const childActive = item.children?.some(c => c.id === active);
+              return (
+                <div key={item.id}>
+                  <div
+                    onClick={() => toggleGroup(item.id)}
+                    className={`sidebar-item ${childActive ? 'active' : ''} ${!open ? 'justify-center' : ''} cursor-pointer`}
+                    title={item.label}
+                  >
+                    <Icon className={`w-5 h-5 flex-shrink-0 ${childActive ? 'text-gold' : ''}`} />
+                    {open && (
+                      <>
+                        <span className="truncate flex-1">{item.label}</span>
+                        <ChevronDown className={`w-4 h-4 transition-transform flex-shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
+                      </>
+                    )}
+                  </div>
+                  {open && isOpen && (
+                    <div className="mr-3 mt-1 mb-2 pr-3 border-r-2 border-gold/30 space-y-0.5">
+                      {item.children.map(c => {
+                        const CIcon = c.icon;
+                        const cActive = active === c.id;
+                        return (
+                          <div
+                            key={c.id}
+                            onClick={() => setActive(c.id)}
+                            className={`sidebar-item ${cActive ? 'active' : ''}`}
+                            title={c.label}
+                          >
+                            <CIcon className={`w-4 h-4 flex-shrink-0 ${cActive ? 'text-gold' : ''}`} />
+                            <span className="truncate text-[13px]">{c.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
+            // Regular item
             const isActive = active === item.id;
             return (
               <div
@@ -471,7 +549,7 @@ function Dashboard({ setActive }) {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
-            {MENU.filter(m => m.id !== 'dashboard').map(m => {
+            {MENU.flatMap(m => m.group ? m.children.map(c => ({ ...c, parentLabel: m.label, color: m.color })) : [m]).filter(m => m.id !== 'dashboard').map(m => {
               const Icon = m.icon;
               return (
                 <button
@@ -722,37 +800,153 @@ function POS() {
 
       {/* Invoice Dialog */}
       <Dialog open={!!showInvoice} onOpenChange={() => setShowInvoice(null)}>
-        <DialogContent className="glass-strong border-gold/40">
-          <DialogHeader><DialogTitle className="gold-text text-center text-xl">فاتورة مبيعات</DialogTitle></DialogHeader>
+        <DialogContent className="glass-strong border-gold/40 max-w-md">
+          <DialogHeader><DialogTitle className="gold-text text-center text-xl">🧾 فاتورة مبيعات</DialogTitle></DialogHeader>
           {showInvoice && (
             <div className="space-y-3 font-mono text-sm">
               <div className="text-center border-b border-gold-soft pb-2">
                 <p className="text-lg font-bold gold-text">مركز الغزلان</p>
-                <p className="text-xs text-muted-foreground">رقم الفاتورة: {showInvoice.invoiceNumber}</p>
+                <p className="text-xs text-muted-foreground">رقم الفاتورة: <span className="font-bold">{showInvoice.invoiceNumber}</span></p>
                 <p className="text-xs text-muted-foreground">{new Date(showInvoice.createdAt).toLocaleString('ar-IQ')}</p>
+                {showInvoice.cashierName && <p className="text-xs text-muted-foreground">الكاشير: {showInvoice.cashierName}</p>}
               </div>
-              <div className="text-xs">الزبون: {showInvoice.customer}</div>
+              <div className="text-xs">👤 الزبون: <span className="font-bold">{showInvoice.customer}</span></div>
               <div className="border-t border-b border-gold-soft py-2 space-y-1">
                 {showInvoice.items.map((it, i) => (
                   <div key={i} className="flex justify-between text-xs">
                     <span>{it.name} × {it.quantity}</span>
-                    <span>{fmt(it.price * it.quantity)}</span>
+                    <span className="font-bold">{fmt(it.price * it.quantity)}</span>
                   </div>
                 ))}
               </div>
               <div className="space-y-1 text-xs">
                 <div className="flex justify-between"><span>المجموع:</span><span>{fmt(showInvoice.subtotal)}</span></div>
-                <div className="flex justify-between"><span>الخصم:</span><span>{fmt(showInvoice.discount)}</span></div>
+                {Number(showInvoice.discount) > 0 && <div className="flex justify-between text-red-400"><span>الخصم:</span><span>-{fmt(showInvoice.discount)}</span></div>}
                 <div className="flex justify-between text-base font-bold gold-text border-t border-gold-soft pt-1"><span>الإجمالي:</span><span>{fmtCurrency(showInvoice.total)}</span></div>
+                <div className="flex justify-between text-[10px] text-muted-foreground"><span>طريقة الدفع:</span><span>{showInvoice.paymentMethod || 'نقد'}</span></div>
               </div>
               <p className="text-center text-xs text-muted-foreground">شكراً لزيارتكم 🙏</p>
-              <Button onClick={() => window.print()} className="w-full btn-neon">طباعة</Button>
+              <div className="grid grid-cols-2 gap-2">
+                <Button onClick={() => printPOSInvoice(showInvoice)} className="btn-neon"><Printer className="w-4 h-4 ml-1" /> طباعة (A4)</Button>
+                <Button onClick={() => printPOSReceipt(showInvoice)} className="btn-gold"><Receipt className="w-4 h-4 ml-1" /> وصل حراري 80mm</Button>
+              </div>
             </div>
           )}
         </DialogContent>
       </Dialog>
     </div>
   );
+}
+
+// ============ POS PRINT HELPERS ============
+function printPOSInvoice(s) {
+  const w = window.open('', '_blank', 'width=800,height=900');
+  if (!w) { alert('فعّل نوافذ الـ popup للطباعة'); return; }
+  const itemsHtml = (s.items || []).map((it, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${it.name}</td>
+      <td style="text-align:center">${it.quantity}</td>
+      <td style="text-align:left">${Number(it.price).toLocaleString('en-US')}</td>
+      <td style="text-align:left">${(Number(it.price) * Number(it.quantity)).toLocaleString('en-US')}</td>
+    </tr>`).join('');
+  w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>فاتورة ${s.invoiceNumber}</title>
+    <style>
+      @page { size: A4; margin: 1.5cm; }
+      body{font-family:'Cairo','Tahoma',sans-serif;color:#1a1a1a;padding:0;margin:0}
+      .header{text-align:center;border-bottom:3px double #B45309;padding-bottom:12px;margin-bottom:16px}
+      .header h1{color:#B45309;margin:0;font-size:28px;font-weight:900}
+      .header p{margin:4px 0;font-size:12px;color:#555}
+      .meta{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:16px;font-size:13px}
+      .meta div{padding:6px 10px;background:#fef9e7;border-right:3px solid #D97706;border-radius:4px}
+      .meta strong{display:block;color:#92400E;font-size:10px;margin-bottom:2px}
+      table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px}
+      th{background:#B45309;color:white;padding:10px 6px;text-align:right;font-weight:700}
+      td{padding:8px 6px;border-bottom:1px solid #f3e8b8;text-align:right}
+      tr:nth-child(even){background:#fffbeb}
+      .totals{margin-top:16px;padding:14px;background:#fef3c7;border-radius:8px;font-size:14px}
+      .totals .row{display:flex;justify-content:space-between;padding:4px 0}
+      .totals .grand{font-size:20px;font-weight:900;color:#B45309;border-top:2px solid #B45309;padding-top:8px;margin-top:8px}
+      .footer{text-align:center;margin-top:24px;padding-top:12px;border-top:2px dashed #D97706;color:#666;font-size:11px}
+      .footer .thanks{font-size:16px;font-weight:700;color:#B45309;margin-bottom:6px}
+      @media print { body{margin:0;padding:0} .no-print{display:none} }
+    </style></head><body>
+    <div class="header">
+      <h1>🏢 مركز الغزلان</h1>
+      <p>ERP · POS · ISP · خدمات الإنترنت والصيانة</p>
+      <p>📞 07707889032 · 📍 العراق</p>
+    </div>
+    <div class="meta">
+      <div><strong>رقم الفاتورة</strong>${s.invoiceNumber || s.id}</div>
+      <div><strong>التاريخ والوقت</strong>${new Date(s.createdAt).toLocaleString('ar-IQ')}</div>
+      <div><strong>الكاشير</strong>${s.cashierName || '-'}</div>
+      <div><strong>الزبون</strong>${s.customer || '-'}</div>
+    </div>
+    <table>
+      <thead><tr><th style="width:40px">#</th><th>المنتج</th><th style="width:70px;text-align:center">الكمية</th><th style="width:100px;text-align:left">السعر</th><th style="width:110px;text-align:left">الإجمالي</th></tr></thead>
+      <tbody>${itemsHtml}</tbody>
+    </table>
+    <div class="totals">
+      <div class="row"><span>المجموع الفرعي:</span><span>${Number(s.subtotal || 0).toLocaleString('en-US')} د.ع</span></div>
+      ${Number(s.discount) > 0 ? `<div class="row" style="color:#B91C1C"><span>الخصم${s.discountReason ? ' (' + s.discountReason + ')' : ''}:</span><span>-${Number(s.discount).toLocaleString('en-US')} د.ع</span></div>` : ''}
+      <div class="row"><span>طريقة الدفع:</span><span>${s.paymentMethod || 'نقد'}</span></div>
+      <div class="row grand"><span>الإجمالي:</span><span>${Number(s.total || 0).toLocaleString('en-US')} د.ع</span></div>
+    </div>
+    <div class="footer">
+      <div class="thanks">شكراً لزيارتكم 🙏</div>
+      <p>هذه الفاتورة سند رسمي - يرجى الاحتفاظ بها</p>
+    </div>
+    <div class="no-print" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="padding:10px 30px;font-size:16px;background:#B45309;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:bold">🖨️ طباعة الآن</button></div>
+    <script>setTimeout(()=>window.print(),500);</script>
+    </body></html>`);
+  w.document.close();
+}
+
+function printPOSReceipt(s) {
+  // Thermal 80mm receipt
+  const w = window.open('', '_blank', 'width=400,height=700');
+  if (!w) { alert('فعّل نوافذ الـ popup للطباعة'); return; }
+  const itemsHtml = (s.items || []).map(it => `
+    <tr>
+      <td style="padding:2px 0">${it.name}</td>
+      <td style="text-align:center;padding:2px 0">${it.quantity}</td>
+      <td style="text-align:left;padding:2px 0">${(Number(it.price) * Number(it.quantity)).toLocaleString('en-US')}</td>
+    </tr>`).join('');
+  w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>وصل ${s.invoiceNumber}</title>
+    <style>
+      @page { size: 80mm auto; margin: 2mm; }
+      body{font-family:'Cairo','Courier New',monospace;color:#000;padding:4px;margin:0;width:76mm;font-size:11px;line-height:1.4}
+      h1{text-align:center;margin:4px 0;font-size:14px}
+      .center{text-align:center}
+      .dash{border-top:1px dashed #000;margin:6px 0}
+      table{width:100%;border-collapse:collapse}
+      .total{font-size:14px;font-weight:bold;border-top:2px solid #000;padding-top:4px;margin-top:4px;display:flex;justify-content:space-between}
+      @media print { body{margin:0;padding:2mm} .no-print{display:none} }
+    </style></head><body>
+    <h1>مركز الغزلان</h1>
+    <div class="center">ERP · POS · ISP</div>
+    <div class="center">📞 07707889032</div>
+    <div class="dash"></div>
+    <div>وصل: <b>${s.invoiceNumber || s.id?.slice(0, 8)}</b></div>
+    <div>التاريخ: ${new Date(s.createdAt).toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' })}</div>
+    <div>الكاشير: ${s.cashierName || '-'}</div>
+    <div>الزبون: ${s.customer || '-'}</div>
+    <div class="dash"></div>
+    <table>
+      <thead><tr><th style="text-align:right">المنتج</th><th style="text-align:center">عدد</th><th style="text-align:left">الإجمالي</th></tr></thead>
+      <tbody>${itemsHtml}</tbody>
+    </table>
+    <div class="dash"></div>
+    <div style="display:flex;justify-content:space-between"><span>المجموع:</span><span>${Number(s.subtotal || 0).toLocaleString('en-US')}</span></div>
+    ${Number(s.discount) > 0 ? `<div style="display:flex;justify-content:space-between"><span>خصم:</span><span>-${Number(s.discount).toLocaleString('en-US')}</span></div>` : ''}
+    <div class="total"><span>الإجمالي:</span><span>${Number(s.total || 0).toLocaleString('en-US')} د.ع</span></div>
+    <div>الدفع: ${s.paymentMethod || 'نقد'}</div>
+    <div class="dash"></div>
+    <div class="center">شكراً لزيارتكم 🙏</div>
+    <div class="no-print" style="text-align:center;margin-top:10px"><button onclick="window.print()" style="padding:6px 18px;background:#000;color:#fff;border:none;border-radius:4px;cursor:pointer">طباعة</button></div>
+    <script>setTimeout(()=>window.print(),500);</script>
+    </body></html>`);
+  w.document.close();
 }
 
 // ============ PRODUCTS ============
@@ -2398,11 +2592,23 @@ function TasksManager() {
                 </div>
               )}
 
-              {t.report && t.status === 'pending_review' && (
+              {t.report && (
                 <div className="p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[10px] space-y-1">
-                  <p className="font-bold text-purple-400">📋 تقرير الإنجاز:</p>
+                  <div className="flex justify-between items-center">
+                    <p className="font-bold text-purple-400">📋 تقرير الإنجاز ({t.report.progress || 0}%):</p>
+                    {t.report.attachments?.length > 0 && (
+                      <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-[10px]">📎 {t.report.attachments.length}</Badge>
+                    )}
+                  </div>
                   <p className="line-clamp-2">{t.report.summary}</p>
-                  {t.report.attachments?.length > 0 && <p>📎 {t.report.attachments.length} مرفق</p>}
+                  {/* Photo thumbnails */}
+                  {t.report.attachments?.filter(a => /\.(jpg|jpeg|png|webp|gif)$/i.test(a.url || a.name)).slice(0, 4).length > 0 && (
+                    <div className="flex gap-1 mt-1">
+                      {t.report.attachments.filter(a => /\.(jpg|jpeg|png|webp|gif)$/i.test(a.url || a.name)).slice(0, 4).map((a, i) => (
+                        <img key={i} src={a.url} alt={a.name || 'photo'} className="w-12 h-12 object-cover rounded border border-purple-500/30 cursor-pointer hover:scale-110 transition-transform" onClick={() => setReviewTask(t)} />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2421,9 +2627,15 @@ function TasksManager() {
                       <MapPin className="w-3 h-3 ml-1" /> خريطة
                     </Button>
                   )}
-                  {t.status === 'pending_review' && (
-                    <Button size="sm" className="btn-gold h-7 text-[10px]" onClick={() => setReviewTask(t)}>
-                      مراجعة
+                  {/* Show "مراجعة" button for any task with a report (pending review OR already reviewed - to view details) */}
+                  {t.report && (
+                    <Button
+                      size="sm"
+                      className={t.status === 'pending_review' ? 'btn-gold h-7 text-[10px] animate-pulse' : 'h-7 text-[10px] bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 border border-purple-500/30'}
+                      onClick={() => setReviewTask(t)}
+                    >
+                      <FileText className="w-3 h-3 ml-1" />
+                      {t.status === 'pending_review' ? 'مراجعة الآن' : 'عرض المراجعة'}
                     </Button>
                   )}
                   <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(t.id)}><Trash2 className="w-3 h-3" /></Button>
