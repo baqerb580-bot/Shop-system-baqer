@@ -826,6 +826,81 @@ async function handle(request, params) {
     return ok({ success: true, message: 'تم إعادة وضع الرسالة في الطابور' });
   }
 
+  // ============ ACCOUNTING / FINANCIAL REPORTS ============
+  if (path === 'accounting/summary' && method === 'GET') {
+    const url = new URL(request.url);
+    const period = url.searchParams.get('period') || 'month'; // day | month | year
+    const today = new Date().toISOString().slice(0, 10);
+    const month = new Date().toISOString().slice(0, 7);
+    const year = String(new Date().getFullYear());
+    const prefix = period === 'day' ? today : period === 'year' ? year : month;
+
+    const sales = await db.collection('sales').find({ createdAt: { $regex: `^${prefix}` } }).toArray();
+    const activations = await db.collection('activations').find({ createdAt: { $regex: `^${prefix}` } }).toArray();
+    const repairs = await db.collection('repairs').find({ createdAt: { $regex: `^${prefix}` }, status: 'completed' }).toArray();
+    const payrollEntries = await db.collection('payroll_entries').find({ date: { $regex: `^${prefix}` } }).toArray();
+    const advances = await db.collection('advances').find({ status: { $in: ['approved', 'paid'] } }).toArray();
+    const employees = await db.collection('employees').find({}).toArray();
+
+    // Revenue
+    const salesRev = sales.reduce((s, x) => s + (x.total || 0), 0);
+    const actsRev = activations.reduce((s, x) => s + (x.amount || 0), 0);
+    const repairsRev = repairs.reduce((s, x) => s + (x.cost || 0), 0);
+    const totalRevenue = salesRev + actsRev + repairsRev;
+
+    // Expenses
+    const bonuses = payrollEntries.filter(e => e.type === 'bonus').reduce((s, x) => s + (x.amount || 0), 0);
+    const salariesExp = period === 'month' ? employees.reduce((s, e) => s + (e.salary || 0), 0) : 0;
+    const advanceExp = period === 'month' ? advances.filter(a => a.status === 'approved').reduce((s, a) => s + (a.perInstallment || 0), 0) : 0;
+    const totalExpenses = bonuses + salariesExp + advanceExp;
+    const netProfit = totalRevenue - totalExpenses;
+
+    // Debts
+    const subscribers = await db.collection('subscribers').find({}).toArray();
+    const debtors = subscribers.filter(s => (s.balance || 0) < 0);
+    const totalDebt = Math.abs(debtors.reduce((s, x) => s + (x.balance || 0), 0));
+
+    // Daily breakdown (last 30 days for chart)
+    const breakdown = [];
+    if (period === 'day') {
+      const last30 = [];
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        last30.push(d.toISOString().slice(0, 10));
+      }
+      const allSales = await db.collection('sales').find({}).toArray();
+      const allActs = await db.collection('activations').find({}).toArray();
+      for (const d of last30) {
+        const s = allSales.filter(x => x.createdAt?.startsWith(d)).reduce((a, b) => a + (b.total || 0), 0);
+        const a = allActs.filter(x => x.createdAt?.startsWith(d)).reduce((acc, b) => acc + (b.amount || 0), 0);
+        breakdown.push({ label: d.slice(5), revenue: s + a });
+      }
+    } else if (period === 'month') {
+      // 12 months of the year
+      for (let m = 1; m <= 12; m++) {
+        const mPrefix = `${year}-${String(m).padStart(2, '0')}`;
+        const s = (await db.collection('sales').find({ createdAt: { $regex: `^${mPrefix}` } }).toArray()).reduce((a, b) => a + (b.total || 0), 0);
+        const a = (await db.collection('activations').find({ createdAt: { $regex: `^${mPrefix}` } }).toArray()).reduce((acc, b) => acc + (b.amount || 0), 0);
+        breakdown.push({ label: mPrefix, revenue: s + a });
+      }
+    }
+
+    return ok({
+      period, prefix,
+      revenue: { sales: salesRev, activations: actsRev, repairs: repairsRev, total: totalRevenue },
+      expenses: { bonuses, salaries: salariesExp, advances: advanceExp, total: totalExpenses },
+      netProfit,
+      debts: {
+        count: debtors.length, total: totalDebt,
+        topDebtors: debtors.sort((a, b) => (a.balance || 0) - (b.balance || 0)).slice(0, 10).map(d => ({
+          id: d.id, name: d.name, zone: d.zoneName, amount: Math.abs(d.balance || 0),
+        })),
+      },
+      counts: { sales: sales.length, activations: activations.length, repairs: repairs.length },
+      breakdown,
+    });
+  }
+
   // ============ HR / EMPLOYEE ENDPOINTS ============
   if (path === 'employees/login' && method === 'POST') {
     const { username, password } = await getJsonBody(request);
