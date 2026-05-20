@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { GPSMap, Barcode } from '@/components/maps-barcode';
+import { CustomFieldsGrid, CustomFieldsDisplay } from '@/components/custom-fields';
 import { sounds, getSoundSettings, setSoundSettings, browserNotify, requestNotificationPermission } from '@/lib/sounds';
 import { useRealtimeEvents } from '@/lib/useRealtime';
 import { whatsappLink, telegramLink, defaultWhatsAppTemplates, fillTemplate } from '@/lib/messaging';
@@ -833,6 +834,49 @@ function Products() {
 }
 
 // ============ SUBSCRIBERS ============
+function ColumnHeader({ colKey, label, sortBy, sortDir, toggleSort, colSearch, onColSearch, open, setOpen }) {
+  const isSorted = sortBy === colKey;
+  const hasFilter = !!colSearch;
+  return (
+    <th className="p-2 relative">
+      <div className="flex items-center gap-1 justify-end">
+        <button
+          onClick={() => toggleSort(colKey)}
+          className={`flex items-center gap-1 hover:text-gold transition-colors ${isSorted ? 'text-gold font-bold' : ''}`}
+          title="انقر للترتيب"
+        >
+          <span>{label}</span>
+          <span className="text-[10px]">
+            {isSorted ? (sortDir === 'asc' ? '⬆️' : '⬇️') : '⇅'}
+          </span>
+        </button>
+        <button
+          onClick={() => setOpen(!open)}
+          className={`p-0.5 rounded hover:bg-gold/20 transition-colors ${hasFilter ? 'text-gold bg-gold/10' : 'text-muted-foreground'}`}
+          title="بحث في هذا العمود"
+        >
+          <Search className="w-3 h-3" />
+        </button>
+      </div>
+      {open && (
+        <div className="absolute top-full right-0 mt-1 z-50 w-48 p-2 rounded-lg border border-gold/40 bg-background shadow-xl">
+          <Input
+            value={colSearch}
+            onChange={e => onColSearch(e.target.value)}
+            placeholder={`بحث في ${label}...`}
+            className="bg-input/30 border-gold/20 h-8 text-xs"
+            autoFocus
+          />
+          <div className="flex justify-between mt-2">
+            <button onClick={() => { onColSearch(''); setOpen(false); }} className="text-[10px] text-red-400 hover:underline">مسح</button>
+            <button onClick={() => setOpen(false)} className="text-[10px] text-cyan-400 hover:underline">إغلاق</button>
+          </div>
+        </div>
+      )}
+    </th>
+  );
+}
+
 function Subscribers() {
   const [items, setItems] = useState([]);
   const [zones, setZones] = useState([]);
@@ -845,6 +889,11 @@ function Subscribers() {
   const [agentFilter, setAgentFilter] = useState('all');
   const [networkFilter, setNetworkFilter] = useState('all');
   const [fatFilter, setFatFilter] = useState('');
+  // Column-level search and sort
+  const [colSearch, setColSearch] = useState({});
+  const [activeColSearch, setActiveColSearch] = useState(null); // which column header has popup open
+  const [sortBy, setSortBy] = useState(null);
+  const [sortDir, setSortDir] = useState('asc');
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [activatingSub, setActivatingSub] = useState(null);
@@ -858,7 +907,22 @@ function Subscribers() {
   };
   useEffect(() => { load(); }, []);
 
-  const filtered = items.filter(i =>
+  // Map column key -> accessor function
+  const colAccessor = {
+    name: (s) => `${s.name || ''} ${s.username || ''}`,
+    phone: (s) => s.phone || '',
+    package: (s) => s.package || '',
+    zone: (s) => `${s.zoneNumber || ''} ${s.zoneName || ''}`,
+    fat: (s) => s.fatNumber || '',
+    agent: (s) => s.agentName || '',
+    ip: (s) => s.ipAddress || '',
+    status: (s) => s.status || '',
+    endDate: (s) => s.endDate || s.dueDate || '',
+    debt: (s) => Number(s.debt || 0),
+  };
+
+  // Filter
+  let filtered = items.filter(i =>
     (statusFilter === 'all' || i.status === statusFilter) &&
     (zoneFilter === 'all' || i.zoneId === zoneFilter) &&
     (agentFilter === 'all' || i.agentId === agentFilter) &&
@@ -873,6 +937,40 @@ function Subscribers() {
       i.fatNumber?.toLowerCase().includes(search.toLowerCase())
     )
   );
+
+  // Apply per-column search
+  Object.entries(colSearch).forEach(([col, q]) => {
+    if (!q) return;
+    const acc = colAccessor[col];
+    if (!acc) return;
+    const lc = String(q).toLowerCase();
+    filtered = filtered.filter(it => String(acc(it)).toLowerCase().includes(lc));
+  });
+
+  // Apply sort
+  if (sortBy && colAccessor[sortBy]) {
+    const acc = colAccessor[sortBy];
+    filtered = [...filtered].sort((a, b) => {
+      const va = acc(a);
+      const vb = acc(b);
+      if (typeof va === 'number' && typeof vb === 'number') {
+        return sortDir === 'asc' ? va - vb : vb - va;
+      }
+      const sa = String(va).toLowerCase();
+      const sb = String(vb).toLowerCase();
+      return sortDir === 'asc' ? sa.localeCompare(sb, 'ar') : sb.localeCompare(sa, 'ar');
+    });
+  }
+
+  const toggleSort = (col) => {
+    if (sortBy === col) {
+      if (sortDir === 'asc') setSortDir('desc');
+      else { setSortBy(null); setSortDir('asc'); }
+    } else {
+      setSortBy(col); setSortDir('asc');
+    }
+  };
+  const updateColSearch = (col, v) => setColSearch(s => ({ ...s, [col]: v }));
 
   const save = async () => {
     const zone = zones.find(z => z.id === form.zoneId);
@@ -984,13 +1082,38 @@ function Subscribers() {
             </div>
           </div>
 
-          <p className="text-xs text-muted-foreground">عدد النتائج: <span className="text-gold font-bold">{filtered.length}</span> من {items.length}</p>
+          <p className="text-xs text-muted-foreground">عدد النتائج: <span className="text-gold font-bold">{filtered.length}</span> من {items.length} {sortBy && <span className="text-cyan-400 mx-2">⇅ ترتيب: {({name:'الاسم',phone:'الهاتف',package:'الباقة',zone:'الزون',fat:'الفاتة',agent:'الوكيل',ip:'IP',status:'الحالة',endDate:'الانتهاء',debt:'الدين'})[sortBy]} ({sortDir === 'asc' ? '⬆️' : '⬇️'})</span>}</p>
 
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gold-soft text-right text-xs text-muted-foreground">
-                  <th className="p-2">المشترك / اليوزر</th><th>الهاتف</th><th>الباقة</th><th>الزون</th><th>الفاتة</th><th>الوكيل</th><th>IP</th><th>الحالة</th><th>ينتهي</th><th>الدين</th><th></th>
+                  {[
+                    { k: 'name', label: 'المشترك / اليوزر' },
+                    { k: 'phone', label: 'الهاتف' },
+                    { k: 'package', label: 'الباقة' },
+                    { k: 'zone', label: 'الزون' },
+                    { k: 'fat', label: 'الفاتة' },
+                    { k: 'agent', label: 'الوكيل' },
+                    { k: 'ip', label: 'IP' },
+                    { k: 'status', label: 'الحالة' },
+                    { k: 'endDate', label: 'ينتهي' },
+                    { k: 'debt', label: 'الدين' },
+                  ].map(col => (
+                    <ColumnHeader
+                      key={col.k}
+                      colKey={col.k}
+                      label={col.label}
+                      sortBy={sortBy}
+                      sortDir={sortDir}
+                      toggleSort={toggleSort}
+                      colSearch={colSearch[col.k] || ''}
+                      onColSearch={(v) => updateColSearch(col.k, v)}
+                      open={activeColSearch === col.k}
+                      setOpen={(v) => setActiveColSearch(v ? col.k : null)}
+                    />
+                  ))}
+                  <th className="p-2"></th>
                 </tr>
               </thead>
               <tbody>
@@ -1108,6 +1231,14 @@ function Subscribers() {
               )}
             </TabsContent>
           </Tabs>
+
+          <CustomFieldsGrid
+            entity="subscribers"
+            customFields={form.customFields}
+            onUpdate={(cf) => setForm({ ...form, customFields: cf })}
+            columns={2}
+          />
+
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3069,6 +3200,7 @@ const SETTINGS_SECTIONS = [
   { key: 'security', label: 'الأمان وتسجيل الدخول', icon: Activity, color: 'from-red-500 to-orange-600' },
   { key: 'reports', label: 'التقارير والإحصائيات', icon: BarChart3, color: 'from-yellow-500 to-amber-600' },
   { key: 'employees', label: 'الموظفون والمهام', icon: Users, color: 'from-lime-500 to-green-600' },
+  { key: 'custom-fields', label: 'الحقول المخصصة (Schema)', icon: Edit2, color: 'from-violet-500 to-fuchsia-600' },
 ];
 
 function SettingsPage() {
@@ -3219,6 +3351,7 @@ function SettingsPage() {
               {activeSection === 'security' && <SecuritySection draft={draft} update={update} />}
               {activeSection === 'reports' && <ReportsSection draft={draft} update={update} />}
               {activeSection === 'employees' && <EmployeesSection draft={draft} update={update} />}
+              {activeSection === 'custom-fields' && <CustomFieldsSection />}
             </ScrollArea>
           </CardContent>
         </Card>
@@ -3606,7 +3739,134 @@ function WhatsAppSection({ draft, update, testWhatsApp }) {
       </div>
       <Switch checked={w.sendToManager} onChange={v => update('whatsapp', 'sendToManager', v)} label="📨 إرسال نسخة للمدير في كل عملية" />
       <Button onClick={testWhatsApp} className="btn-neon w-full"><Send className="w-4 h-4 ml-2" /> اختبار إرسال رسالة</Button>
+
+      <WhatsAppTemplatesEditor draft={draft} update={update} />
     </div>
+  );
+}
+
+function WhatsAppTemplatesEditor({ draft, update }) {
+  const templates = draft.whatsapp?.templates || defaultWhatsAppTemplates;
+  const [activeTab, setActiveTab] = useState('activation');
+  const [preview, setPreview] = useState(null);
+
+  const tabs = [
+    { k: 'activation', label: '✅ تفعيل', desc: 'يُرسَل بعد تفعيل اشتراك جديد' },
+    { k: 'expiry', label: '⏰ انتهاء', desc: 'تذكير بانتهاء الاشتراك' },
+    { k: 'debt', label: '💰 دين', desc: 'تذكير بمستحقات مالية' },
+    { k: 'welcome', label: '👋 ترحيب', desc: 'ترحيب بمشترك جديد' },
+  ];
+
+  const placeholders = {
+    activation: ['{name}', '{package}', '{speed}', '{amount}', '{paymentMethod}', '{startDate}', '{endDate}', '{username}'],
+    expiry: ['{name}', '{endDate}', '{daysLeft}', '{package}'],
+    debt: ['{name}', '{amount}', '{phone}'],
+    welcome: ['{name}', '{phone}', '{username}'],
+  };
+
+  const updateTemplate = (k, v) => {
+    update('whatsapp', 'templates', { ...templates, [k]: v });
+  };
+
+  const resetTemplate = (k) => {
+    if (!confirm('استعادة النص الافتراضي لهذا القالب؟')) return;
+    updateTemplate(k, defaultWhatsAppTemplates[k]);
+    toast.success('✅ تم استعادة النص الافتراضي');
+  };
+
+  const showPreview = (k) => {
+    const sample = {
+      name: 'أحمد محمد',
+      package: 'باقة 50 ميجا',
+      speed: '50 Mbps',
+      amount: '35,000',
+      paymentMethod: 'كاش',
+      startDate: new Date().toLocaleDateString('ar-IQ'),
+      endDate: new Date(Date.now() + 30 * 86400000).toLocaleDateString('ar-IQ'),
+      username: 'user_1234',
+      phone: '07901234567',
+      daysLeft: '3',
+    };
+    setPreview({ k, text: fillTemplate(templates[k] || '', sample) });
+  };
+
+  return (
+    <Card className="glass-card border-2 border-emerald-500/30 bg-emerald-500/5">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2 text-emerald-400">
+          💬 قوالب رسائل الواتساب
+        </CardTitle>
+        <p className="text-[10px] text-muted-foreground">
+          خصّص نص الرسائل المُرسَلة تلقائياً للمشتركين - استخدم المتغيرات بين أقواس مثل {`{name}`}
+        </p>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-1 mb-3">
+          {tabs.map(t => (
+            <button
+              key={t.k}
+              onClick={() => setActiveTab(t.k)}
+              className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${activeTab === t.k ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300' : 'bg-input/30 border-gold-soft text-muted-foreground hover:border-emerald-500/50'}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tabs.filter(t => t.k === activeTab).map(t => (
+          <div key={t.k} className="space-y-3">
+            <p className="text-[10px] text-muted-foreground">{t.desc}</p>
+
+            <div>
+              <Label className="text-xs">📝 نص القالب</Label>
+              <Textarea
+                value={templates[t.k] || ''}
+                onChange={e => updateTemplate(t.k, e.target.value)}
+                className="bg-input/30 border-gold/20 h-44 text-xs font-mono leading-relaxed"
+                dir="rtl"
+                placeholder="أدخل نص الرسالة..."
+              />
+            </div>
+
+            <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30">
+              <p className="text-[10px] text-cyan-400 mb-1 font-bold">📌 المتغيرات المتاحة (انقر للنسخ):</p>
+              <div className="flex flex-wrap gap-1">
+                {(placeholders[t.k] || []).map(p => (
+                  <button
+                    key={p}
+                    onClick={() => { navigator.clipboard?.writeText(p); toast.success(`نُسخ: ${p}`); }}
+                    className="px-2 py-0.5 rounded bg-cyan-500/20 hover:bg-cyan-500/40 text-cyan-300 text-[10px] font-mono"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => showPreview(t.k)} className="border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10">
+                👁️ معاينة بأرقام تجريبية
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => resetTemplate(t.k)} className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10">
+                ↩️ استعادة النص الافتراضي
+              </Button>
+            </div>
+          </div>
+        ))}
+
+        <Dialog open={!!preview} onOpenChange={() => setPreview(null)}>
+          <DialogContent className="glass-strong border-emerald-500/40">
+            <DialogHeader><DialogTitle className="text-emerald-400">👁️ معاينة القالب</DialogTitle></DialogHeader>
+            <div className="p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+              <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed">{preview?.text}</pre>
+            </div>
+            <DialogFooter>
+              <Button onClick={() => { navigator.clipboard?.writeText(preview?.text || ''); toast.success('تم النسخ'); }} className="btn-gold w-full">📋 نسخ المعاينة</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -3681,6 +3941,252 @@ function NotificationsSection({ draft, updateNested }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function CustomFieldsSection() {
+  const ENTITIES = [
+    { k: 'subscribers', label: '👥 المشتركين', icon: '📡' },
+    { k: 'networks', label: '🌐 الشبكات/الفاتات', icon: '🔌' },
+    { k: 'zones', label: '🗺️ الزونات', icon: '📍' },
+    { k: 'employees', label: '👤 الموظفين', icon: '🆔' },
+    { k: 'products', label: '📦 المنتجات', icon: '🏷️' },
+    { k: 'agents', label: '🤝 الوكلاء', icon: '👨‍💼' },
+    { k: 'repairs', label: '🔧 الصيانة', icon: '🛠️' },
+    { k: 'tasks', label: '📋 المهام', icon: '✅' },
+  ];
+  const FIELD_TYPES = [
+    { v: 'text', label: '📝 نص' },
+    { v: 'textarea', label: '📄 نص طويل' },
+    { v: 'number', label: '🔢 رقم' },
+    { v: 'currency', label: '💵 مبلغ' },
+    { v: 'percent', label: '٪ نسبة' },
+    { v: 'date', label: '📅 تاريخ' },
+    { v: 'datetime', label: '🕒 تاريخ ووقت' },
+    { v: 'boolean', label: '🔘 نعم/لا' },
+    { v: 'select', label: '🎯 قائمة منسدلة' },
+    { v: 'multiselect', label: '✅ اختيار متعدد' },
+    { v: 'phone', label: '📞 هاتف' },
+    { v: 'email', label: '📧 بريد' },
+    { v: 'url', label: '🔗 رابط' },
+  ];
+
+  const [activeEntity, setActiveEntity] = useState('subscribers');
+  const [fields, setFields] = useState([]);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  useEffect(() => {
+    api(`custom-fields/${activeEntity}`).then(d => {
+      if (d && Array.isArray(d.fields)) {
+        setFields(d.fields);
+        setDirty(false);
+      }
+    });
+  }, [activeEntity]);
+
+  const addField = () => {
+    setFields(f => [...f, {
+      key: `field_${Date.now().toString(36)}`,
+      label: 'حقل جديد',
+      type: 'text',
+      required: false,
+      placeholder: '',
+      default: '',
+      options: [],
+      visible: true,
+    }]);
+    setDirty(true);
+  };
+  const updateField = (i, patch) => {
+    setFields(f => f.map((x, idx) => idx === i ? { ...x, ...patch } : x));
+    setDirty(true);
+  };
+  const removeField = (i) => {
+    if (!confirm('حذف هذا الحقل؟')) return;
+    setFields(f => f.filter((_, idx) => idx !== i));
+    setDirty(true);
+  };
+  const moveField = (i, dir) => {
+    setFields(f => {
+      const arr = [...f];
+      const j = i + dir;
+      if (j < 0 || j >= arr.length) return arr;
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+      return arr;
+    });
+    setDirty(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    const r = await api(`custom-fields/${activeEntity}`, {
+      method: 'PUT',
+      body: JSON.stringify({ fields }),
+    });
+    setSaving(false);
+    if (r?.error) { toast.error(r.error); sounds.error(); return; }
+    toast.success(`✅ تم حفظ ${fields.length} حقل لـ ${activeEntity}`);
+    sounds.success();
+    setDirty(false);
+  };
+
+  const reload = () => {
+    api(`custom-fields/${activeEntity}`).then(d => {
+      setFields(d?.fields || []);
+      setDirty(false);
+      toast.info('تم إعادة التحميل');
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="glass-card border-2 border-violet-500/30 bg-violet-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2 text-violet-400">
+            🛠️ محرر الحقول الديناميكي (Schema Editor)
+          </CardTitle>
+          <p className="text-[10px] text-muted-foreground">
+            أضف/عدّل/احذف حقولاً مخصصة لأي قسم من النظام. الحقول الجديدة ستظهر تلقائياً في نماذج الإضافة والتعديل.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/* Entity selector */}
+          <div>
+            <Label className="text-xs mb-2 block">📂 اختر القسم</Label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {ENTITIES.map(e => (
+                <button
+                  key={e.k}
+                  onClick={() => {
+                    if (dirty && !confirm('لديك تعديلات غير محفوظة. هل تريد المتابعة؟')) return;
+                    setActiveEntity(e.k);
+                  }}
+                  className={`p-3 rounded-lg border-2 transition-all text-center ${activeEntity === e.k ? 'border-violet-500 bg-violet-500/20' : 'border-gold-soft bg-input/30 hover:border-violet-500/50'}`}
+                >
+                  <div className="text-2xl mb-1">{e.icon}</div>
+                  <div className="text-[10px] font-bold">{e.label}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center pt-2 border-t border-gold-soft">
+            <p className="text-xs">
+              <span className="text-muted-foreground">عدد الحقول:</span> <span className="font-bold gold-text">{fields.length}</span>
+              {dirty && <Badge className="mr-2 bg-amber-500/20 text-amber-400 border-amber-500/30 text-[10px]">⚠️ تعديلات غير محفوظة</Badge>}
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={addField} className="btn-gold h-8">
+                <Plus className="w-3 h-3 ml-1" /> إضافة حقل
+              </Button>
+              <Button size="sm" variant="outline" onClick={reload} className="h-8 border-gold/30">↩️ تجاهل</Button>
+              <Button size="sm" onClick={save} disabled={!dirty || saving} className="h-8 btn-neon">
+                {saving ? '...' : '💾 حفظ'}
+              </Button>
+            </div>
+          </div>
+
+          {/* Fields list */}
+          {fields.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Edit2 className="w-12 h-12 mx-auto opacity-30 mb-3" />
+              <p className="text-sm">لا توجد حقول مخصصة بعد</p>
+              <p className="text-[10px]">انقر "إضافة حقل" لإنشاء أول حقل</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {fields.map((f, i) => (
+                <Card key={i} className="glass-card border-gold-soft">
+                  <CardContent className="p-3 space-y-2">
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-muted-foreground">#{i + 1}</span>
+                        <Badge className="bg-violet-500/20 text-violet-400 border-violet-500/30 text-[10px]">
+                          {FIELD_TYPES.find(t => t.v === f.type)?.label || f.type}
+                        </Badge>
+                        {f.required && <Badge className="bg-red-500/20 text-red-400 border-red-500/30 text-[10px]">✱ مطلوب</Badge>}
+                        {f.visible === false && <Badge className="bg-gray-500/20 text-gray-400 text-[10px]">🙈 مخفي</Badge>}
+                      </div>
+                      <div className="flex gap-1">
+                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => moveField(i, -1)} title="لأعلى" disabled={i === 0}>⬆️</Button>
+                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => moveField(i, 1)} title="لأسفل" disabled={i === fields.length - 1}>⬇️</Button>
+                        <Button size="icon" variant="ghost" className="h-6 w-6 hover:text-red-500" onClick={() => removeField(i)} title="حذف"><Trash2 className="w-3 h-3" /></Button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      <div>
+                        <Label className="text-[10px]">المفتاح (Key)</Label>
+                        <Input value={f.key} onChange={e => updateField(i, { key: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') })} className="bg-input/30 border-gold/20 h-8 text-xs font-mono" dir="ltr" />
+                      </div>
+                      <div>
+                        <Label className="text-[10px]">الاسم المعروض</Label>
+                        <Input value={f.label} onChange={e => updateField(i, { label: e.target.value })} className="bg-input/30 border-gold/20 h-8 text-xs" />
+                      </div>
+                      <div>
+                        <Label className="text-[10px]">النوع</Label>
+                        <Select value={f.type} onValueChange={v => updateField(i, { type: v })}>
+                          <SelectTrigger className="bg-input/30 border-gold/20 h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>{FIELD_TYPES.map(t => <SelectItem key={t.v} value={t.v} className="text-xs">{t.label}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-[10px]">القيمة الافتراضية</Label>
+                        <Input value={f.default || ''} onChange={e => updateField(i, { default: e.target.value })} className="bg-input/30 border-gold/20 h-8 text-xs" />
+                      </div>
+                      <div className="md:col-span-2">
+                        <Label className="text-[10px]">نص توضيحي (Placeholder)</Label>
+                        <Input value={f.placeholder || ''} onChange={e => updateField(i, { placeholder: e.target.value })} className="bg-input/30 border-gold/20 h-8 text-xs" />
+                      </div>
+                      <div className="flex items-end gap-2">
+                        <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
+                          <input type="checkbox" checked={!!f.required} onChange={e => updateField(i, { required: e.target.checked })} className="accent-gold" />
+                          مطلوب
+                        </label>
+                        <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
+                          <input type="checkbox" checked={f.visible !== false} onChange={e => updateField(i, { visible: e.target.checked })} className="accent-gold" />
+                          ظاهر
+                        </label>
+                      </div>
+                      {['select', 'multiselect'].includes(f.type) && (
+                        <div className="md:col-span-2">
+                          <Label className="text-[10px]">خيارات (قيمة|عرض - سطر لكل خيار)</Label>
+                          <Textarea
+                            value={(f.options || []).map(o => typeof o === 'string' ? o : `${o.value}|${o.label}`).join('\n')}
+                            onChange={e => updateField(i, {
+                              options: e.target.value.split('\n').filter(Boolean).map(line => {
+                                const [val, lbl] = line.split('|');
+                                return { value: val.trim(), label: (lbl || val).trim() };
+                              })
+                            })}
+                            className="bg-input/30 border-gold/20 h-20 text-xs font-mono"
+                            placeholder={`active|نشط\nsuspended|موقوف`}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="glass-card border-cyan-500/30 bg-cyan-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs text-cyan-400">💡 معلومات مهمة</CardTitle>
+        </CardHeader>
+        <CardContent className="text-[11px] space-y-1 text-muted-foreground">
+          <p>• الحقول المضافة هنا ستظهر تلقائياً في نماذج الإضافة والتعديل لذلك القسم.</p>
+          <p>• <strong>المفتاح (Key)</strong> لا يمكن تغييره بعد حفظ بيانات تستخدمه (سيكسر العرض).</p>
+          <p>• الحقول من نوع <strong>قائمة منسدلة</strong> تتطلب تعريف الخيارات بصيغة <code className="bg-input/50 px-1 rounded font-mono">value|label</code>.</p>
+          <p>• إخفاء الحقل (إلغاء "ظاهر") يحفظ القيم لكن لا يعرضها في النماذج.</p>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -4027,12 +4533,23 @@ function ActivationsLog() {
   const [search, setSearch] = useState('');
   const [payFilter, setPayFilter] = useState('all');
 
-  useEffect(() => { api('activations').then(setItems); }, []);
+  useEffect(() => {
+    api('activations').then(d => setItems(Array.isArray(d) ? d : []));
+  }, []);
 
-  const filtered = items.filter(a =>
-    (payFilter === 'all' || a.paymentMethod === payFilter) &&
-    (!search || a.subscriberName?.includes(search) || a.subscriberPhone?.includes(search) || a.username?.toLowerCase().includes(search.toLowerCase()) || a.agentName?.includes(search))
-  );
+  const norm = (v) => (v === null || v === undefined) ? '' : String(v).toLowerCase().trim();
+  const q = norm(search);
+
+  const filtered = items.filter(a => {
+    if (payFilter !== 'all' && a.paymentMethod !== payFilter) return false;
+    if (!q) return true;
+    const haystack = [
+      a.subscriberName, a.subscriberPhone, a.username, a.agentName,
+      a.packageName, a.speed, a.notes, a.id, a.paymentMethod,
+      a.amount, a.durationMonths, a.processedBy,
+    ].map(norm).join(' ');
+    return haystack.includes(q);
+  });
 
   const totalRevenue = filtered.reduce((s, x) => s + (x.amount || 0), 0);
   const totalAgentProfit = filtered.reduce((s, x) => s + (x.agentProfit || 0), 0);

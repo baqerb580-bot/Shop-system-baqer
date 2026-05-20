@@ -2419,3 +2419,181 @@ agent_communication:
       NO CRITICAL ISSUES FOUND. All 5 new endpoint groups are production-ready.
 
 
+
+backend:
+  - task: "Custom Fields API (Schema Editor)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            New Custom Fields API endpoints for dynamic schema management:
+            - GET /api/custom-fields → returns object with all 8 supported entities (subscribers, networks, zones, employees, products, agents, repairs, tasks)
+            - GET /api/custom-fields/:entity → returns {entity, fields: [...]}
+            - PUT /api/custom-fields/:entity with {fields: [...]} → validates and saves custom field definitions
+            Validation: key format (lowercase, alphanumeric + underscore), label required, type validation (13 types supported),
+            select/multiselect require options array, duplicate key detection.
+            Integration: Subscribers CRUD preserves customFields object in documents.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All Custom Fields API endpoints fully functional (16/16 tests passed).
+            
+            Test Results:
+            1. GET /api/custom-fields (all entities):
+               - Returns object with all 8 supported entities as keys: subscribers, networks, zones, employees, products, agents, repairs, tasks
+               - Each value is an array (may be empty initially)
+               - Structure correct ✅
+            
+            2. GET /api/custom-fields/subscribers (specific entity):
+               - Returns {entity: "subscribers", fields: [...]}
+               - Structure correct ✅
+            
+            3. GET /api/custom-fields/invalid_entity:
+               - Correctly returns 400 with Arabic error "نوع غير مدعوم" ✅
+            
+            4. PUT /api/custom-fields/subscribers (valid fields):
+               - Successfully created 3 custom fields:
+                 * router_model (text, not required)
+                 * wall_color (select with 2 options: white/blue, not required)
+                 * monthly_quota (currency, required)
+               - Returns 200 with {entity, fields} ✅
+            
+            5. GET /api/custom-fields/subscribers (verify persistence):
+               - All 3 fields persisted correctly
+               - Field keys: router_model, wall_color, monthly_quota ✅
+            
+            6. PUT Validation Tests (all correctly return 400):
+               a) Invalid key (uppercase/spaces "Bad Key"): ✅ Returns 400 "المفتاح "Bad Key" غير صالح - يجب أن يبدأ بحرف صغير ويحتوي على حروف وأرقام و_ فقط"
+               b) Missing label: ✅ Returns 400 "label مطلوب لكل حقل"
+               c) Invalid type (alien_type): ✅ Returns 400 "نوع غير مدعوم: alien_type"
+               d) select without options: ✅ Returns 400 "الحقل x من نوع select يحتاج قائمة options"
+               e) Duplicate keys: ✅ Returns 400 "مفاتيح مكررة"
+            
+            7. PUT /api/custom-fields/networks (test another entity):
+               - Successfully created 1 custom field for networks entity
+               - Field: fiber_type (select with 2 options: single/multi)
+               - Returns 200 ✅
+            
+            8. PUT /api/custom-fields/invalid_entity:
+               - Correctly returns 400 "نوع غير مدعوم" ✅
+            
+            9. POST /api/subscribers with customFields:
+               - Created subscriber with customFields: {router_model: "TP-Link Archer C6", monthly_quota: 50000}
+               - Returns 201 with customFields object in response ✅
+            
+            10. GET /api/subscribers (verify customFields preserved):
+                - customFields object preserved correctly in subscriber document
+                - Values intact: router_model="TP-Link Archer C6", monthly_quota=50000 ✅
+            
+            11. PUT /api/subscribers/:id (update customFields):
+                - Successfully updated customFields to: {router_model: "Mikrotik hEX", wall_color: "blue", monthly_quota: 75000}
+                - Returns 200 with updated customFields ✅
+            
+            12. GET /api/subscribers (verify update persisted):
+                - Updated customFields persisted correctly
+                - All 3 fields updated: router_model="Mikrotik hEX", wall_color="blue", monthly_quota=75000 ✅
+            
+            CLEANUP:
+            - Test subscriber deleted successfully ✅
+            - Subscribers custom fields reset to empty array ✅
+            - Networks custom fields reset to empty array ✅
+            
+            DATA INTEGRITY VERIFIED:
+            - All 8 supported entities present in GET /api/custom-fields response
+            - Field validation working correctly (key format, label required, type validation)
+            - Select/multiselect validation requires options array
+            - Duplicate key detection working
+            - Invalid entity returns 400 for both GET and PUT
+            - customFields object preserved in subscriber documents (POST/PUT/GET)
+            - customFields updates work correctly
+            - All Arabic error messages displaying correctly
+            - Activity logs created for custom field updates
+            - 13 field types supported: text, number, date, datetime, boolean, select, multiselect, textarea, phone, email, url, currency, percent
+            
+            NO CRITICAL ISSUES FOUND. Custom Fields API (Schema Editor) is production-ready.
+
+test_plan:
+  current_focus:
+    - "Custom Fields API (Schema Editor)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      🆕 Please test ONLY the NEW Custom Fields API endpoints (Schema Editor):
+      
+      Test all endpoints as specified in review_request:
+      a) GET /api/custom-fields → all 8 entities
+      b) GET /api/custom-fields/subscribers → specific entity
+      c) GET /api/custom-fields/invalid_entity → expect 400
+      d) PUT /api/custom-fields/subscribers with valid fields
+      e) GET /api/custom-fields/subscribers → verify persistence
+      f) PUT validation tests (invalid key, missing label, invalid type, select without options, duplicate keys)
+      g) PUT /api/custom-fields/networks → test another entity
+      h) PUT /api/custom-fields/invalid_entity → expect 400
+      i) Create subscriber with customFields
+      j) GET /api/subscribers → verify customFields preserved
+      k) PUT /api/subscribers/:id with customFields → verify update
+      l) DELETE test subscriber for cleanup
+      m) Cleanup custom fields
+      
+      DO NOT re-test previously passing endpoints.
+  
+  - agent: "testing"
+    message: |
+      🎉 CUSTOM FIELDS API TESTING COMPLETE - ALL TESTS PASSED (16/16)
+      
+      Tested all NEW Custom Fields API endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ SCHEMA MANAGEMENT (8/8 tests passed):
+         - GET /api/custom-fields: Returns all 8 entities (subscribers, networks, zones, employees, products, agents, repairs, tasks)
+         - GET /api/custom-fields/subscribers: Returns {entity, fields} structure
+         - GET /api/custom-fields/invalid_entity: Correctly returns 400 "نوع غير مدعوم"
+         - PUT /api/custom-fields/subscribers: Successfully creates 3 custom fields (router_model, wall_color, monthly_quota)
+         - GET /api/custom-fields/subscribers (persistence): All 3 fields persisted correctly
+         - PUT /api/custom-fields/networks: Successfully creates 1 field for networks entity
+         - PUT /api/custom-fields/invalid_entity: Correctly returns 400 "نوع غير مدعوم"
+      
+      ✅ VALIDATION (5/5 tests passed):
+         - Invalid key (uppercase/spaces): Returns 400 with Arabic error
+         - Missing label: Returns 400 "label مطلوب لكل حقل"
+         - Invalid type: Returns 400 "نوع غير مدعوم: alien_type"
+         - select without options: Returns 400 with Arabic error
+         - Duplicate keys: Returns 400 "مفاتيح مكررة"
+      
+      ✅ SUBSCRIBER INTEGRATION (3/3 tests passed):
+         - POST /api/subscribers with customFields: Creates subscriber with customFields object
+         - GET /api/subscribers: customFields preserved correctly
+         - PUT /api/subscribers/:id: customFields updated correctly (router_model, wall_color, monthly_quota)
+      
+      SUPPORTED FIELD TYPES (13 total):
+      - text, number, date, datetime, boolean
+      - select, multiselect, textarea
+      - phone, email, url, currency, percent
+      
+      DATA INTEGRITY VERIFIED:
+      - All 8 entities supported and returned correctly
+      - Field validation working (key format: lowercase alphanumeric + underscore)
+      - Label required for all fields
+      - Type validation enforced (13 valid types)
+      - Select/multiselect require options array
+      - Duplicate key detection working
+      - customFields object preserved in subscriber CRUD operations
+      - All Arabic error messages working correctly
+      - Activity logs created for custom field updates
+      
+      CLEANUP SUCCESSFUL:
+      - Test subscriber deleted
+      - Subscribers custom fields reset to []
+      - Networks custom fields reset to []
+      
+      NO CRITICAL ISSUES FOUND. Custom Fields API (Schema Editor) is production-ready.
+

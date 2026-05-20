@@ -800,6 +800,55 @@ async function handle(request, params) {
     return ok({ success: true });
   }
 
+  // ============ CUSTOM FIELDS (Dynamic Schema Per Entity) ============
+  // Supported entities: subscribers, networks, zones, employees, products, agents, repairs, tasks
+  const ALLOWED_CF_ENTITIES = ['subscribers', 'networks', 'zones', 'employees', 'products', 'agents', 'repairs', 'tasks'];
+  if (path === 'custom-fields' && method === 'GET') {
+    // Get all entities at once
+    const docs = await db.collection('custom_fields').find({}).toArray();
+    const out = {};
+    for (const ent of ALLOWED_CF_ENTITIES) {
+      const d = docs.find(x => x.entity === ent);
+      out[ent] = d ? (d.fields || []) : [];
+    }
+    return ok(out);
+  }
+  if (path.match(/^custom-fields\/[a-z_]+$/) && method === 'GET') {
+    const entity = path.split('/')[1];
+    if (!ALLOWED_CF_ENTITIES.includes(entity)) return err('نوع غير مدعوم', 400);
+    const d = await db.collection('custom_fields').findOne({ entity });
+    return ok({ entity, fields: d?.fields || [] });
+  }
+  if (path.match(/^custom-fields\/[a-z_]+$/) && method === 'PUT') {
+    const entity = path.split('/')[1];
+    if (!ALLOWED_CF_ENTITIES.includes(entity)) return err('نوع غير مدعوم', 400);
+    const { fields } = await getJsonBody(request);
+    if (!Array.isArray(fields)) return err('fields يجب أن تكون مصفوفة', 400);
+    // Validate each field structure
+    const validTypes = ['text', 'number', 'date', 'datetime', 'boolean', 'select', 'multiselect', 'textarea', 'phone', 'email', 'url', 'currency', 'percent'];
+    for (const f of fields) {
+      if (!f.key || typeof f.key !== 'string' || !/^[a-z][a-z0-9_]{0,30}$/.test(f.key)) {
+        return err(`المفتاح "${f.key || ''}" غير صالح - يجب أن يبدأ بحرف صغير ويحتوي على حروف وأرقام و_ فقط`, 400);
+      }
+      if (!f.label || typeof f.label !== 'string') return err('label مطلوب لكل حقل', 400);
+      if (!f.type || !validTypes.includes(f.type)) return err(`نوع غير مدعوم: ${f.type}`, 400);
+      if (['select', 'multiselect'].includes(f.type) && !Array.isArray(f.options)) {
+        return err(`الحقل ${f.label} من نوع ${f.type} يحتاج قائمة options`, 400);
+      }
+    }
+    // Reject duplicate keys
+    const keys = fields.map(f => f.key);
+    if (keys.length !== new Set(keys).size) return err('مفاتيح مكررة', 400);
+    const now = new Date().toISOString();
+    await db.collection('custom_fields').updateOne(
+      { entity },
+      { $set: { entity, fields, updatedAt: now } },
+      { upsert: true }
+    );
+    await logActivity(db, { action: 'custom_fields_updated', entity, details: `تحديث ${fields.length} حقل مخصص لـ ${entity}`, ip: clientIp });
+    return ok({ entity, fields });
+  }
+
   const collections = {
     'products': 'products',
     'subscribers': 'subscribers',
