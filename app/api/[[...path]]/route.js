@@ -2,7 +2,13 @@ import { NextResponse } from 'next/server';
 import { MongoClient } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
 
-const MONGO_URL = process.env.MONGO_URL;
+// Force Node.js runtime + dynamic rendering (required for Vercel serverless)
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const fetchCache = 'force-no-store';
+
+const MONGO_URL = process.env.MONGO_URL || process.env.MONGODB_URI || '';
 const DB_NAME = process.env.DB_NAME || 'ghazlan_erp';
 const EMERGENT_LLM_KEY = process.env.EMERGENT_LLM_KEY;
 
@@ -182,15 +188,63 @@ const SETTINGS_DEFAULTS = {
   },
 };
 
-let cachedClient = null;
+// ============ MONGO CONNECTION (Serverless-Safe / Vercel-Ready) ============
+// Use globalThis cache to survive across hot-reloads + serverless function reuses.
+// Returns null on failure instead of throwing → endpoints handle gracefully.
+const __globalAny = globalThis;
+if (!__globalAny.__mongoState) {
+  __globalAny.__mongoState = { client: null, promise: null, seeded: false, lastError: null };
+}
+
+async function connectMongo() {
+  if (!MONGO_URL) {
+    __globalAny.__mongoState.lastError = 'MONGO_URL is not set';
+    return null;
+  }
+  if (__globalAny.__mongoState.client) return __globalAny.__mongoState.client;
+  if (__globalAny.__mongoState.promise) return __globalAny.__mongoState.promise;
+
+  const opts = {
+    serverSelectionTimeoutMS: 8000,
+    connectTimeoutMS: 10000,
+    socketTimeoutMS: 30000,
+    maxPoolSize: 10,
+    minPoolSize: 0,
+    retryWrites: true,
+  };
+  __globalAny.__mongoState.promise = (async () => {
+    try {
+      const client = new MongoClient(MONGO_URL, opts);
+      await client.connect();
+      __globalAny.__mongoState.client = client;
+      __globalAny.__mongoState.lastError = null;
+      return client;
+    } catch (e) {
+      console.error('[Mongo] connection failed:', e?.message);
+      __globalAny.__mongoState.lastError = e?.message || 'connect failed';
+      __globalAny.__mongoState.promise = null;
+      return null;
+    }
+  })();
+  return __globalAny.__mongoState.promise;
+}
+
 async function getDb() {
-  if (cachedClient) return cachedClient.db(DB_NAME);
-  const client = new MongoClient(MONGO_URL);
-  await client.connect();
-  cachedClient = client;
-  const db = client.db(DB_NAME);
-  await seedDefaults(db);
-  return db;
+  try {
+    const client = await connectMongo();
+    if (!client) return null;
+    const db = client.db(DB_NAME);
+    // Run seed only ONCE per process (lazy + fire-and-forget; never blocks request)
+    if (!__globalAny.__mongoState.seeded) {
+      __globalAny.__mongoState.seeded = true;
+      // Don't await — let it run in the background to avoid cold-start timeouts on Vercel
+      seedDefaults(db).catch((e) => console.warn('[Mongo] seed warn:', e?.message));
+    }
+    return db;
+  } catch (e) {
+    console.error('[Mongo] getDb error:', e?.message);
+    return null;
+  }
 }
 
 async function seedDefaults(db) {
@@ -516,44 +570,88 @@ async function handle(request, params) {
   const db = await getDb();
   const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0] || request.headers.get('x-real-ip') || 'unknown';
 
-  if (!path) return ok({ name: 'Ghazlan ERP API', version: '1.0', status: 'running' });
+  if (!path) return ok({ name: 'Ghazlan ERP API', version: '1.0', status: 'running', dbConnected: !!db });
+
+  // Health check (always safe — never depends on DB)
+  if (path === 'health' || path === 'healthz') {
+    return ok({ status: 'ok', dbConnected: !!db, dbError: __globalAny.__mongoState?.lastError || null, ts: new Date().toISOString() });
+  }
+
+  // ============ SAFE FALLBACKS WHEN DB IS UNREACHABLE ============
+  // For read endpoints we surface a 200 with safe-shaped fallback data so the UI doesn't crash.
+  // For write endpoints we return 503.
+  if (!db) {
+    const errMsg = __globalAny.__mongoState?.lastError || 'Database unavailable';
+    console.warn(`[API] DB unavailable for ${method} /${path} — returning fallback (${errMsg})`);
+    if (method !== 'GET') {
+      return ok({ error: 'Database temporarily unavailable. Please try again.', dbError: errMsg }, 503);
+    }
+    // GET endpoint fallbacks (safe shapes — never undefined)
+    if (path === 'dashboard/stats') {
+      return ok({
+        totalProducts: 0, totalSubscribers: 0, activeSubscribers: 0, totalRepairs: 0, pendingRepairs: 0,
+        totalEmployees: 0, totalZones: 0, onlineZones: 0, totalRevenue: 0, monthlyIncome: 0,
+        totalDebt: 0, lowStockCount: 0, lowStock: [], salesChart: [], _offline: true,
+      });
+    }
+    if (path === 'ai/insights') return ok({ insights: [] });
+    if (path === 'notifications/admin') return ok([]);
+    if (path === 'noc/dashboard') return ok({ zones: [], alerts: [] });
+    // Generic safe fallbacks
+    return ok({ data: [], items: [], _offline: true, error: errMsg }, 200);
+  }
 
   if (path === 'dashboard/stats' && method === 'GET') {
-    const totalProducts = await db.collection('products').countDocuments();
-    const totalSubscribers = await db.collection('subscribers').countDocuments();
-    const activeSubscribers = await db.collection('subscribers').countDocuments({ status: 'active' });
-    const totalRepairs = await db.collection('repairs').countDocuments();
-    const pendingRepairs = await db.collection('repairs').countDocuments({ status: { $in: ['pending', 'in_progress'] } });
-    const totalEmployees = await db.collection('employees').countDocuments();
-    const zones = await db.collection('zones').find({}).toArray();
-    const onlineZones = zones.filter(z => z.status === 'online').length;
-    const sales = await db.collection('sales').find({}).toArray();
-    const totalRevenue = sales.reduce((s, x) => s + (x.total || 0), 0);
-    const subs = await db.collection('subscribers').find({}).toArray();
-    const monthlyIncome = subs.filter(s => s.status === 'active').reduce((s, x) => s + (x.fee || 0), 0);
-    const totalDebt = subs.reduce((s, x) => s + (x.debt || 0), 0);
-    const lowStock = await db.collection('products').find({ $expr: { $lte: ['$stock', '$lowStockAlert'] } }).toArray();
+    try {
+      const safe = async (fn, def) => { try { return await fn(); } catch { return def; } };
+      const totalProducts = await safe(() => db.collection('products').countDocuments(), 0);
+      const totalSubscribers = await safe(() => db.collection('subscribers').countDocuments(), 0);
+      const activeSubscribers = await safe(() => db.collection('subscribers').countDocuments({ status: 'active' }), 0);
+      const totalRepairs = await safe(() => db.collection('repairs').countDocuments(), 0);
+      const pendingRepairs = await safe(() => db.collection('repairs').countDocuments({ status: { $in: ['pending', 'in_progress'] } }), 0);
+      const totalEmployees = await safe(() => db.collection('employees').countDocuments(), 0);
+      const zones = await safe(() => db.collection('zones').find({}).toArray(), []);
+      const onlineZones = Array.isArray(zones) ? zones.filter(z => z?.status === 'online').length : 0;
+      const sales = await safe(() => db.collection('sales').find({}).toArray(), []);
+      const totalRevenue = Array.isArray(sales) ? sales.reduce((s, x) => s + (Number(x?.total) || 0), 0) : 0;
+      const subs = await safe(() => db.collection('subscribers').find({}).toArray(), []);
+      const monthlyIncome = Array.isArray(subs)
+        ? subs.filter(s => s?.status === 'active').reduce((s, x) => s + (Number(x?.fee) || 0), 0)
+        : 0;
+      const totalDebt = Array.isArray(subs) ? subs.reduce((s, x) => s + (Number(x?.debt) || 0), 0) : 0;
+      const lowStock = await safe(() => db.collection('products').find({ $expr: { $lte: ['$stock', '$lowStockAlert'] } }).toArray(), []);
 
-    const now = Date.now();
-    const days = [];
-    for (let i = 6; i >= 0; i--) {
-      const day = new Date(now - i * 86400000);
-      const dayStart = new Date(day.setHours(0, 0, 0, 0)).getTime();
-      const dayEnd = dayStart + 86400000;
-      const daySales = sales.filter(s => {
-        const t = new Date(s.createdAt).getTime();
-        return t >= dayStart && t < dayEnd;
+      const now = Date.now();
+      const days = [];
+      for (let i = 6; i >= 0; i--) {
+        const day = new Date(now - i * 86400000);
+        const dayStart = new Date(day.setHours(0, 0, 0, 0)).getTime();
+        const dayEnd = dayStart + 86400000;
+        const daySales = (Array.isArray(sales) ? sales : []).filter(s => {
+          if (!s?.createdAt) return false;
+          const t = new Date(s.createdAt).getTime();
+          return t >= dayStart && t < dayEnd;
+        });
+        const dateStr = new Date(dayStart).toLocaleDateString('ar-IQ', { weekday: 'short' });
+        days.push({ name: dateStr, sales: daySales.reduce((s, x) => s + (Number(x?.total) || 0), 0), orders: daySales.length });
+      }
+
+      return ok({
+        totalProducts, totalSubscribers, activeSubscribers, totalRepairs, pendingRepairs,
+        totalEmployees, totalZones: Array.isArray(zones) ? zones.length : 0, onlineZones,
+        totalRevenue, monthlyIncome, totalDebt,
+        lowStockCount: Array.isArray(lowStock) ? lowStock.length : 0,
+        lowStock: (Array.isArray(lowStock) ? lowStock : []).slice(0, 5).map(p => { try { delete p._id; } catch {} return p; }),
+        salesChart: days,
       });
-      const dateStr = new Date(dayStart).toLocaleDateString('ar-IQ', { weekday: 'short' });
-      days.push({ name: dateStr, sales: daySales.reduce((s, x) => s + (x.total || 0), 0), orders: daySales.length });
+    } catch (e) {
+      console.error('[dashboard/stats] error:', e?.message);
+      return ok({
+        totalProducts: 0, totalSubscribers: 0, activeSubscribers: 0, totalRepairs: 0, pendingRepairs: 0,
+        totalEmployees: 0, totalZones: 0, onlineZones: 0, totalRevenue: 0, monthlyIncome: 0,
+        totalDebt: 0, lowStockCount: 0, lowStock: [], salesChart: [], _error: e?.message,
+      });
     }
-
-    return ok({
-      totalProducts, totalSubscribers, activeSubscribers, totalRepairs, pendingRepairs,
-      totalEmployees, totalZones: zones.length, onlineZones, totalRevenue, monthlyIncome,
-      totalDebt, lowStockCount: lowStock.length, lowStock: lowStock.slice(0, 5).map(p => { delete p._id; return p; }),
-      salesChart: days,
-    });
   }
 
   // ============ ADMIN CREDENTIALS (System) ============
@@ -1964,32 +2062,51 @@ async function handle(request, params) {
   // ============ ADMIN NOTIFICATIONS BELL ============
   // Get the active manager's notifications (employees with role contains مدير or perm 'all')
   if (path === 'notifications/admin' && method === 'GET') {
-    const managers = await db.collection('employees').find({ $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }] }).toArray();
-    const ids = managers.map(m => m.id);
-    const items = await db.collection('notifications').find({ userId: { $in: ids } }).sort({ createdAt: -1 }).limit(100).toArray();
-    return ok(items.map(n => { delete n._id; return n; }));
+    try {
+      const managers = await db.collection('employees').find({ $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }] }).toArray();
+      const ids = (Array.isArray(managers) ? managers : []).map(m => m?.id).filter(Boolean);
+      // If no managers configured yet, return any unscoped/admin notifications gracefully
+      const query = ids.length > 0 ? { userId: { $in: ids } } : {};
+      const items = await db.collection('notifications').find(query).sort({ createdAt: -1 }).limit(100).toArray();
+      return ok((Array.isArray(items) ? items : []).map(n => { try { delete n._id; } catch {} return n; }));
+    } catch (e) {
+      console.error('[notifications/admin] error:', e?.message);
+      return ok([]); // Safe fallback — UI expects an array
+    }
   }
   if (path === 'notifications/admin/read-all' && method === 'POST') {
-    const managers = await db.collection('employees').find({ $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }] }).toArray();
-    const ids = managers.map(m => m.id);
-    await db.collection('notifications').updateMany({ userId: { $in: ids }, read: false }, { $set: { read: true } });
-    return ok({ success: true });
+    try {
+      const managers = await db.collection('employees').find({ $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }] }).toArray();
+      const ids = (Array.isArray(managers) ? managers : []).map(m => m?.id).filter(Boolean);
+      const query = ids.length > 0 ? { userId: { $in: ids }, read: false } : { read: false };
+      await db.collection('notifications').updateMany(query, { $set: { read: true } });
+      return ok({ success: true });
+    } catch (e) {
+      console.error('[notifications/admin/read-all] error:', e?.message);
+      return ok({ success: false, error: e?.message });
+    }
   }
 
   // ============ TELEGRAM BOT - STATISTICS ============
-  // Seed super admin if missing
+  // Seed super admin if missing (one-shot per process — was running on every request)
   const seedTgAdmin = async () => {
-    const adminId = process.env.TELEGRAM_SUPER_ADMIN_ID;
-    if (!adminId) return;
-    const existing = await db.collection('telegram_users').findOne({ telegramId: String(adminId) });
-    if (!existing) {
-      await db.collection('telegram_users').insertOne({
-        id: uuidv4(), telegramId: String(adminId),
-        name: 'Super Admin', role: 'super_admin',
-        permissions: PERMS_ALL, enabled: true,
-        createdAt: new Date().toISOString(),
-        lastActivity: null, failedAttempts: 0,
-      });
+    try {
+      const adminId = process.env.TELEGRAM_SUPER_ADMIN_ID;
+      if (!adminId) return;
+      if (__globalAny.__tgAdminSeeded) return;
+      const existing = await db.collection('telegram_users').findOne({ telegramId: String(adminId) });
+      if (!existing) {
+        await db.collection('telegram_users').insertOne({
+          id: uuidv4(), telegramId: String(adminId),
+          name: 'Super Admin', role: 'super_admin',
+          permissions: PERMS_ALL, enabled: true,
+          createdAt: new Date().toISOString(),
+          lastActivity: null, failedAttempts: 0,
+        });
+      }
+      __globalAny.__tgAdminSeeded = true;
+    } catch (e) {
+      console.warn('[seedTgAdmin] warn:', e?.message);
     }
   };
   await seedTgAdmin();
@@ -2738,42 +2855,67 @@ async function handle(request, params) {
   }
 
   if (path === 'ai/insights' && method === 'GET') {
-    const products = await db.collection('products').find({}).toArray();
-    const subs = await db.collection('subscribers').find({}).toArray();
-    const zones = await db.collection('zones').find({}).toArray();
+    try {
+      const products = await db.collection('products').find({}).toArray().catch(() => []);
+      const subs = await db.collection('subscribers').find({}).toArray().catch(() => []);
+      const zones = await db.collection('zones').find({}).toArray().catch(() => []);
 
-    const insights = [];
-    const lowStock = products.filter(p => p.stock <= p.lowStockAlert);
-    if (lowStock.length > 0) {
-      insights.push({ type: 'warning', icon: '📦', title: 'منتجات على وشك النفاد', message: `يوجد ${lowStock.length} منتج بحاجة لإعادة طلب: ${lowStock.slice(0, 3).map(p => p.name).join('، ')}` });
+      const safeProducts = Array.isArray(products) ? products : [];
+      const safeSubs = Array.isArray(subs) ? subs : [];
+      const safeZones = Array.isArray(zones) ? zones : [];
+
+      const insights = [];
+      const lowStock = safeProducts.filter(p => (Number(p?.stock) || 0) <= (Number(p?.lowStockAlert) || 0));
+      if (lowStock.length > 0) {
+        insights.push({ type: 'warning', icon: '📦', title: 'منتجات على وشك النفاد', message: `يوجد ${lowStock.length} منتج بحاجة لإعادة طلب: ${lowStock.slice(0, 3).map(p => p?.name || '—').join('، ')}` });
+      }
+      const debt = safeSubs.filter(s => (Number(s?.debt) || 0) > 0);
+      if (debt.length > 0) {
+        const totalDebt = debt.reduce((s, x) => s + (Number(x?.debt) || 0), 0);
+        insights.push({ type: 'info', icon: '💰', title: 'مستحقات مالية', message: `${debt.length} مشترك لديه ديون بإجمالي ${totalDebt.toLocaleString()} د.ع` });
+      }
+      const offlineZones = safeZones.filter(z => z?.status === 'offline');
+      if (offlineZones.length > 0) {
+        insights.push({ type: 'critical', icon: '🚨', title: 'زونات مفصولة', message: `${offlineZones.length} زون خارج الخدمة: ${offlineZones.map(z => z?.name || '—').join('، ')}` });
+      }
+      const highUtil = safeZones.filter(z => (Number(z?.utilization) || 0) > 85);
+      if (highUtil.length > 0) {
+        insights.push({ type: 'warning', icon: '⚡', title: 'ضغط عالي على الشبكة', message: `${highUtil.length} زون يحتاج توسعة: ${highUtil.map(z => `${z?.name || '—'} (${z?.utilization || 0}%)`).join('، ')}` });
+      }
+      const deadStock = safeProducts.filter(p => (Number(p?.stock) || 0) > 50);
+      if (deadStock.length > 0) {
+        insights.push({ type: 'info', icon: '📊', title: 'مخزون راكد', message: `${deadStock.length} منتج كميته كبيرة، فكر بعمل عرض ترويجي` });
+      }
+      if (insights.length === 0) {
+        insights.push({ type: 'success', icon: '✨', title: 'كل شيء على ما يرام', message: 'لا توجد تنبيهات حالياً، استمر بالعمل الرائع!' });
+      }
+      return ok({ insights });
+    } catch (e) {
+      console.error('[ai/insights] error:', e?.message);
+      return ok({ insights: [] });
     }
-    const debt = subs.filter(s => s.debt > 0);
-    if (debt.length > 0) {
-      insights.push({ type: 'info', icon: '💰', title: 'مستحقات مالية', message: `${debt.length} مشترك لديه ديون بإجمالي ${debt.reduce((s, x) => s + x.debt, 0).toLocaleString()} د.ع` });
-    }
-    const offlineZones = zones.filter(z => z.status === 'offline');
-    if (offlineZones.length > 0) {
-      insights.push({ type: 'critical', icon: '🚨', title: 'زونات مفصولة', message: `${offlineZones.length} زون خارج الخدمة: ${offlineZones.map(z => z.name).join('، ')}` });
-    }
-    const highUtil = zones.filter(z => z.utilization > 85);
-    if (highUtil.length > 0) {
-      insights.push({ type: 'warning', icon: '⚡', title: 'ضغط عالي على الشبكة', message: `${highUtil.length} زون يحتاج توسعة: ${highUtil.map(z => `${z.name} (${z.utilization}%)`).join('، ')}` });
-    }
-    const deadStock = products.filter(p => p.stock > 50);
-    if (deadStock.length > 0) {
-      insights.push({ type: 'info', icon: '📊', title: 'مخزون راكد', message: `${deadStock.length} منتج كميته كبيرة، فكر بعمل عرض ترويجي` });
-    }
-    if (insights.length === 0) {
-      insights.push({ type: 'success', icon: '✨', title: 'كل شيء على ما يرام', message: 'لا توجد تنبيهات حالياً، استمر بالعمل الرائع!' });
-    }
-    return ok({ insights });
   }
 
   return err(`Route not found: ${method} /${path}`, 404);
 }
 
-export async function GET(request, { params }) { try { return await handle(request, params); } catch (e) { console.error(e); return err(e.message, 500); } }
-export async function POST(request, { params }) { try { return await handle(request, params); } catch (e) { console.error(e); return err(e.message, 500); } }
-export async function PUT(request, { params }) { try { return await handle(request, params); } catch (e) { console.error(e); return err(e.message, 500); } }
-export async function DELETE(request, { params }) { try { return await handle(request, params); } catch (e) { console.error(e); return err(e.message, 500); } }
-export async function PATCH(request, { params }) { try { return await handle(request, params); } catch (e) { console.error(e); return err(e.message, 500); } }
+function safeHandler(method) {
+  return async function (request, { params }) {
+    try {
+      return await handle(request, params);
+    } catch (e) {
+      const path = (params?.path || []).join('/');
+      console.error(`[API ERROR] ${method} /${path}:`, e?.stack || e?.message || e);
+      return NextResponse.json(
+        { error: e?.message || 'Internal server error', path, _serverError: true },
+        { status: 500, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' } }
+      );
+    }
+  };
+}
+
+export const GET = safeHandler('GET');
+export const POST = safeHandler('POST');
+export const PUT = safeHandler('PUT');
+export const DELETE = safeHandler('DELETE');
+export const PATCH = safeHandler('PATCH');

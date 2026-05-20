@@ -36,9 +36,48 @@ import {
 // ============ HELPERS ============
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
 const fmtCurrency = (n) => `${fmt(n)} د.ع`;
+
+// Safe array helper — guarantees an array is set even if API returns error object
+const safeArr = (d) => Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : (Array.isArray(d?.items) ? d.items : []));
+const setArr = (setter) => (d) => setter(safeArr(d));
+
+// API base URL — supports separated backend deployment via NEXT_PUBLIC_API_URL
+// If not set, falls back to relative '/api/' (same-origin, works on Vercel/Render/etc).
+const API_BASE = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL)
+  ? String(process.env.NEXT_PUBLIC_API_URL).replace(/\/+$/, '')
+  : '';
+
+// Safe API helper — NEVER throws, always returns an object/array.
+// On network error or non-2xx response, returns { error, _failed: true } so the UI can guard.
 const api = async (path, opts = {}) => {
-  const r = await fetch(`/api/${path}`, { headers: { 'Content-Type': 'application/json' }, ...opts });
-  return r.json();
+  const url = API_BASE ? `${API_BASE}/api/${path}` : `/api/${path}`;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), opts.timeout || 30000);
+    const r = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+      signal: controller.signal,
+      ...opts,
+    });
+    clearTimeout(timeoutId);
+    const ct = r.headers.get('content-type') || '';
+    let body;
+    try {
+      body = ct.includes('application/json') ? await r.json() : await r.text();
+    } catch {
+      body = null;
+    }
+    if (!r.ok) {
+      console.warn(`[api] ${r.status} ${path}:`, body);
+      // Preserve original shape when possible
+      if (body && typeof body === 'object') return { ...body, _failed: true, _status: r.status };
+      return { error: `HTTP ${r.status}`, _failed: true, _status: r.status };
+    }
+    return body ?? {};
+  } catch (e) {
+    console.warn(`[api] network error for ${path}:`, e?.message);
+    return { error: e?.message || 'Network error', _failed: true, _network: true };
+  }
 };
 
 const MENU = [
@@ -468,11 +507,40 @@ function AdminNotificationsBell() {
 
 // ============ DASHBOARD ============
 function Dashboard({ setActive }) {
+  // Safe shape — never undefined arrays/nums (prevents .length crashes when API fails)
+  const DEFAULT_STATS = {
+    totalProducts: 0, totalSubscribers: 0, activeSubscribers: 0, totalRepairs: 0, pendingRepairs: 0,
+    totalEmployees: 0, totalZones: 0, onlineZones: 0, totalRevenue: 0, monthlyIncome: 0,
+    totalDebt: 0, lowStockCount: 0, lowStock: [], salesChart: [],
+  };
   const [stats, setStats] = useState(null);
   const [insights, setInsights] = useState([]);
+  const [loadError, setLoadError] = useState(null);
   useEffect(() => {
-    api('dashboard/stats').then(setStats);
-    api('ai/insights').then(d => setInsights(d.insights || []));
+    (async () => {
+      try {
+        const s = await api('dashboard/stats');
+        if (s && !s._failed) {
+          // Merge with defaults to guarantee shape
+          setStats({
+            ...DEFAULT_STATS,
+            ...s,
+            lowStock: Array.isArray(s.lowStock) ? s.lowStock : [],
+            salesChart: Array.isArray(s.salesChart) ? s.salesChart : [],
+          });
+        } else {
+          setStats(DEFAULT_STATS);
+          setLoadError(s?.error || 'تعذر تحميل لوحة المعلومات');
+        }
+      } catch (e) {
+        setStats(DEFAULT_STATS);
+        setLoadError(e?.message || 'خطأ غير متوقع');
+      }
+      try {
+        const d = await api('ai/insights');
+        setInsights(Array.isArray(d?.insights) ? d.insights : []);
+      } catch { setInsights([]); }
+    })();
   }, []);
 
   if (!stats) return <LoadingScreen />;
@@ -490,6 +558,12 @@ function Dashboard({ setActive }) {
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto">
+      {loadError && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 p-3 text-xs flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4" />
+          <span>تعذّر الاتصال ببعض الخدمات. يتم عرض بيانات محدودة. ({loadError})</span>
+        </div>
+      )}
       {/* Hero */}
       <div className="glass-strong rounded-2xl p-8 relative overflow-hidden">
         <div className="absolute -top-20 -left-20 w-64 h-64 bg-gold/20 rounded-full blur-3xl"></div>
@@ -568,7 +642,7 @@ function Dashboard({ setActive }) {
       </Card>
 
       {/* AI Insights */}
-      {insights.length > 0 && (
+      {Array.isArray(insights) && insights.length > 0 && (
         <Card className="glass-strong border-gold-soft">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 gold-text">
@@ -627,7 +701,7 @@ function Dashboard({ setActive }) {
             <CardTitle className="text-base flex items-center gap-2"><Boxes className="w-4 h-4 text-gold" /> منتجات على وشك النفاد</CardTitle>
           </CardHeader>
           <CardContent>
-            {stats.lowStock.length === 0 ? (
+            {!Array.isArray(stats.lowStock) || stats.lowStock.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">المخزون بحالة ممتازة ✓</p>
             ) : (
               <div className="space-y-3">
@@ -663,7 +737,7 @@ function POS() {
   const [showInvoice, setShowInvoice] = useState(null);
   const barcodeRef = useRef(null);
 
-  useEffect(() => { api('products').then(setProducts); }, []);
+  useEffect(() => { api('products').then(setArr(setProducts)); }, []);
 
   const filtered = useMemo(() =>
     products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.sku?.includes(search) || p.barcode?.includes(search))
@@ -688,7 +762,7 @@ function POS() {
     toast.success('تم إصدار الفاتورة بنجاح');
     setShowInvoice(r);
     setCart([]); setDiscount(0); setCustomer('');
-    api('products').then(setProducts);
+    api('products').then(setArr(setProducts));
   };
 
   const handleBarcodeSubmit = async (e) => {
@@ -957,7 +1031,7 @@ function Products() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: '', sku: '', barcode: '', category: 'accessories', price: 0, cost: 0, stock: 0, lowStockAlert: 5, image: '📦' });
 
-  const load = () => api('products').then(setItems);
+  const load = () => api('products').then(setArr(setItems));
   useEffect(() => { load(); }, []);
 
   const filtered = filter === 'all' ? items : items.filter(i => i.category === filter);
@@ -1737,7 +1811,7 @@ function Zones() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: '', location: '', lat: 33.3, lng: 44.4, status: 'online', fats: 1, utilization: 50 });
 
-  const load = () => api('zones').then(setItems);
+  const load = () => api('zones').then(setArr(setItems));
   useEffect(() => { load(); }, []);
 
   const save = async () => {
@@ -1832,13 +1906,28 @@ function Zones() {
 function NOC() {
   const [data, setData] = useState(null);
   useEffect(() => {
-    const fetch = () => api('noc/status').then(setData);
+    const fetch = async () => {
+      const d = await api('noc/status');
+      if (d && !d._failed) {
+        setData({
+          activeConnections: d.activeConnections || 0,
+          totalTraffic: d.totalTraffic || 0,
+          zones: Array.isArray(d.zones) ? d.zones : [],
+          alerts: Array.isArray(d.alerts) ? d.alerts : [],
+          ...d,
+        });
+      } else {
+        setData({ activeConnections: 0, totalTraffic: 0, zones: [], alerts: [] });
+      }
+    };
     fetch();
     const t = setInterval(fetch, 5000);
     return () => clearInterval(t);
   }, []);
 
   if (!data) return <LoadingScreen />;
+  const zones = Array.isArray(data.zones) ? data.zones : [];
+  const alerts = Array.isArray(data.alerts) ? data.alerts : [];
 
   return (
     <div className="max-w-[1600px] mx-auto space-y-4">
@@ -1850,21 +1939,21 @@ function NOC() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="stat-card"><p className="text-xs text-muted-foreground">اتصالات نشطة</p><p className="text-2xl font-bold neon-text">{data.activeConnections}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">اتصالات نشطة</p><p className="text-2xl font-bold neon-text">{data.activeConnections || 0}</p></div>
         <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الترافيك</p><p className="text-2xl font-bold gold-text">{fmt(data.totalTraffic)} Mbps</p></div>
-        <div className="stat-card"><p className="text-xs text-muted-foreground">الزونات</p><p className="text-2xl font-bold">{data.zones.length}</p></div>
-        <div className="stat-card"><p className="text-xs text-muted-foreground">تنبيهات نشطة</p><p className="text-2xl font-bold text-red-400">{data.alerts.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">الزونات</p><p className="text-2xl font-bold">{zones.length}</p></div>
+        <div className="stat-card"><p className="text-xs text-muted-foreground">تنبيهات نشطة</p><p className="text-2xl font-bold text-red-400">{alerts.length}</p></div>
       </div>
 
-      {data.alerts.length > 0 && (
+      {alerts.length > 0 && (
         <Card className="glass-strong border-red-500/30">
           <CardHeader><CardTitle className="text-red-400 flex items-center gap-2"><AlertTriangle className="w-5 h-5" /> تنبيهات حرجة</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {data.alerts.map((a, i) => (
+              {alerts.map((a, i) => (
                 <div key={i} className={`p-3 rounded-lg border ${a.type === 'critical' ? 'bg-red-500/10 border-red-500/30' : 'bg-amber-500/10 border-amber-500/30'} flex items-center justify-between`}>
                   <span className="text-sm">{a.message}</span>
-                  <span className="text-xs text-muted-foreground">{new Date(a.time).toLocaleTimeString('ar-IQ')}</span>
+                  <span className="text-xs text-muted-foreground">{a.time ? new Date(a.time).toLocaleTimeString('ar-IQ') : ''}</span>
                 </div>
               ))}
             </div>
@@ -1873,7 +1962,7 @@ function NOC() {
       )}
 
       <div className="grid lg:grid-cols-2 gap-4">
-        {data.zones.map(z => (
+        {zones.map(z => (
           <Card key={z.id} className={`glass-card border ${z.status === 'online' ? 'border-emerald-500/30' : z.status === 'warning' ? 'border-amber-500/30' : 'border-red-500/30'}`}>
             <CardContent className="p-5 space-y-3">
               <div className="flex items-center justify-between">
@@ -1908,7 +1997,7 @@ function Repairs() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ customerName: '', phone: '', device: '', imei: '', issue: '', technician: '', status: 'pending', cost: 0, partsCost: 0 });
 
-  const load = () => api('repairs').then(setItems);
+  const load = () => api('repairs').then(setArr(setItems));
   useEffect(() => { load(); }, []);
 
   const save = async () => {
@@ -2013,7 +2102,7 @@ function Cameras() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ client: '', location: '', cameras: 4, type: 'تركيب', value: 0, status: 'pending', startDate: new Date().toISOString().slice(0, 10) });
 
-  const load = () => api('camera-contracts').then(setItems);
+  const load = () => api('camera-contracts').then(setArr(setItems));
   useEffect(() => { load(); }, []);
 
   const save = async () => {
@@ -2156,7 +2245,7 @@ function EmployeesList() {
   const [search, setSearch] = useState('');
   const blank = { name: '', username: '', password: '', phone: '', role: '', salary: 500000, kpi: 80, photo: '👤', shiftStart: '08:00', shiftEnd: '17:00', permissions: ['tasks'], status: 'active', attendance: 'present' };
   const [form, setForm] = useState(blank);
-  const load = () => api('employees').then(setItems);
+  const load = () => api('employees').then(setArr(setItems));
   useEffect(() => { load(); }, []);
 
   const save = async () => {
@@ -4945,7 +5034,7 @@ function Agents() {
   const [statsDialog, setStatsDialog] = useState(null);
   const [form, setForm] = useState({ name: '', username: '', password: '', phone: '', branch: '', commission: 20, status: 'active' });
 
-  const load = () => api('agents').then(setItems);
+  const load = () => api('agents').then(setArr(setItems));
   useEffect(() => { load(); }, []);
 
   const save = async () => {
@@ -5228,7 +5317,7 @@ function WhatsAppLog() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [viewing, setViewing] = useState(null);
 
-  const load = () => api('whatsapp-messages').then(setItems);
+  const load = () => api('whatsapp-messages').then(setArr(setItems));
   useEffect(() => { load(); }, []);
 
   const filtered = items.filter(m =>
