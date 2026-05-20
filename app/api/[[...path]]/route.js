@@ -562,10 +562,12 @@ async function handle(request, params) {
     const s = await db.collection('settings').findOne({});
     const username = s?.security?.adminUsername || 'admin';
     const hasPassword = !!s?.security?.adminPasswordHash;
-    return ok({ username, hasPassword });
+    const email = s?.security?.adminEmail || '';
+    const phone = s?.security?.adminPhone || '';
+    return ok({ username, hasPassword, email, phone });
   }
   if (path === 'admin/credentials' && method === 'PUT') {
-    const { currentPassword, newUsername, newPassword } = await getJsonBody(request);
+    const { currentPassword, newUsername, newPassword, email, phone } = await getJsonBody(request);
     const s = await db.collection('settings').findOne({}) || {};
     const storedHash = s?.security?.adminPasswordHash;
     const storedUsername = s?.security?.adminUsername || 'admin';
@@ -586,6 +588,8 @@ async function handle(request, params) {
       if (newPassword.length < 6) return err('كلمة المرور يجب أن لا تقل عن 6 أحرف', 400);
       patch['security.adminPasswordHash'] = await hashPassword(newPassword);
     }
+    if (typeof email === 'string') patch['security.adminEmail'] = email;
+    if (typeof phone === 'string') patch['security.adminPhone'] = phone;
     if (Object.keys(patch).length === 0) return err('لا يوجد ما يُحدَّث', 400);
     await db.collection('settings').updateOne({}, { $set: { ...patch, updatedAt: new Date().toISOString() } }, { upsert: true });
     await logActivity(db, { action: 'admin_credentials_updated', entity: 'admin', user: storedUsername, details: 'تحديث بيانات المدير', ip: clientIp });
@@ -627,6 +631,173 @@ async function handle(request, params) {
       delete s._id;
       return { id: s.id, name: s.name, phone: s.phone, username: s.username, zoneName: s.zoneName, ipAddress: s.ipAddress, address: s.address, userLat: s.userLat, userLng: s.userLng, status: s.status };
     }));
+  }
+
+  // ============ REAL-TIME EVENTS (Server-Sent Events) ============
+  if (path === 'events/stream' && method === 'GET') {
+    const encoder = new TextEncoder();
+    const url = new URL(request.url);
+    const sinceParam = url.searchParams.get('since');
+    let lastTs = sinceParam ? parseInt(sinceParam) || Date.now() : Date.now();
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        let active = true;
+        const send = (event, payload) => {
+          if (!active) return;
+          try {
+            const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
+          } catch {}
+        };
+        send('hello', { ts: Date.now(), msg: 'connected' });
+
+        const tick = async () => {
+          if (!active) return;
+          try {
+            const sinceDate = new Date(lastTs).toISOString();
+            const events = await db.collection('events').find({
+              ts: { $gt: sinceDate },
+            }).sort({ ts: 1 }).limit(50).toArray();
+            for (const e of events) {
+              delete e._id;
+              send(e.type || 'update', e);
+              const t = new Date(e.ts).getTime();
+              if (t > lastTs) lastTs = t;
+            }
+            // Heartbeat
+            send('ping', { ts: Date.now() });
+          } catch (e) {
+            send('error', { error: e.message });
+          }
+        };
+        const interval = setInterval(tick, 3000);
+
+        // Cleanup on abort
+        request.signal.addEventListener('abort', () => {
+          active = false;
+          clearInterval(interval);
+          try { controller.close(); } catch {}
+        });
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  }
+
+  // ============ EMPLOYEE LIVE LOCATION (during task) ============
+  if (path.match(/^employees\/[^/]+\/location$/) && method === 'POST') {
+    const empId = path.split('/')[1];
+    const { lat, lng, accuracy, taskId, source } = await getJsonBody(request);
+    if (typeof lat !== 'number' || typeof lng !== 'number') return err('إحداثيات غير صالحة', 400);
+    const now = new Date().toISOString();
+    const emp = await db.collection('employees').findOne({ id: empId });
+    if (!emp) return err('الموظف غير موجود', 404);
+
+    await db.collection('employees').updateOne(
+      { id: empId },
+      { $set: { lastLat: lat, lastLng: lng, lastAccuracy: accuracy || null, lastLocationAt: now } }
+    );
+    // Log into employee_locations history
+    await db.collection('employee_locations').insertOne({
+      id: uuidv4(), employeeId: empId, employeeName: emp.name,
+      lat, lng, accuracy: accuracy || null, taskId: taskId || null, source: source || 'manual', ts: now,
+    });
+    // If linked to task, also update task
+    if (taskId) {
+      await db.collection('tasks').updateOne({ id: taskId }, { $set: { employeeLat: lat, employeeLng: lng, employeeLocationAt: now } });
+    }
+    // Emit event
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: 'employee_location', employeeId: empId, employeeName: emp.name,
+      lat, lng, accuracy, taskId, ts: now,
+    });
+    return ok({ success: true });
+  }
+
+  // ============ LOCATION UPDATE REQUESTS (employee → admin approval) ============
+  if (path === 'location-update-requests' && method === 'GET') {
+    const url = new URL(request.url);
+    const status = url.searchParams.get('status');
+    const q = status ? { status } : {};
+    const items = await db.collection('location_update_requests').find(q).sort({ createdAt: -1 }).limit(200).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
+  }
+  if (path === 'location-update-requests' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { subscriberId, newLat, newLng, employeeId, employeeName, taskId, notes } = body;
+    if (!subscriberId || typeof newLat !== 'number' || typeof newLng !== 'number') return err('بيانات ناقصة', 400);
+    const sub = await db.collection('subscribers').findOne({ id: subscriberId });
+    if (!sub) return err('المشترك غير موجود', 404);
+    const now = new Date().toISOString();
+    const doc = {
+      id: uuidv4(),
+      subscriberId, subscriberName: sub.name, subscriberPhone: sub.phone,
+      oldLat: sub.userLat ?? null, oldLng: sub.userLng ?? null,
+      newLat, newLng,
+      employeeId, employeeName, taskId: taskId || null,
+      notes: notes || '',
+      status: 'pending',
+      createdAt: now,
+    };
+    await db.collection('location_update_requests').insertOne(doc);
+    delete doc._id;
+    await notifyManager(db, {
+      type: 'location_update_request',
+      title: `📍 طلب تعديل موقع مشترك`,
+      message: `الموظف ${employeeName || '-'} طلب تعديل موقع المشترك ${sub.name}`,
+    });
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: 'location_request_new', requestId: doc.id, subscriberId,
+      subscriberName: sub.name, employeeName, ts: now,
+    });
+    return ok(doc, 201);
+  }
+  if (path.match(/^location-update-requests\/[^/]+\/approve$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const r = await db.collection('location_update_requests').findOne({ id });
+    if (!r) return err('غير موجود', 404);
+    if (r.status !== 'pending') return err('الطلب ليس قيد الانتظار', 400);
+    const now = new Date().toISOString();
+    await db.collection('subscribers').updateOne({ id: r.subscriberId }, { $set: { userLat: r.newLat, userLng: r.newLng, locationUpdatedAt: now, locationUpdatedBy: r.employeeName } });
+    await db.collection('location_update_requests').updateOne({ id }, { $set: { status: 'approved', resolvedAt: now } });
+    await logActivity(db, { action: 'location_update_approved', entity: 'subscribers', entityId: r.subscriberId, user: 'المدير', details: `قبول تعديل موقع ${r.subscriberName} من ${r.employeeName}`, ip: clientIp });
+    // notify employee
+    if (r.employeeId) {
+      await db.collection('notifications').insertOne({
+        id: uuidv4(), userId: r.employeeId, type: 'location_request_approved',
+        title: '✅ تم قبول تعديل الموقع',
+        message: `تم قبول تعديل موقع المشترك ${r.subscriberName}`,
+        read: false, createdAt: now,
+      });
+    }
+    await db.collection('events').insertOne({ id: uuidv4(), type: 'location_request_approved', requestId: id, subscriberId: r.subscriberId, ts: now });
+    return ok({ success: true });
+  }
+  if (path.match(/^location-update-requests\/[^/]+\/reject$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const { reason } = await getJsonBody(request);
+    const r = await db.collection('location_update_requests').findOne({ id });
+    if (!r) return err('غير موجود', 404);
+    const now = new Date().toISOString();
+    await db.collection('location_update_requests').updateOne({ id }, { $set: { status: 'rejected', rejectionReason: reason || '', resolvedAt: now } });
+    if (r.employeeId) {
+      await db.collection('notifications').insertOne({
+        id: uuidv4(), userId: r.employeeId, type: 'location_request_rejected',
+        title: '❌ تم رفض تعديل الموقع',
+        message: `سبب الرفض: ${reason || '-'}`,
+        read: false, createdAt: now,
+      });
+    }
+    await db.collection('events').insertOne({ id: uuidv4(), type: 'location_request_rejected', requestId: id, ts: now });
+    return ok({ success: true });
   }
 
   const collections = {
@@ -699,6 +870,13 @@ async function handle(request, params) {
       });
     }
     await logActivity(db, { action: 'task_created', entity: 'tasks', entityId: doc.id, user: doc.createdBy || 'المدير', details: `إنشاء مهمة "${doc.title}" للموظف ${doc.assignedToName}`, ip: clientIp });
+    // Real-time event
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: 'task_new',
+      taskId: doc.id, title: doc.title, assignedTo: doc.assignedTo, assignedToName: doc.assignedToName,
+      priority: doc.priority, taskType: doc.taskType || 'general',
+      ts: now,
+    });
     return ok(doc, 201);
   }
 
@@ -882,6 +1060,14 @@ async function handle(request, params) {
       entityId: subId,
       details: `تفعيل ${subscriber.name} بباقة ${activation.packageName} لمدة ${durationMonths} شهر بمبلغ ${finalAmount.toLocaleString()} د.ع`,
       timestamp: new Date().toISOString(),
+    });
+
+    // Real-time event
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: 'subscriber_activated',
+      subscriberId: subId, subscriberName: subscriber.name, subscriberPhone: subscriber.phone,
+      amount: finalAmount, packageName: activation.packageName, speed: finalSpeed,
+      ts: new Date().toISOString(),
     });
 
     return ok({ activation, whatsappMessage: waMsg, success: true }, 201);
@@ -1192,6 +1378,12 @@ async function handle(request, params) {
       });
     }
     delete record._id;
+    // Real-time event
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: isLate ? 'attendance_late' : 'attendance_checkin',
+      employeeId, employeeName: emp.name, lateMinutes, isLate, deductionAmount,
+      ts: now.toISOString(),
+    });
     return ok({ success: true, record });
   }
 
@@ -1218,6 +1410,12 @@ async function handle(request, params) {
       title: `🚪 انصراف: ${emp?.name}`,
       message: `بصم الانصراف في ${timeStr}\nالساعات المُنجزة: ${hoursWorked}`,
       employeeId,
+    });
+    // Real-time event
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: 'attendance_checkout',
+      employeeId, employeeName: emp?.name, hoursWorked: Number(hoursWorked),
+      ts: now.toISOString(),
     });
     return ok({ success: true, hoursWorked: Number(hoursWorked) });
   }

@@ -2,6 +2,9 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { GPSMap, Barcode } from '@/components/maps-barcode';
+import { sounds, getSoundSettings, setSoundSettings, browserNotify, requestNotificationPermission } from '@/lib/sounds';
+import { useRealtimeEvents } from '@/lib/useRealtime';
+import { whatsappLink, telegramLink, defaultWhatsAppTemplates, fillTemplate } from '@/lib/messaging';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -55,6 +58,7 @@ const MENU = [
   { id: 'ai', label: 'المساعد الذكي AI', icon: Sparkles, color: 'gold' },
   { id: 'tg-bot', label: 'بوت الإحصائيات (تليجرام)', icon: Send, color: 'neon' },
   { id: 'orders', label: 'المتجر والطلبات', icon: ShoppingCart, color: 'gold' },
+  { id: 'location-requests', label: 'طلبات تعديل المواقع', icon: MapPin, color: 'neon' },
   { id: 'accounting', label: 'المحاسبة المالية', icon: CreditCard, color: 'gold' },
   { id: 'activity', label: 'سجل النشاطات والجلسات', icon: Activity, color: 'rose' },
   { id: 'settings', label: 'الإعدادات', icon: Settings, color: 'neon' },
@@ -64,10 +68,61 @@ const MENU = [
 function App() {
   const [active, setActive] = useState('dashboard');
   const [sidebarOpen, setSidebarOpenRaw] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
   useEffect(() => {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('sidebar_open') : null;
     if (saved !== null) setSidebarOpenRaw(saved === '1');
+    // Request notification permission once
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      setTimeout(() => requestNotificationPermission().catch(() => {}), 2000);
+    }
   }, []);
+
+  // Real-time event listener (SSE)
+  useRealtimeEvents({
+    task_new: (data) => {
+      sounds.newTask();
+      toast.success(`📋 مهمة جديدة: ${data.title}`, { description: `للموظف: ${data.assignedToName || '-'}` });
+      browserNotify('📋 مهمة جديدة', { body: data.title });
+      setRefreshKey(k => k + 1);
+    },
+    subscriber_activated: (data) => {
+      sounds.activation();
+      toast.success(`✅ تفعيل: ${data.subscriberName}`, { description: `${data.packageName} - ${(data.amount || 0).toLocaleString('en-US')} د.ع` });
+      browserNotify('✅ تفعيل مشترك', { body: `${data.subscriberName} - ${data.packageName}` });
+      setRefreshKey(k => k + 1);
+    },
+    attendance_late: (data) => {
+      sounds.late();
+      toast.warning(`⏰ تأخير: ${data.employeeName}`, { description: `بـ ${data.lateMinutes} دقيقة - خصم ${(data.deductionAmount || 0).toLocaleString('en-US')}` });
+      browserNotify('⏰ تأخير موظف', { body: `${data.employeeName} - ${data.lateMinutes}د` });
+      setRefreshKey(k => k + 1);
+    },
+    attendance_checkin: (data) => {
+      sounds.checkin();
+      toast.info(`📍 حضور: ${data.employeeName}`);
+      setRefreshKey(k => k + 1);
+    },
+    attendance_checkout: (data) => {
+      sounds.checkout();
+      toast.info(`🚪 انصراف: ${data.employeeName}`, { description: `${data.hoursWorked} ساعة` });
+      setRefreshKey(k => k + 1);
+    },
+    location_request_new: (data) => {
+      sounds.notification();
+      toast.warning(`📍 طلب تعديل موقع`, { description: `من ${data.employeeName} للمشترك ${data.subscriberName}` });
+      browserNotify('📍 طلب تعديل موقع مشترك', { body: `${data.employeeName} → ${data.subscriberName}` });
+      setRefreshKey(k => k + 1);
+    },
+    order_new: (data) => {
+      sounds.message();
+      toast.success(`🛒 طلب جديد`, { description: data.orderNumber || '' });
+      browserNotify('🛒 طلب متجر جديد');
+      setRefreshKey(k => k + 1);
+    },
+  });
+
   const setSidebarOpen = (v) => {
     const val = typeof v === 'function' ? v(sidebarOpen) : v;
     setSidebarOpenRaw(val);
@@ -100,6 +155,7 @@ function App() {
           {active === 'ai' && <AIAssistant />}
           {active === 'tg-bot' && <TelegramBotPage />}
           {active === 'orders' && <OrdersAdminPage />}
+          {active === 'location-requests' && <LocationRequestsPage />}
           {active === 'accounting' && <AccountingPage />}
           {active === 'activity' && <ActivityLogsPage />}
           {active === 'settings' && <SettingsPage />}
@@ -1076,6 +1132,8 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
   const [durationMonths, setDurationMonths] = useState(1);
   const [agentId, setAgentId] = useState('');
   const [notes, setNotes] = useState('');
+  const [sendChannel, setSendChannel] = useState('whatsapp'); // whatsapp | telegram | none
+  const [editableMessage, setEditableMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -1084,7 +1142,7 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
       setPkgId(''); setSpeed(subscriber.package || ''); setAmount(subscriber.fee || 0);
       setPaymentMethod('cash'); setDurationMonths(1);
       setAgentId(subscriber.agentId || (agents[0]?.id) || '');
-      setNotes(''); setResult(null);
+      setNotes(''); setResult(null); setSendChannel('whatsapp'); setEditableMessage('');
     }
   }, [subscriber, agents]);
 
@@ -1111,9 +1169,20 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
       body: JSON.stringify({ packageId: pkgId, speed, amount: Number(amount), paymentMethod, durationMonths, agentId: agentId || null, notes }),
     });
     setLoading(false);
-    if (r.error) { toast.error(r.error); return; }
+    if (r.error) { toast.error(r.error); sounds.error(); return; }
+    sounds.activation();
     toast.success('✅ تم التفعيل بنجاح');
     setResult(r);
+    setEditableMessage(r.whatsappMessage || '');
+    // Auto-open WhatsApp/Telegram if user selected one
+    if (sendChannel === 'whatsapp' && subscriber.phone && r.whatsappMessage) {
+      const url = whatsappLink(subscriber.phone, r.whatsappMessage);
+      if (url) setTimeout(() => window.open(url, '_blank'), 600);
+    } else if (sendChannel === 'telegram' && subscriber.phone) {
+      // Telegram only supports username deep links, but we can show share URL
+      const url = `https://t.me/share/url?url=${encodeURIComponent(' ')}&text=${encodeURIComponent(r.whatsappMessage || '')}`;
+      setTimeout(() => window.open(url, '_blank'), 600);
+    }
   };
 
   return (
@@ -1185,6 +1254,34 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
               <div className="col-span-2 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs text-emerald-400">
                 ✅ تاريخ الانتهاء التلقائي: <strong className="text-emerald-300">{endDate}</strong>
               </div>
+
+              {/* Send channel selector */}
+              <div className="col-span-2">
+                <Label className="text-xs mb-2 block">📤 طريقة إرسال الإشعار للمشترك</Label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { v: 'whatsapp', icon: '💚', label: 'WhatsApp', color: 'emerald' },
+                    { v: 'telegram', icon: '📨', label: 'Telegram', color: 'cyan' },
+                    { v: 'none', icon: '🔕', label: 'بدون إرسال', color: 'gray' },
+                  ].map(opt => (
+                    <button
+                      key={opt.v}
+                      type="button"
+                      onClick={() => setSendChannel(opt.v)}
+                      className={`p-2 rounded-lg border-2 transition-all text-center ${sendChannel === opt.v ? `border-${opt.color}-500 bg-${opt.color}-500/20` : 'border-gold-soft bg-input/30 hover:border-gold/50'}`}
+                    >
+                      <div className="text-lg">{opt.icon}</div>
+                      <div className="text-[10px] font-bold mt-0.5">{opt.label}</div>
+                    </button>
+                  ))}
+                </div>
+                {sendChannel === 'whatsapp' && (
+                  <p className="text-[10px] text-emerald-400 mt-1.5">✅ سيفتح WhatsApp مباشرة مع الرسالة جاهزة بعد التفعيل</p>
+                )}
+                {sendChannel === 'telegram' && (
+                  <p className="text-[10px] text-cyan-400 mt-1.5">📨 سيفتح Telegram مع نص الرسالة جاهزة</p>
+                )}
+              </div>
             </div>
 
             <DialogFooter>
@@ -1198,14 +1295,33 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
             <div className="text-center p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
               <CheckCircle2 className="w-12 h-12 mx-auto mb-2 text-emerald-400" />
               <h3 className="text-lg font-bold text-emerald-400">تم التفعيل بنجاح</h3>
-              <p className="text-xs text-muted-foreground">تم حفظ التفعيل في السجل وإضافة رسالة واتساب للطابور</p>
+              <p className="text-xs text-muted-foreground">المبلغ: <span className="font-bold gold-text">{Number(result.activation?.amount || 0).toLocaleString('en-US')} د.ع</span> · ينتهي: <span className="font-bold">{new Date(result.activation?.endDate).toLocaleDateString('ar-IQ')}</span></p>
             </div>
-            <div className="p-3 rounded-lg bg-input/30 border border-gold-soft">
-              <p className="text-[10px] text-muted-foreground mb-2">📱 رسالة الواتساب المرسلة:</p>
-              <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed">{result.whatsappMessage}</pre>
+            <div className="p-3 rounded-lg bg-input/30 border border-gold-soft space-y-2">
+              <div className="flex justify-between items-center">
+                <p className="text-[10px] text-muted-foreground">📱 الرسالة (قابلة للتعديل قبل الإرسال):</p>
+                <Button size="sm" variant="ghost" className="h-6 text-[10px] hover:text-gold" onClick={() => setEditableMessage(result.whatsappMessage || '')}>
+                  ↩️ النص الأصلي
+                </Button>
+              </div>
+              <Textarea
+                value={editableMessage}
+                onChange={e => setEditableMessage(e.target.value)}
+                className="bg-background/50 border-gold/20 text-xs font-mono h-48 leading-relaxed"
+                dir="rtl"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <a href={whatsappLink(subscriber.phone, editableMessage) || '#'} target="_blank" rel="noreferrer">
+                <Button className="bg-emerald-500 hover:bg-emerald-600 text-white w-full">
+                  <Send className="w-4 h-4 ml-1" /> فتح WhatsApp وإرسال
+                </Button>
+              </a>
+              <Button onClick={() => { navigator.clipboard?.writeText(editableMessage); toast.success('📋 تم نسخ النص'); }} variant="outline" className="border-gold/30">
+                📋 نسخ النص
+              </Button>
             </div>
             <DialogFooter className="gap-2">
-              <Button onClick={() => { navigator.clipboard?.writeText(result.whatsappMessage); toast.success('تم نسخ الرسالة'); }} variant="outline" className="border-gold/30">نسخ الرسالة</Button>
               <Button onClick={() => { onClose(); onDone(); }} className="btn-gold flex-1">إغلاق</Button>
             </DialogFooter>
           </>
@@ -3176,18 +3292,13 @@ function GeneralSection({ draft, update }) {
           <Textarea value={(g.branches || []).join('\n')} onChange={e => update('general', 'branches', e.target.value.split('\n').filter(Boolean))} className="bg-input/30 border-gold/20 h-24" />
         </Field>
       </div>
-
-      {/* Admin Credentials */}
-      <div className="md:col-span-2">
-        <AdminCredentialsCard />
-      </div>
     </div>
   );
 }
 
 function AdminCredentialsCard() {
   const [current, setCurrent] = useState({ username: 'admin', hasPassword: false });
-  const [form, setForm] = useState({ currentPassword: '', newUsername: '', newPassword: '', confirmPassword: '' });
+  const [form, setForm] = useState({ currentPassword: '', newUsername: '', newPassword: '', confirmPassword: '', email: '', phone: '' });
   const [showCurrent, setShowCurrent] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -3195,22 +3306,40 @@ function AdminCredentialsCard() {
   const load = () => api('admin/credentials').then(d => {
     if (d && !d.error) {
       setCurrent(d);
-      setForm(f => ({ ...f, newUsername: d.username || 'admin' }));
+      setForm(f => ({ ...f, newUsername: d.username || 'admin', email: d.email || '', phone: d.phone || '' }));
     }
   });
   useEffect(() => { load(); }, []);
 
+  // Password strength evaluator
+  const strength = (() => {
+    const p = form.newPassword;
+    if (!p) return { score: 0, label: '', color: '' };
+    let s = 0;
+    if (p.length >= 6) s++;
+    if (p.length >= 10) s++;
+    if (/[A-Z]/.test(p) && /[a-z]/.test(p)) s++;
+    if (/\d/.test(p)) s++;
+    if (/[^A-Za-z0-9]/.test(p)) s++;
+    const labels = ['ضعيفة جداً', 'ضعيفة', 'متوسطة', 'جيدة', 'قوية', 'قوية جداً'];
+    const colors = ['bg-red-500', 'bg-red-400', 'bg-amber-500', 'bg-yellow-500', 'bg-emerald-500', 'bg-emerald-600'];
+    return { score: s, label: labels[s], color: colors[s] };
+  })();
+
   const save = async () => {
     if (form.newPassword && form.newPassword !== form.confirmPassword) {
       toast.error('كلمتا المرور غير متطابقتين');
+      sounds.error();
       return;
     }
     if (form.newPassword && form.newPassword.length < 6) {
       toast.error('كلمة المرور يجب أن لا تقل عن 6 أحرف');
+      sounds.error();
       return;
     }
     if (current.hasPassword && !form.currentPassword) {
       toast.error('أدخل كلمة المرور الحالية للتأكيد');
+      sounds.error();
       return;
     }
     setSaving(true);
@@ -3218,12 +3347,15 @@ function AdminCredentialsCard() {
       currentPassword: form.currentPassword,
       newUsername: form.newUsername !== current.username ? form.newUsername : undefined,
       newPassword: form.newPassword || undefined,
+      email: form.email || undefined,
+      phone: form.phone || undefined,
     };
     const r = await api('admin/credentials', { method: 'PUT', body: JSON.stringify(payload) });
     setSaving(false);
-    if (r?.error) { toast.error(r.error); return; }
+    if (r?.error) { toast.error(r.error); sounds.error(); return; }
     toast.success('✅ تم تحديث بيانات المدير بنجاح');
-    setForm({ currentPassword: '', newUsername: form.newUsername, newPassword: '', confirmPassword: '' });
+    sounds.success();
+    setForm({ ...form, currentPassword: '', newPassword: '', confirmPassword: '' });
     load();
   };
 
@@ -3231,7 +3363,7 @@ function AdminCredentialsCard() {
     <Card className="glass-card border-2 border-amber-500/30 bg-amber-500/5">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2 text-amber-400">
-          🔐 بيانات دخول المدير (المسؤول العام)
+          🔐 بيانات الدخول والمعلومات الشخصية للمدير
         </CardTitle>
         <p className="text-[10px] text-muted-foreground">
           {current.hasPassword
@@ -3253,14 +3385,34 @@ function AdminCredentialsCard() {
             </div>
           </Field>
         )}
-        <Field label="كلمة مرور جديدة" hint="اتركها فارغة لعدم التغيير - 6 أحرف على الأقل">
-          <div className="relative">
-            <Input type={showNew ? 'text' : 'password'} value={form.newPassword} onChange={e => setForm({ ...form, newPassword: e.target.value })} className="bg-input/30 border-gold/20 font-mono pr-10" dir="ltr" placeholder="جديدة (اختياري)" />
-            <button type="button" onClick={() => setShowNew(s => !s)} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-gold">
-              {showNew ? '🙈' : '👁️'}
-            </button>
-          </div>
+        <Field label="📧 البريد الإلكتروني">
+          <Input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="bg-input/30 border-gold/20" dir="ltr" placeholder="admin@ghazlan.iq" />
         </Field>
+        <Field label="📱 رقم الهاتف">
+          <Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className="bg-input/30 border-gold/20 font-mono" dir="ltr" placeholder="07901234567" />
+        </Field>
+        <div>
+          <Field label="كلمة مرور جديدة" hint="6 أحرف على الأقل - استخدم أحرف كبيرة وصغيرة + أرقام + رموز">
+            <div className="relative">
+              <Input type={showNew ? 'text' : 'password'} value={form.newPassword} onChange={e => setForm({ ...form, newPassword: e.target.value })} className="bg-input/30 border-gold/20 font-mono pr-10" dir="ltr" placeholder="جديدة (اختياري)" />
+              <button type="button" onClick={() => setShowNew(s => !s)} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-gold">
+                {showNew ? '🙈' : '👁️'}
+              </button>
+            </div>
+          </Field>
+          {form.newPassword && (
+            <div className="mt-1 space-y-1">
+              <div className="flex gap-0.5 h-1.5">
+                {[1, 2, 3, 4, 5].map(i => (
+                  <div key={i} className={`flex-1 rounded transition-all ${i <= strength.score ? strength.color : 'bg-input/30'}`}></div>
+                ))}
+              </div>
+              <p className={`text-[10px] font-bold ${strength.score >= 4 ? 'text-emerald-400' : strength.score >= 3 ? 'text-yellow-400' : 'text-red-400'}`}>
+                {strength.label}
+              </p>
+            </div>
+          )}
+        </div>
         <Field label="تأكيد كلمة المرور">
           <Input type={showNew ? 'text' : 'password'} value={form.confirmPassword} onChange={e => setForm({ ...form, confirmPassword: e.target.value })} className="bg-input/30 border-gold/20 font-mono" dir="ltr" placeholder="إعادة الإدخال" />
         </Field>
@@ -3499,7 +3651,9 @@ function NotificationsSection({ draft, updateNested }) {
     { key: 'push', label: '🔔 Push' },
   ];
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+      <SoundSettingsCard />
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -3528,6 +3682,113 @@ function NotificationsSection({ draft, updateNested }) {
         </table>
       </div>
     </div>
+  );
+}
+
+function SoundSettingsCard() {
+  const [s, setS] = useState({ enabled: true, volume: 0.5 });
+  const [perm, setPerm] = useState('default');
+
+  useEffect(() => {
+    setS(getSoundSettings());
+    if (typeof window !== 'undefined' && 'Notification' in window) setPerm(Notification.permission);
+  }, []);
+
+  const update = (patch) => {
+    const next = setSoundSettings(patch);
+    setS(next);
+  };
+
+  const testSound = (k) => {
+    sounds[k] && sounds[k]();
+  };
+
+  const askPerm = async () => {
+    const result = await requestNotificationPermission();
+    setPerm(result);
+    if (result === 'granted') {
+      browserNotify('✅ تم تفعيل الإشعارات', { body: 'سيتم إشعارك بالأحداث المهمة حتى لو الصفحة في الخلفية' });
+      toast.success('✅ تم تفعيل إشعارات النظام');
+    } else {
+      toast.error('❌ لم يتم منح الإذن');
+    }
+  };
+
+  return (
+    <Card className="glass-card border-2 border-cyan-500/30 bg-cyan-500/5">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2 text-cyan-400">
+          🔊 الأصوات والإشعارات الفورية
+        </CardTitle>
+        <p className="text-[10px] text-muted-foreground">
+          نظام صوتي ذكي يتفاعل مع الأحداث الحية - يعمل بدون أي ملفات صوتية خارجية
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between p-3 rounded-lg bg-gold/5 border border-gold-soft">
+          <span className="text-sm font-bold">🎵 تفعيل الأصوات</span>
+          <button
+            onClick={() => update({ enabled: !s.enabled })}
+            className={`w-14 h-7 rounded-full transition-all relative ${s.enabled ? 'bg-emerald-500' : 'bg-muted'}`}
+          >
+            <div className={`absolute top-0.5 w-6 h-6 rounded-full bg-white transition-all ${s.enabled ? 'right-0.5' : 'right-[30px]'}`}></div>
+          </button>
+        </div>
+
+        <div>
+          <div className="flex justify-between mb-2">
+            <Label className="text-xs">🔉 مستوى الصوت</Label>
+            <span className="text-xs font-bold gold-text">{Math.round((s.volume || 0) * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            min="0" max="1" step="0.05"
+            value={s.volume || 0}
+            onChange={e => update({ volume: Number(e.target.value) })}
+            disabled={!s.enabled}
+            className="w-full h-2 rounded-full appearance-none bg-input cursor-pointer accent-gold disabled:opacity-50"
+          />
+        </div>
+
+        <div className="p-3 rounded-lg bg-input/30 border border-gold-soft">
+          <p className="text-xs font-bold mb-2">🧪 اختبر الأصوات (انقر للتجربة)</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {[
+              { k: 'notification', l: '🔔 إشعار', c: 'amber' },
+              { k: 'newTask', l: '📋 مهمة', c: 'cyan' },
+              { k: 'late', l: '⏰ تأخير', c: 'red' },
+              { k: 'checkin', l: '📍 حضور', c: 'emerald' },
+              { k: 'checkout', l: '🚪 انصراف', c: 'purple' },
+              { k: 'activation', l: '✅ تفعيل', c: 'emerald' },
+              { k: 'debt', l: '💰 دين', c: 'rose' },
+              { k: 'expiry', l: '🕒 انتهاء', c: 'orange' },
+            ].map(b => (
+              <Button key={b.k} size="sm" variant="outline" onClick={() => testSound(b.k)} className="h-9 text-[11px] border-gold-soft hover:border-gold">
+                {b.l}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <div className="flex justify-between items-center">
+            <div>
+              <p className="text-xs font-bold">🌐 إشعارات المتصفح (Desktop Notifications)</p>
+              <p className="text-[10px] text-muted-foreground">
+                {perm === 'granted' && '✅ مفعّلة - ستتلقى إشعاراً حتى لو كانت الصفحة في الخلفية'}
+                {perm === 'denied' && '❌ تم رفضها - يرجى تفعيلها من إعدادات المتصفح'}
+                {perm === 'default' && '⚠️ غير مفعّلة - اضغط الزر لتفعيلها'}
+              </p>
+            </div>
+            {perm !== 'granted' && (
+              <Button size="sm" onClick={askPerm} className="btn-neon">
+                {perm === 'denied' ? '🔧 من المتصفح' : '🔔 تفعيل'}
+              </Button>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -3638,21 +3899,25 @@ function BackupSection({ draft, update, runBackup }) {
 function SecuritySection({ draft, update }) {
   const s = draft.security || {};
   return (
-    <div className="grid md:grid-cols-2 gap-4">
-      <Field label="مدة الجلسة (دقيقة)"><Input type="number" value={s.sessionTimeoutMinutes || 60} onChange={e => update('security', 'sessionTimeoutMinutes', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
-      <Field label="الحد الأدنى لطول كلمة المرور"><Input type="number" value={s.passwordMinLength || 6} onChange={e => update('security', 'passwordMinLength', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
-      <Field label="حد محاولات الدخول الفاشلة"><Input type="number" value={s.maxLoginAttempts || 5} onChange={e => update('security', 'maxLoginAttempts', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
-      <Field label="مدة القفل بعد الفشل (دقيقة)"><Input type="number" value={s.lockoutMinutes || 15} onChange={e => update('security', 'lockoutMinutes', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
-      <div className="md:col-span-2">
-        <Field label="قائمة IPs المسموحة (سطر لكل IP، فارغ = جميع IPs)">
-          <Textarea value={(s.ipWhitelist || []).join('\n')} onChange={e => update('security', 'ipWhitelist', e.target.value.split('\n').filter(Boolean))} className="bg-input/30 border-gold/20 h-20 font-mono" dir="ltr" />
-        </Field>
-      </div>
-      <div className="md:col-span-2 space-y-2">
-        <Switch checked={s.requireStrongPassword} onChange={v => update('security', 'requireStrongPassword', v)} label="🔐 يتطلب كلمة مرور قوية (أرقام + رموز)" />
-        <Switch checked={s.twoFAEnabled} onChange={v => update('security', 'twoFAEnabled', v)} label="🛡️ تفعيل المصادقة الثنائية 2FA" />
-        <Switch checked={s.auditLogEnabled} onChange={v => update('security', 'auditLogEnabled', v)} label="📋 تسجيل سجل النشاطات Audit Log" />
-        <Switch checked={s.forceLogoutOnPasswordChange} onChange={v => update('security', 'forceLogoutOnPasswordChange', v)} label="🚪 تسجيل خروج إجباري عند تغيير كلمة المرور" />
+    <div className="space-y-4">
+      <AdminCredentialsCard />
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <Field label="مدة الجلسة (دقيقة)"><Input type="number" value={s.sessionTimeoutMinutes || 60} onChange={e => update('security', 'sessionTimeoutMinutes', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        <Field label="الحد الأدنى لطول كلمة المرور"><Input type="number" value={s.passwordMinLength || 6} onChange={e => update('security', 'passwordMinLength', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        <Field label="حد محاولات الدخول الفاشلة"><Input type="number" value={s.maxLoginAttempts || 5} onChange={e => update('security', 'maxLoginAttempts', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        <Field label="مدة القفل بعد الفشل (دقيقة)"><Input type="number" value={s.lockoutMinutes || 15} onChange={e => update('security', 'lockoutMinutes', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        <div className="md:col-span-2">
+          <Field label="قائمة IPs المسموحة (سطر لكل IP، فارغ = جميع IPs)">
+            <Textarea value={(s.ipWhitelist || []).join('\n')} onChange={e => update('security', 'ipWhitelist', e.target.value.split('\n').filter(Boolean))} className="bg-input/30 border-gold/20 h-20 font-mono" dir="ltr" />
+          </Field>
+        </div>
+        <div className="md:col-span-2 space-y-2">
+          <Switch checked={s.requireStrongPassword} onChange={v => update('security', 'requireStrongPassword', v)} label="🔐 يتطلب كلمة مرور قوية (أرقام + رموز)" />
+          <Switch checked={s.twoFAEnabled} onChange={v => update('security', 'twoFAEnabled', v)} label="🛡️ تفعيل المصادقة الثنائية 2FA" />
+          <Switch checked={s.auditLogEnabled} onChange={v => update('security', 'auditLogEnabled', v)} label="📋 تسجيل سجل النشاطات Audit Log" />
+          <Switch checked={s.forceLogoutOnPasswordChange} onChange={v => update('security', 'forceLogoutOnPasswordChange', v)} label="🚪 تسجيل خروج إجباري عند تغيير كلمة المرور" />
+        </div>
       </div>
     </div>
   );
@@ -4204,9 +4469,18 @@ function WhatsAppLog() {
                     <td><Badge className={(statusInfo[m.status] || statusInfo.queued).cls + ' text-[10px]'}>{(statusInfo[m.status] || statusInfo.queued).txt}</Badge></td>
                     <td className="text-xs text-center">{m.retries || 0}</td>
                     <td>
-                      <div className="flex gap-1">
+                      <div className="flex gap-1 flex-wrap">
                         <Button size="sm" variant="outline" className="h-7 text-[10px] border-cyan-500/30 text-cyan-400" onClick={() => setViewing(m)}>عرض</Button>
-                        <Button size="sm" variant="outline" className="h-7 text-[10px] border-gold/30" onClick={() => resend(m.id)}><Send className="w-3 h-3 ml-1" />إرسال</Button>
+                        {m.phone && m.phone !== 'MANAGER' && (
+                          <a href={whatsappLink(m.phone, m.message) || '#'} target="_blank" rel="noreferrer" onClick={() => resend(m.id)}>
+                            <Button size="sm" className="h-7 text-[10px] bg-emerald-500 hover:bg-emerald-600 text-white">
+                              <Send className="w-3 h-3 ml-1" />WhatsApp
+                            </Button>
+                          </a>
+                        )}
+                        <Button size="sm" variant="outline" className="h-7 text-[10px] border-gold/30" onClick={() => resend(m.id)} title="وضع في طابور الإرسال التلقائي">
+                          🔄 إعادة
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -4228,9 +4502,167 @@ function WhatsAppLog() {
               <div className="p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
                 <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed">{viewing.message}</pre>
               </div>
-              <Button onClick={() => { navigator.clipboard?.writeText(viewing.message); toast.success('تم النسخ'); }} className="btn-gold w-full">نسخ الرسالة</Button>
+              <div className="grid grid-cols-2 gap-2">
+                <Button onClick={() => { navigator.clipboard?.writeText(viewing.message); toast.success('تم النسخ'); }} className="btn-gold w-full">📋 نسخ النص</Button>
+                {viewing.phone && viewing.phone !== 'MANAGER' && (
+                  <a href={whatsappLink(viewing.phone, viewing.message) || '#'} target="_blank" rel="noreferrer" className="w-full">
+                    <Button className="bg-emerald-500 hover:bg-emerald-600 text-white w-full">
+                      <Send className="w-4 h-4 ml-2" /> فتح WhatsApp وإرسال
+                    </Button>
+                  </a>
+                )}
+              </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ============ LOCATION UPDATE REQUESTS (Admin) ============
+function LocationRequestsPage() {
+  const [items, setItems] = useState([]);
+  const [filter, setFilter] = useState('pending');
+  const [viewing, setViewing] = useState(null);
+  const [rejectItem, setRejectItem] = useState(null);
+  const [reason, setReason] = useState('');
+
+  const load = () => api(`location-update-requests${filter === 'all' ? '' : `?status=${filter}`}`).then(d => {
+    if (Array.isArray(d)) setItems(d);
+  });
+  useEffect(() => { load(); const i = setInterval(load, 10000); return () => clearInterval(i); }, [filter]);
+
+  const approve = async (r) => {
+    const res = await api(`location-update-requests/${r.id}/approve`, { method: 'POST' });
+    if (res?.error) toast.error(res.error);
+    else { sounds.success(); toast.success('✅ تم تطبيق الموقع الجديد'); load(); }
+  };
+  const reject = async () => {
+    if (!rejectItem) return;
+    const res = await api(`location-update-requests/${rejectItem.id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+    if (res?.error) toast.error(res.error);
+    else { toast.success('❌ تم رفض الطلب'); setRejectItem(null); setReason(''); load(); }
+  };
+
+  const statusLabel = { pending: '🟡 بانتظار المراجعة', approved: '✅ مقبول', rejected: '❌ مرفوض' };
+  const counts = {
+    pending: items.filter(x => x.status === 'pending').length,
+    approved: items.filter(x => x.status === 'approved').length,
+    rejected: items.filter(x => x.status === 'rejected').length,
+  };
+
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <div className="flex justify-between items-center flex-wrap gap-2">
+        <div>
+          <h1 className="text-2xl font-black gold-text flex items-center gap-2">
+            <MapPin className="w-6 h-6" /> طلبات تعديل مواقع المشتركين
+          </h1>
+          <p className="text-xs text-muted-foreground mt-1">طلبات من الموظفين لتعديل إحداثيات GPS للمشتركين</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {[
+          { k: 'pending', l: '🟡 بانتظار المراجعة', c: counts.pending },
+          { k: 'approved', l: '✅ مقبولة', c: counts.approved },
+          { k: 'rejected', l: '❌ مرفوضة', c: counts.rejected },
+          { k: 'all', l: '📋 الكل', c: items.length },
+        ].map(b => (
+          <button key={b.k} onClick={() => setFilter(b.k)}
+            className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${filter === b.k ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground hover:text-gold'}`}>
+            {b.l} <span className="font-bold">({b.c})</span>
+          </button>
+        ))}
+      </div>
+
+      {items.length === 0 ? (
+        <Card className="glass-strong border-gold-soft">
+          <CardContent className="py-12 text-center text-muted-foreground">
+            <MapPin className="w-12 h-12 mx-auto opacity-30 mb-3" />
+            <p className="text-sm">لا توجد طلبات</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-3">
+          {items.map(r => (
+            <Card key={r.id} className={`glass-card ${r.status === 'pending' ? 'border-amber-500/40 ring-1 ring-amber-500/20' : 'border-gold-soft'}`}>
+              <CardContent className="p-4 space-y-3">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h3 className="font-bold gold-text">{r.subscriberName}</h3>
+                    <p className="text-[10px] text-muted-foreground font-mono" dir="ltr">{r.subscriberPhone || '-'}</p>
+                  </div>
+                  <Badge className="text-[10px]">{statusLabel[r.status]}</Badge>
+                </div>
+
+                <div className="text-xs">
+                  <p>👤 الموظف: <span className="font-bold">{r.employeeName}</span></p>
+                  <p className="text-[10px] text-muted-foreground">{new Date(r.createdAt).toLocaleString('ar-IQ')}</p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                  <div className="p-2 rounded bg-red-500/10 border border-red-500/30">
+                    <p className="text-muted-foreground">الموقع القديم</p>
+                    <p className="font-mono" dir="ltr">{r.oldLat?.toFixed?.(5) || '-'}, {r.oldLng?.toFixed?.(5) || '-'}</p>
+                  </div>
+                  <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/30">
+                    <p className="text-muted-foreground">الموقع الجديد</p>
+                    <p className="font-mono text-emerald-400" dir="ltr">{r.newLat?.toFixed?.(5)}, {r.newLng?.toFixed?.(5)}</p>
+                  </div>
+                </div>
+
+                {r.notes && <p className="text-[10px] text-muted-foreground p-2 rounded bg-input/30">📝 {r.notes}</p>}
+
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" className="h-7 text-[10px] flex-1" onClick={() => setViewing(r)}>
+                    🗺️ خريطة مقارنة
+                  </Button>
+                  {r.status === 'pending' && (
+                    <>
+                      <Button size="sm" className="h-7 text-[10px] bg-emerald-500 hover:bg-emerald-600 text-white" onClick={() => approve(r)}>✅ قبول</Button>
+                      <Button size="sm" className="h-7 text-[10px] bg-red-500 hover:bg-red-600 text-white" onClick={() => { setRejectItem(r); setReason(''); }}>❌ رفض</Button>
+                    </>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={!!viewing} onOpenChange={() => setViewing(null)}>
+        <DialogContent className="glass-strong border-cyan-500/40 max-w-3xl">
+          <DialogHeader><DialogTitle className="text-cyan-400">🗺️ خريطة مقارنة - {viewing?.subscriberName}</DialogTitle></DialogHeader>
+          {viewing && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">الموقع القديم</p>
+                  {viewing.oldLat && viewing.oldLng
+                    ? <GPSMap lat={viewing.oldLat} lng={viewing.oldLng} label="القديم" height={300} />
+                    : <div className="h-[300px] rounded bg-input/30 flex items-center justify-center text-xs text-muted-foreground">لا يوجد موقع قديم</div>}
+                </div>
+                <div>
+                  <p className="text-xs text-emerald-400 mb-1">الموقع الجديد المقترح</p>
+                  <GPSMap lat={viewing.newLat} lng={viewing.newLng} label="الجديد" height={300} />
+                </div>
+              </div>
+              <a href={`https://www.google.com/maps/dir/${viewing.oldLat || ''},${viewing.oldLng || ''}/${viewing.newLat},${viewing.newLng}`} target="_blank" rel="noreferrer">
+                <Button className="w-full btn-neon">🗺️ افتح المقارنة في Google Maps</Button>
+              </a>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!rejectItem} onOpenChange={() => { setRejectItem(null); setReason(''); }}>
+        <DialogContent className="glass-strong border-red-500/40">
+          <DialogHeader><DialogTitle className="text-red-400">رفض طلب تعديل الموقع</DialogTitle></DialogHeader>
+          <p className="text-xs">المشترك: <span className="font-bold">{rejectItem?.subscriberName}</span></p>
+          <Textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="سبب الرفض..." className="bg-input/30 border-gold/20 h-24" />
+          <DialogFooter><Button onClick={reject} className="bg-red-500 hover:bg-red-600 text-white w-full">إرسال الرفض</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

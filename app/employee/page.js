@@ -1,6 +1,9 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { GPSMap } from '@/components/maps-barcode';
+import { whatsappLink } from '@/lib/messaging';
+import { sounds } from '@/lib/sounds';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -207,19 +210,52 @@ const PRIORITY_META = {
   low: { label: '🟢 منخفضة', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
 };
 
-function TaskCard({ task, onAccept, onReject, onComplete }) {
+function TaskCard({ task, onAccept, onReject, onComplete, onShareLocation, onEditSubLocation, onCallSub }) {
   const meta = STATUS_META[task.status] || STATUS_META.pending;
   const prio = PRIORITY_META[task.priority] || PRIORITY_META.medium;
+  const isSubTask = task.taskType === 'subscriber_repair';
   return (
-    <Card className="glass-card border-gold-soft">
+    <Card className={`glass-card ${isSubTask ? 'border-cyan-500/40 ring-1 ring-cyan-500/20' : 'border-gold-soft'}`}>
       <CardContent className="p-4 space-y-3">
         <div className="flex justify-between items-start gap-2">
           <div className="flex-1">
-            <h3 className="font-bold text-base">{task.title}</h3>
+            <h3 className="font-bold text-base flex items-center gap-2">
+              {isSubTask && <span className="text-cyan-400">🔧</span>}
+              {task.title}
+            </h3>
             <p className="text-xs text-muted-foreground mt-1">{task.description}</p>
           </div>
           <Badge className={prio.color + ' text-[10px] whitespace-nowrap'}>{prio.label}</Badge>
         </div>
+
+        {/* Subscriber info block */}
+        {isSubTask && task.subscriberName && (
+          <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-xs space-y-1">
+            <div className="flex justify-between items-center">
+              <span className="font-bold">👤 {task.subscriberName}</span>
+              {task.subscriberPhone && (
+                <Button size="sm" className="h-6 text-[10px] bg-emerald-500 hover:bg-emerald-600 text-white px-2" onClick={() => onCallSub && onCallSub(task)}>
+                  📞 اتصال
+                </Button>
+              )}
+            </div>
+            {task.subscriberPhone && (
+              <p className="font-mono text-[10px] text-muted-foreground" dir="ltr">{task.subscriberPhone}</p>
+            )}
+            {task.subscriberAddress && <p className="text-[10px]">📍 {task.subscriberAddress}</p>}
+            {task.faultDescription && <p className="text-[10px] text-red-400">⚠️ {task.faultDescription}</p>}
+            {(task.subscriberLat && task.subscriberLng) && (
+              <div className="mt-2 grid grid-cols-2 gap-1">
+                <a href={`https://waze.com/ul?ll=${task.subscriberLat},${task.subscriberLng}&navigate=yes`} target="_blank" rel="noreferrer">
+                  <Button size="sm" className="h-7 w-full text-[10px] bg-cyan-500 hover:bg-cyan-600 text-white">🚗 Waze</Button>
+                </a>
+                <a href={`https://www.google.com/maps?q=${task.subscriberLat},${task.subscriberLng}`} target="_blank" rel="noreferrer">
+                  <Button size="sm" variant="outline" className="h-7 w-full text-[10px] border-cyan-500/30">🗺️ Maps</Button>
+                </a>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex justify-between text-[10px] text-muted-foreground">
           <span>📅 {task.dueDate}</span>
@@ -241,9 +277,21 @@ function TaskCard({ task, onAccept, onReject, onComplete }) {
           </div>
         )}
 
-        {/* In progress → Complete */}
+        {/* In progress → Complete + share location + edit subscriber location (only subscriber_repair) */}
         {(task.status === 'in_progress' || task.status === 'revision') && (
-          <Button onClick={() => onComplete(task)} className="btn-neon w-full"><Send className="w-4 h-4 ml-1" /> إنهاء المهمة وإرسال التقرير</Button>
+          <div className="space-y-2">
+            {isSubTask && (
+              <div className="grid grid-cols-2 gap-2">
+                <Button onClick={() => onShareLocation && onShareLocation(task)} size="sm" variant="outline" className="h-8 text-[10px] border-emerald-500/30 hover:bg-emerald-500/10 text-emerald-400">
+                  🛰️ مشاركة موقعي
+                </Button>
+                <Button onClick={() => onEditSubLocation && onEditSubLocation(task)} size="sm" variant="outline" className="h-8 text-[10px] border-amber-500/30 hover:bg-amber-500/10 text-amber-400">
+                  📍 تعديل موقع المشترك
+                </Button>
+              </div>
+            )}
+            <Button onClick={() => onComplete(task)} className="btn-neon w-full"><Send className="w-4 h-4 ml-1" /> إنهاء المهمة وإرسال التقرير</Button>
+          </div>
         )}
 
         {/* Show revision notes */}
@@ -410,6 +458,8 @@ function TasksSection({ employeeId }) {
   const [filter, setFilter] = useState('all');
   const [rejectTask, setRejectTask] = useState(null);
   const [completeTask, setCompleteTask] = useState(null);
+  const [editLocTask, setEditLocTask] = useState(null);
+  const liveLocRef = useRef({ taskId: null, watchId: null });
 
   const load = async () => {
     const t = await api(`employees/${employeeId}/tasks`);
@@ -419,7 +469,7 @@ function TasksSection({ employeeId }) {
 
   const accept = async (task) => {
     const r = await api(`tasks/${task.id}/accept`, { method: 'POST', body: JSON.stringify({ employeeId }) });
-    if (r.error) toast.error(r.error); else { toast.success('✅ تم قبول المهمة'); load(); }
+    if (r.error) toast.error(r.error); else { sounds.success(); toast.success('✅ تم قبول المهمة'); load(); }
   };
   const submitReject = async (reason) => {
     const r = await api(`tasks/${rejectTask.id}/reject`, { method: 'POST', body: JSON.stringify({ employeeId, reason }) });
@@ -427,7 +477,57 @@ function TasksSection({ employeeId }) {
   };
   const submitComplete = async (payload) => {
     const r = await api(`tasks/${completeTask.id}/complete`, { method: 'POST', body: JSON.stringify({ employeeId, ...payload }) });
-    if (r.error) toast.error(r.error); else { toast.success('✅ تم إرسال التقرير للمدير'); setCompleteTask(null); load(); }
+    if (r.error) toast.error(r.error); else {
+      sounds.success();
+      toast.success('✅ تم إرسال التقرير للمدير');
+      setCompleteTask(null);
+      // Stop live location tracking if this was the tracked task
+      if (liveLocRef.current.taskId === completeTask.id && liveLocRef.current.watchId !== null) {
+        try { navigator.geolocation.clearWatch(liveLocRef.current.watchId); } catch {}
+        liveLocRef.current = { taskId: null, watchId: null };
+      }
+      load();
+    }
+  };
+
+  // Share live location for a task
+  const shareLocation = (task) => {
+    if (!('geolocation' in navigator)) {
+      toast.error('المتصفح لا يدعم تحديد الموقع');
+      return;
+    }
+    toast.info('📡 جاري الحصول على موقعك...');
+    // First get a quick fix
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      const r = await api(`employees/${employeeId}/location`, {
+        method: 'POST',
+        body: JSON.stringify({ lat: latitude, lng: longitude, accuracy, taskId: task.id, source: 'task_share' }),
+      });
+      if (r?.error) { toast.error(r.error); return; }
+      sounds.success();
+      toast.success(`✅ تم إرسال موقعك (دقة ${Math.round(accuracy || 0)}م)`);
+      load();
+      // Start live tracking watch
+      if (liveLocRef.current.watchId !== null) {
+        try { navigator.geolocation.clearWatch(liveLocRef.current.watchId); } catch {}
+      }
+      const watchId = navigator.geolocation.watchPosition(async (p) => {
+        try {
+          await api(`employees/${employeeId}/location`, {
+            method: 'POST',
+            body: JSON.stringify({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy, taskId: task.id, source: 'live' }),
+          });
+        } catch {}
+      }, () => {}, { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 });
+      liveLocRef.current = { taskId: task.id, watchId };
+    }, (err) => {
+      toast.error('فشل الحصول على الموقع: ' + (err.message || 'غير معروف'));
+    }, { enableHighAccuracy: true, timeout: 15000 });
+  };
+
+  const callSub = (task) => {
+    if (task.subscriberPhone) window.open(`tel:${task.subscriberPhone}`, '_self');
   };
 
   const counts = {
@@ -473,6 +573,9 @@ function TasksSection({ employeeId }) {
               onAccept={accept}
               onReject={setRejectTask}
               onComplete={setCompleteTask}
+              onShareLocation={shareLocation}
+              onEditSubLocation={setEditLocTask}
+              onCallSub={callSub}
             />
           ))}
         </div>
@@ -480,7 +583,109 @@ function TasksSection({ employeeId }) {
 
       <RejectDialog task={rejectTask} open={!!rejectTask} onClose={() => setRejectTask(null)} onSubmit={submitReject} />
       <CompleteDialog task={completeTask} open={!!completeTask} onClose={() => setCompleteTask(null)} onSubmit={submitComplete} />
+      <EditSubscriberLocationDialog task={editLocTask} employeeId={employeeId} open={!!editLocTask} onClose={() => setEditLocTask(null)} />
     </div>
+  );
+}
+
+// ============================== EDIT SUBSCRIBER LOCATION DIALOG ==============================
+function EditSubscriberLocationDialog({ task, employeeId, open, onClose }) {
+  const [lat, setLat] = useState(null);
+  const [lng, setLng] = useState(null);
+  const [notes, setNotes] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open && task) {
+      setLat(task.subscriberLat ?? null);
+      setLng(task.subscriberLng ?? null);
+      setNotes('');
+    }
+  }, [open, task]);
+
+  if (!task) return null;
+
+  const useMyLocation = () => {
+    if (!('geolocation' in navigator)) { toast.error('المتصفح لا يدعم GPS'); return; }
+    toast.info('📡 جاري قراءة موقعك...');
+    navigator.geolocation.getCurrentPosition((pos) => {
+      setLat(pos.coords.latitude);
+      setLng(pos.coords.longitude);
+      toast.success(`✅ تم تحديد الموقع (دقة ${Math.round(pos.coords.accuracy)}م)`);
+      sounds.success();
+    }, (err) => toast.error('فشل: ' + err.message), { enableHighAccuracy: true, timeout: 15000 });
+  };
+
+  const submit = async () => {
+    if (lat === null || lng === null) { toast.error('حدد الموقع أولاً'); return; }
+    setBusy(true);
+    const r = await api('location-update-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        subscriberId: task.subscriberId,
+        newLat: Number(lat),
+        newLng: Number(lng),
+        employeeId,
+        employeeName: task.assignedToName,
+        taskId: task.id,
+        notes,
+      }),
+    });
+    setBusy(false);
+    if (r?.error) { toast.error(r.error); return; }
+    toast.success('✅ تم إرسال طلب التعديل للمدير');
+    sounds.success();
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="glass-strong border-amber-500/40 max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-amber-400 flex items-center gap-2">📍 تعديل موقع المشترك - {task.subscriberName}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="p-2 rounded bg-input/30 border border-gold-soft">
+              <p className="text-muted-foreground text-[10px]">الموقع القديم</p>
+              <p className="font-mono" dir="ltr">{task.subscriberLat?.toFixed?.(5) || '-'}, {task.subscriberLng?.toFixed?.(5) || '-'}</p>
+            </div>
+            <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/30">
+              <p className="text-muted-foreground text-[10px]">الموقع الجديد</p>
+              <p className="font-mono text-emerald-400" dir="ltr">{lat?.toFixed?.(5) || '-'}, {lng?.toFixed?.(5) || '-'}</p>
+            </div>
+          </div>
+
+          <Button onClick={useMyLocation} className="w-full btn-neon">
+            🛰️ استخدام موقعي الحالي (GPS)
+          </Button>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Latitude</Label>
+              <Input type="number" step="0.000001" value={lat ?? ''} onChange={e => setLat(e.target.value === '' ? null : Number(e.target.value))} className="bg-input/30 border-gold/20 font-mono" dir="ltr" />
+            </div>
+            <div>
+              <Label className="text-xs">Longitude</Label>
+              <Input type="number" step="0.000001" value={lng ?? ''} onChange={e => setLng(e.target.value === '' ? null : Number(e.target.value))} className="bg-input/30 border-gold/20 font-mono" dir="ltr" />
+            </div>
+          </div>
+
+          {(lat && lng) && <GPSMap lat={Number(lat)} lng={Number(lng)} label={`${task.subscriberName} (مقترح)`} height={250} />}
+
+          <div>
+            <Label className="text-xs">ملاحظات للمدير</Label>
+            <Textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="مثلاً: الموقع المسجل خاطئ، الموقع الصحيح هو..." className="bg-input/30 border-gold/20 h-20" />
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onClose}>إلغاء</Button>
+          <Button onClick={submit} disabled={busy || lat === null || lng === null} className="btn-gold flex-1">
+            {busy ? '...' : '📤 إرسال طلب التعديل للمدير'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
