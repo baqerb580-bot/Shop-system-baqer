@@ -556,6 +556,79 @@ async function handle(request, params) {
     });
   }
 
+  // ============ ADMIN CREDENTIALS (System) ============
+  if (path === 'admin/credentials' && method === 'GET') {
+    // Returns current admin username only (never the password)
+    const s = await db.collection('settings').findOne({});
+    const username = s?.security?.adminUsername || 'admin';
+    const hasPassword = !!s?.security?.adminPasswordHash;
+    return ok({ username, hasPassword });
+  }
+  if (path === 'admin/credentials' && method === 'PUT') {
+    const { currentPassword, newUsername, newPassword } = await getJsonBody(request);
+    const s = await db.collection('settings').findOne({}) || {};
+    const storedHash = s?.security?.adminPasswordHash;
+    const storedUsername = s?.security?.adminUsername || 'admin';
+    // If a password is already set, currentPassword is required for verification
+    if (storedHash) {
+      if (!currentPassword) return err('كلمة المرور الحالية مطلوبة', 400);
+      const okPw = await verifyPassword(currentPassword, storedHash);
+      if (!okPw) {
+        await logActivity(db, { action: 'admin_password_change_failed', entity: 'admin', user: storedUsername, details: 'كلمة المرور الحالية غير صحيحة', ip: clientIp });
+        return err('كلمة المرور الحالية غير صحيحة', 401);
+      }
+    }
+    const patch = {};
+    if (newUsername && typeof newUsername === 'string' && newUsername.trim().length >= 3) {
+      patch['security.adminUsername'] = newUsername.trim();
+    }
+    if (newPassword && typeof newPassword === 'string') {
+      if (newPassword.length < 6) return err('كلمة المرور يجب أن لا تقل عن 6 أحرف', 400);
+      patch['security.adminPasswordHash'] = await hashPassword(newPassword);
+    }
+    if (Object.keys(patch).length === 0) return err('لا يوجد ما يُحدَّث', 400);
+    await db.collection('settings').updateOne({}, { $set: { ...patch, updatedAt: new Date().toISOString() } }, { upsert: true });
+    await logActivity(db, { action: 'admin_credentials_updated', entity: 'admin', user: storedUsername, details: 'تحديث بيانات المدير', ip: clientIp });
+    return ok({ success: true });
+  }
+  if (path === 'admin/login' && method === 'POST') {
+    const { username, password } = await getJsonBody(request);
+    const s = await db.collection('settings').findOne({}) || {};
+    const u = s?.security?.adminUsername || 'admin';
+    const h = s?.security?.adminPasswordHash;
+    // If no admin password is configured yet → accept default fallback admin/admin
+    if (!h) {
+      if (username === 'admin' && password === 'admin') {
+        await logActivity(db, { action: 'admin_login', entity: 'admin', user: 'admin', details: 'دخول بإعدادات افتراضية', ip: clientIp });
+        return ok({ success: true, username: 'admin', defaultCredentials: true });
+      }
+      return err('بيانات الدخول غير صحيحة', 401);
+    }
+    if (username !== u) return err('بيانات الدخول غير صحيحة', 401);
+    const okPw = await verifyPassword(password, h);
+    if (!okPw) {
+      await logActivity(db, { action: 'admin_login_failed', entity: 'admin', user: username, details: 'كلمة المرور خاطئة', ip: clientIp });
+      return err('بيانات الدخول غير صحيحة', 401);
+    }
+    await logActivity(db, { action: 'admin_login', entity: 'admin', user: u, details: 'دخول ناجح', ip: clientIp });
+    return ok({ success: true, username: u });
+  }
+
+  // ============ SUBSCRIBERS SEARCH (for repair tasks autocomplete) ============
+  if (path === 'subscribers/search' && method === 'GET') {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get('q') || '').trim();
+    if (!q) return ok([]);
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const items = await db.collection('subscribers').find({
+      $or: [{ name: re }, { phone: re }, { username: re }, { ipAddress: re }],
+    }).limit(20).toArray();
+    return ok(items.map(s => {
+      delete s._id;
+      return { id: s.id, name: s.name, phone: s.phone, username: s.username, zoneName: s.zoneName, ipAddress: s.ipAddress, address: s.address, userLat: s.userLat, userLng: s.userLng, status: s.status };
+    }));
+  }
+
   const collections = {
     'products': 'products',
     'subscribers': 'subscribers',

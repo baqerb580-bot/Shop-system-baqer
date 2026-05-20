@@ -1974,6 +1974,210 @@ test_plan:
             GET /api/accounting/summary - returns financial summary: revenue, expenses, profit,
             counts by source (sales, activations, repairs), top debtors.
 
+
+  - task: "Admin Credentials Management"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/admin/credentials - returns {username, hasPassword} where username defaults to 'admin' if not set.
+            PUT /api/admin/credentials - body {currentPassword?, newUsername?, newPassword}. First call (no password set) doesn't require currentPassword.
+            Subsequent calls require currentPassword for verification. Password must be >= 6 chars.
+            POST /api/admin/login - body {username, password}, returns {success, username} or 401.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All admin credentials endpoints working perfectly (10/10 tests passed).
+            GET /api/admin/credentials: Returns username='admin', hasPassword=false initially.
+            PUT /api/admin/credentials (first call): Successfully set username='ghazlan_admin', password='secure123' without currentPassword.
+            GET /api/admin/credentials (after update): Correctly returns username='ghazlan_admin', hasPassword=true.
+            PUT without currentPassword (when password exists): Correctly returns 400 "كلمة المرور الحالية مطلوبة".
+            PUT with WRONG currentPassword: Correctly returns 401 "كلمة المرور الحالية غير صحيحة".
+            PUT with CORRECT currentPassword: Successfully updates password to 'newer123'.
+            PUT with too-short password (<6 chars): Correctly returns 400 "كلمة المرور يجب أن لا تقل عن 6 أحرف".
+            POST /api/admin/login (valid credentials): Returns {success: true, username: 'ghazlan_admin'}.
+            POST /api/admin/login (wrong password): Correctly returns 401 "بيانات الدخول غير صحيحة".
+            POST /api/admin/login (wrong username): Correctly returns 401 "بيانات الدخول غير صحيحة".
+            All validation, error messages, and security checks working correctly.
+
+  - task: "Subscribers Search Endpoint"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/subscribers/search?q= - searches subscribers by name, phone, username, or ipAddress.
+            Returns empty array if query is empty. Limits results to 20. Returns only required fields
+            (id, name, phone, username, zoneName, ipAddress, address, userLat, userLng, status).
+            Removes _id field from results.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Subscribers search endpoint working perfectly (3/3 tests passed).
+            GET /api/subscribers/search?q= (empty query): Returns empty array [] as expected.
+            GET /api/subscribers/search?q=ا (Arabic letter): Found 5 subscribers, all with required fields
+            (id, name, phone, username, zoneName, ipAddress, address, userLat, userLng, status).
+            Verified no _id field present in results.
+            GET /api/subscribers/search?q=07 (phone prefix): Found 8 subscribers matching phone prefix.
+            All results limited to 20 max, structure correct, search working for Arabic text and phone numbers.
+
+  - task: "Payroll Entries Edit/Delete"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Payroll entries use generic CRUD endpoints. PUT /api/payroll-entries/:id updates entry fields.
+            DELETE /api/payroll-entries/:id removes entry. GET /api/payroll-entries returns all entries.
+            POST /api/payroll-entries creates new entry (already tested in previous iteration).
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Payroll entries edit/delete working perfectly (7/7 tests passed).
+            GET /api/payroll-entries: Returns 10 existing entries.
+            POST /api/payroll-entries: Created test deduction entry (amount=25000, reason='خصم تجريبي').
+            PUT /api/payroll-entries/:id: Successfully updated amount to 30000, reason to 'خصم معدّل'.
+            GET /api/payroll-entries (verify update): Entry updated correctly with new values.
+            DELETE /api/payroll-entries/:id: Successfully deleted entry.
+            GET /api/payroll-entries (verify deletion): Entry no longer exists, total entries back to 10.
+            All CRUD operations working correctly with proper data persistence.
+
+  - task: "Tasks with Subscriber Repair Type"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+
+  - agent: "main"
+    message: |
+      🆕 Please test ONLY the NEW endpoints added in this iteration (do not re-test already-passing tasks):
+      
+      1. **Admin Credentials Management** (CRITICAL):
+         - GET /api/admin/credentials → returns {username, hasPassword}
+         - PUT /api/admin/credentials (first call) with {newUsername, newPassword} → success (no currentPassword required)
+         - PUT /api/admin/credentials (subsequent calls) without currentPassword → 400 "كلمة المرور الحالية مطلوبة"
+         - PUT /api/admin/credentials with wrong currentPassword → 401 "كلمة المرور الحالية غير صحيحة"
+         - PUT /api/admin/credentials with correct currentPassword → success
+         - PUT /api/admin/credentials with password < 6 chars → 400 "كلمة المرور يجب أن لا تقل عن 6 أحرف"
+         - POST /api/admin/login with valid credentials → {success: true, username}
+         - POST /api/admin/login with invalid credentials → 401 "بيانات الدخول غير صحيحة"
+      
+      2. **Subscribers Search Endpoint**:
+         - GET /api/subscribers/search?q= (empty) → returns []
+         - GET /api/subscribers/search?q=ا (Arabic letter) → returns matching subscribers (max 20)
+         - GET /api/subscribers/search?q=07 (phone prefix) → returns matching subscribers
+         - Verify results contain: id, name, phone, username, zoneName, ipAddress, address, userLat, userLng, status
+         - Verify results do NOT contain _id field
+      
+      3. **Payroll Entries Edit/Delete**:
+         - GET /api/payroll-entries → returns all entries
+         - POST /api/payroll-entries → create test entry
+         - PUT /api/payroll-entries/:id → update entry
+         - DELETE /api/payroll-entries/:id → delete entry
+         - Verify update and deletion work correctly
+      
+      4. **Tasks with Subscriber Repair Type**:
+         - POST /api/tasks with taskType='subscriber_repair' and subscriber fields → success
+         - Verify task contains: taskType, subscriberId, subscriberName, subscriberPhone, subscriberAddress, subscriberLat, subscriberLng, faultDescription
+         - GET /api/tasks → verify task appears with all custom fields
+         - DELETE test task for cleanup
+      
+      DO NOT TEST:
+      - Already-passing tasks (all previous endpoints)
+      - Frontend (will be tested separately)
+      
+      After testing, reset admin credentials back to username='admin'.
+
+  - agent: "testing"
+    message: |
+      🎉 NEW ENDPOINTS TESTING COMPLETE - ALL TESTS PASSED (24/24)
+      
+      Tested 4 NEW endpoint groups at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ ADMIN CREDENTIALS MANAGEMENT (CRITICAL) - 10/10 tests passed:
+         - GET /api/admin/credentials: Returns {username: 'admin', hasPassword: false} initially
+         - PUT /api/admin/credentials (first call): Successfully set username='ghazlan_admin', password='secure123'
+         - GET /api/admin/credentials (after update): Returns {username: 'ghazlan_admin', hasPassword: true}
+         - PUT without currentPassword (when password exists): Correctly returns 400 "كلمة المرور الحالية مطلوبة"
+         - PUT with WRONG currentPassword: Correctly returns 401 "كلمة المرور الحالية غير صحيحة"
+         - PUT with CORRECT currentPassword: Successfully updates password to 'newer123'
+         - PUT with too-short password (<6 chars): Correctly returns 400 "كلمة المرور يجب أن لا تقل عن 6 أحرف"
+         - POST /api/admin/login (valid credentials): Returns {success: true, username: 'ghazlan_admin'}
+         - POST /api/admin/login (wrong password): Correctly returns 401 "بيانات الدخول غير صحيحة"
+         - POST /api/admin/login (wrong username): Correctly returns 401 "بيانات الدخول غير صحيحة"
+      
+      ✅ SUBSCRIBERS SEARCH ENDPOINT - 3/3 tests passed:
+         - GET /api/subscribers/search?q= (empty query): Returns empty array []
+         - GET /api/subscribers/search?q=ا (Arabic letter): Found 5 subscribers with all required fields
+         - GET /api/subscribers/search?q=07 (phone prefix): Found 8 subscribers
+         - All results have required fields: id, name, phone, username, zoneName, ipAddress, address, userLat, userLng, status
+         - No _id field present in results (MongoDB internal field removed)
+         - Results limited to 20 max as expected
+      
+      ✅ PAYROLL ENTRIES EDIT/DELETE - 7/7 tests passed:
+         - GET /api/payroll-entries: Returns 10 existing entries
+         - POST /api/payroll-entries: Created test deduction (amount=25000, reason='خصم تجريبي')
+         - PUT /api/payroll-entries/:id: Updated amount to 30000, reason to 'خصم معدّل'
+         - GET /api/payroll-entries (verify update): Entry updated correctly
+         - DELETE /api/payroll-entries/:id: Successfully deleted entry
+         - GET /api/payroll-entries (verify deletion): Entry no longer exists
+         - All CRUD operations working correctly
+      
+      ✅ TASKS WITH SUBSCRIBER REPAIR TYPE - 4/4 tests passed:
+         - POST /api/tasks (subscriber_repair): Created task with all subscriber fields
+         - Task contains: taskType='subscriber_repair', subscriberId, subscriberName, subscriberPhone, 
+           subscriberAddress, subscriberLat, subscriberLng, faultDescription
+         - GET /api/tasks: Task appears with all custom fields preserved
+         - DELETE /api/tasks/:id: Successfully deleted test task
+      
+      DATA INTEGRITY VERIFIED:
+      - All endpoints use UUIDs (not MongoDB ObjectIds)
+      - Arabic error messages working correctly
+      - Admin password security: bcrypt hashing, currentPassword verification, minimum length validation
+      - Subscribers search: regex matching, field filtering, limit enforcement
+      - Payroll entries: generic CRUD working correctly
+      - Tasks: custom fields preserved correctly for subscriber_repair type
+      - Admin credentials reset to username='admin' after testing (cleanup successful)
+      
+      NO CRITICAL ISSUES FOUND. All 4 new endpoint groups are production-ready.
+
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/tasks accepts taskType='subscriber_repair' with additional fields: subscriberId,
+            subscriberName, subscriberPhone, subscriberAddress, subscriberLat, subscriberLng, faultDescription.
+            All custom fields are preserved in the task document. GET /api/tasks returns tasks with all fields.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Tasks with subscriber repair type working perfectly (4/4 tests passed).
+            POST /api/tasks (subscriber_repair): Created task with all subscriber fields (taskType, subscriberId,
+            subscriberName, subscriberPhone, subscriberAddress, subscriberLat, subscriberLng, faultDescription).
+            Task created with id, status='pending', all custom fields present in response.
+            GET /api/tasks: Task appears in list with all custom fields preserved correctly.
+            Verified taskType='subscriber_repair' and all subscriber-specific fields intact.
+            DELETE /api/tasks/:id: Successfully deleted test task for cleanup.
+            All subscriber repair task fields working correctly, data persistence verified.
+
 agent_communication:
   - agent: "main"
     message: |

@@ -1,488 +1,493 @@
 #!/usr/bin/env python3
 """
-Backend API Testing for NEW Endpoints (E-commerce Orders, Bcrypt Login, Activity Logs, Accounting)
-Tests only the 4 new tasks as specified in review_request.
+Backend API Testing Script for NEW Endpoints
+Tests: Admin Credentials, Subscribers Search, Payroll Entries CRUD, Tasks with Subscriber Repair Type
 """
 
 import requests
 import json
-import time
 from datetime import datetime
 
 BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
 
-def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+def print_test(name, passed, details=""):
+    status = "✅ PASSED" if passed else "❌ FAILED"
+    print(f"{status} - {name}")
+    if details:
+        print(f"  Details: {details}")
 
-def test_orders_crud():
-    """Test E-commerce Orders endpoints"""
-    log("=" * 80)
-    log("TEST 1: E-COMMERCE ORDERS")
-    log("=" * 80)
+def test_admin_credentials():
+    """Test Admin Credentials Management (GET, PUT, POST)"""
+    print("\n" + "="*80)
+    print("TEST 1: ADMIN CREDENTIALS MANAGEMENT")
+    print("="*80)
     
-    # Get existing products first
-    log("\n1.1 Getting existing products to use in order...")
+    # 1a. GET /api/admin/credentials (initial state)
+    print("\n1a. GET /api/admin/credentials (initial state)")
     try:
-        r = requests.get(f"{BASE_URL}/products", timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: Cannot get products (status {r.status_code})")
-            return False
-        products = r.json()
-        if not products or len(products) == 0:
-            log(f"❌ FAILED: No products found in database")
-            return False
-        product = products[0]
-        log(f"✅ Found product: {product.get('name')} (id: {product.get('id')}, price: {product.get('price')})")
+        resp = requests.get(f"{BASE_URL}/admin/credentials")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        initial_username = data.get('username', 'admin')
+        initial_has_password = data.get('hasPassword', False)
+        print_test("GET /api/admin/credentials", resp.status_code == 200, 
+                   f"username={initial_username}, hasPassword={initial_has_password}")
     except Exception as e:
-        log(f"❌ FAILED: Error getting products: {e}")
-        return False
+        print_test("GET /api/admin/credentials", False, str(e))
+        return
     
-    # Test GET /api/orders (empty or existing)
-    log("\n1.2 Testing GET /api/orders...")
+    # 1b. PUT /api/admin/credentials (first call - no password set yet)
+    print("\n1b. PUT /api/admin/credentials (first call - set initial credentials)")
     try:
-        r = requests.get(f"{BASE_URL}/orders", timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: GET /api/orders returned {r.status_code}")
-            return False
-        orders = r.json()
-        log(f"✅ GET /api/orders returned {len(orders)} orders")
-    except Exception as e:
-        log(f"❌ FAILED: Error getting orders: {e}")
-        return False
-    
-    # Test POST /api/orders with missing data
-    log("\n1.3 Testing POST /api/orders with missing customerName (should fail)...")
-    try:
-        r = requests.post(f"{BASE_URL}/orders", json={
-            "customerPhone": "07701234567",
-            "items": [{"id": product['id'], "quantity": 1}]
-        }, timeout=10)
-        if r.status_code != 400:
-            log(f"❌ FAILED: Expected 400, got {r.status_code}")
-            return False
-        error_msg = r.json().get('error', '')
-        if "بيانات الطلب ناقصة" not in error_msg:
-            log(f"❌ FAILED: Expected Arabic error 'بيانات الطلب ناقصة', got: {error_msg}")
-            return False
-        log(f"✅ Correctly rejected with 400: {error_msg}")
-    except Exception as e:
-        log(f"❌ FAILED: Error testing missing data: {e}")
-        return False
-    
-    # Test POST /api/orders with non-existent product
-    log("\n1.4 Testing POST /api/orders with non-existent product ids...")
-    try:
-        r = requests.post(f"{BASE_URL}/orders", json={
-            "customerName": "أحمد محمد",
-            "customerPhone": "07701234567",
-            "customerAddress": "بغداد - الكرادة",
-            "items": [{"id": "non-existent-id-12345", "quantity": 1}],
-            "paymentMethod": "cod"
-        }, timeout=10)
-        if r.status_code != 400:
-            log(f"❌ FAILED: Expected 400, got {r.status_code}")
-            return False
-        error_msg = r.json().get('error', '')
-        if "لا توجد منتجات صالحة" not in error_msg:
-            log(f"❌ FAILED: Expected Arabic error 'لا توجد منتجات صالحة', got: {error_msg}")
-            return False
-        log(f"✅ Correctly rejected with 400: {error_msg}")
-    except Exception as e:
-        log(f"❌ FAILED: Error testing non-existent product: {e}")
-        return False
-    
-    # Test POST /api/orders with valid data (subtotal < 50000, should have shipping)
-    log("\n1.5 Testing POST /api/orders with valid data (subtotal < 50000)...")
-    try:
-        order_data = {
-            "customerName": "علي حسن",
-            "customerPhone": "07701234567",
-            "customerAddress": "بغداد - الكرادة - شارع 52",
-            "items": [{"id": product['id'], "quantity": 2}],
-            "paymentMethod": "cod",
-            "notes": "توصيل سريع من فضلك"
+        payload = {
+            "newUsername": "ghazlan_admin",
+            "newPassword": "secure123"
         }
-        r = requests.post(f"{BASE_URL}/orders", json=order_data, timeout=10)
-        if r.status_code != 201:
-            log(f"❌ FAILED: Expected 201, got {r.status_code}: {r.text}")
-            return False
-        order = r.json()
-        
-        # Verify order structure
-        if not order.get('orderNumber', '').startswith('ORD-'):
-            log(f"❌ FAILED: orderNumber should start with 'ORD-', got: {order.get('orderNumber')}")
-            return False
-        if order.get('status') != 'pending':
-            log(f"❌ FAILED: status should be 'pending', got: {order.get('status')}")
-            return False
-        
-        # Verify shipping calculation
-        subtotal = order.get('subtotal', 0)
-        shipping = order.get('shipping', 0)
-        total = order.get('total', 0)
-        
-        expected_shipping = 5000 if subtotal < 50000 else 0
-        if shipping != expected_shipping:
-            log(f"❌ FAILED: shipping should be {expected_shipping} (subtotal={subtotal}), got: {shipping}")
-            return False
-        
-        if total != subtotal + shipping:
-            log(f"❌ FAILED: total should be {subtotal + shipping}, got: {total}")
-            return False
-        
-        order_id = order.get('id')
-        log(f"✅ Order created: {order.get('orderNumber')}, subtotal={subtotal}, shipping={shipping}, total={total}")
+        resp = requests.put(f"{BASE_URL}/admin/credentials", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("PUT /api/admin/credentials (first call)", 
+                   resp.status_code == 200 and data.get('success') == True,
+                   "Set username=ghazlan_admin, password=secure123")
     except Exception as e:
-        log(f"❌ FAILED: Error creating order: {e}")
-        return False
+        print_test("PUT /api/admin/credentials (first call)", False, str(e))
+        return
     
-    # Test GET /api/orders?phone=
-    log("\n1.6 Testing GET /api/orders?phone=07701234567...")
+    # 1c. Verify GET reflects changes
+    print("\n1c. GET /api/admin/credentials (verify changes)")
     try:
-        r = requests.get(f"{BASE_URL}/orders?phone=07701234567", timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: GET with phone filter returned {r.status_code}")
-            return False
-        filtered_orders = r.json()
-        if len(filtered_orders) == 0:
-            log(f"❌ FAILED: Expected at least 1 order with phone 07701234567")
-            return False
-        log(f"✅ Phone filter returned {len(filtered_orders)} orders")
+        resp = requests.get(f"{BASE_URL}/admin/credentials")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("GET /api/admin/credentials (after update)", 
+                   data.get('username') == 'ghazlan_admin' and data.get('hasPassword') == True,
+                   f"username={data.get('username')}, hasPassword={data.get('hasPassword')}")
     except Exception as e:
-        log(f"❌ FAILED: Error testing phone filter: {e}")
-        return False
+        print_test("GET /api/admin/credentials (after update)", False, str(e))
     
-    # Test POST /api/orders/:id/status with invalid status
-    log("\n1.7 Testing POST /api/orders/:id/status with invalid status...")
+    # 1d. PUT without currentPassword (should fail with 400)
+    print("\n1d. PUT /api/admin/credentials (without currentPassword - should fail)")
     try:
-        r = requests.post(f"{BASE_URL}/orders/{order_id}/status", json={
-            "status": "invalid_status"
-        }, timeout=10)
-        if r.status_code != 400:
-            log(f"❌ FAILED: Expected 400, got {r.status_code}")
-            return False
-        error_msg = r.json().get('error', '')
-        if "حالة غير صالحة" not in error_msg:
-            log(f"❌ FAILED: Expected Arabic error 'حالة غير صالحة', got: {error_msg}")
-            return False
-        log(f"✅ Correctly rejected invalid status with 400: {error_msg}")
+        payload = {
+            "newUsername": "test_admin",
+            "newPassword": "newpass123"
+        }
+        resp = requests.put(f"{BASE_URL}/admin/credentials", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("PUT without currentPassword", 
+                   resp.status_code == 400 and 'كلمة المرور الحالية مطلوبة' in data.get('error', ''),
+                   f"Status: {resp.status_code}, Error: {data.get('error', '')}")
     except Exception as e:
-        log(f"❌ FAILED: Error testing invalid status: {e}")
-        return False
+        print_test("PUT without currentPassword", False, str(e))
     
-    # Test POST /api/orders/:id/status to confirmed
-    log("\n1.8 Testing POST /api/orders/:id/status to 'confirmed'...")
+    # 1e. PUT with WRONG currentPassword (should fail with 401)
+    print("\n1e. PUT /api/admin/credentials (with WRONG currentPassword - should fail)")
     try:
-        r = requests.post(f"{BASE_URL}/orders/{order_id}/status", json={
-            "status": "confirmed"
-        }, timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: Status update to confirmed returned {r.status_code}: {r.text}")
-            return False
-        log(f"✅ Order status updated to 'confirmed'")
+        payload = {
+            "currentPassword": "wrongpassword",
+            "newPassword": "newer123"
+        }
+        resp = requests.put(f"{BASE_URL}/admin/credentials", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("PUT with WRONG currentPassword", 
+                   resp.status_code == 401 and 'كلمة المرور الحالية غير صحيحة' in data.get('error', ''),
+                   f"Status: {resp.status_code}, Error: {data.get('error', '')}")
     except Exception as e:
-        log(f"❌ FAILED: Error updating status to confirmed: {e}")
-        return False
+        print_test("PUT with WRONG currentPassword", False, str(e))
     
-    # Get product stock before delivery
-    log("\n1.9 Getting product stock before delivery...")
+    # 1f. PUT with CORRECT currentPassword (should succeed)
+    print("\n1f. PUT /api/admin/credentials (with CORRECT currentPassword)")
     try:
-        r = requests.get(f"{BASE_URL}/products", timeout=10)
-        products_before = r.json()
-        product_before = next((p for p in products_before if p['id'] == product['id']), None)
-        if not product_before:
-            log(f"❌ FAILED: Cannot find product after order creation")
-            return False
-        stock_before = product_before.get('stock', 0)
-        log(f"✅ Product stock before delivery: {stock_before}")
+        payload = {
+            "currentPassword": "secure123",
+            "newPassword": "newer123"
+        }
+        resp = requests.put(f"{BASE_URL}/admin/credentials", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("PUT with CORRECT currentPassword", 
+                   resp.status_code == 200 and data.get('success') == True,
+                   "Password updated to newer123")
     except Exception as e:
-        log(f"❌ FAILED: Error getting product stock: {e}")
-        return False
+        print_test("PUT with CORRECT currentPassword", False, str(e))
     
-    # Test POST /api/orders/:id/status to delivered (should decrement stock)
-    log("\n1.10 Testing POST /api/orders/:id/status to 'delivered' (should decrement stock)...")
+    # 1g. PUT with too-short password (should fail with 400)
+    print("\n1g. PUT /api/admin/credentials (with too-short password - should fail)")
     try:
-        r = requests.post(f"{BASE_URL}/orders/{order_id}/status", json={
-            "status": "delivered"
-        }, timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: Status update to delivered returned {r.status_code}: {r.text}")
-            return False
-        log(f"✅ Order status updated to 'delivered'")
-        
-        # Verify stock was decremented
-        time.sleep(0.5)  # Small delay to ensure DB update
-        r = requests.get(f"{BASE_URL}/products", timeout=10)
-        products_after = r.json()
-        product_after = next((p for p in products_after if p['id'] == product['id']), None)
-        if not product_after:
-            log(f"❌ FAILED: Cannot find product after delivery")
-            return False
-        stock_after = product_after.get('stock', 0)
-        
-        expected_stock = stock_before - 2  # We ordered quantity 2
-        if stock_after != expected_stock:
-            log(f"❌ FAILED: Stock should be {expected_stock} (was {stock_before}, ordered 2), got: {stock_after}")
-            return False
-        log(f"✅ Product stock correctly decremented: {stock_before} → {stock_after}")
+        payload = {
+            "currentPassword": "newer123",
+            "newPassword": "abc"
+        }
+        resp = requests.put(f"{BASE_URL}/admin/credentials", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("PUT with too-short password", 
+                   resp.status_code == 400 and 'كلمة المرور يجب أن لا تقل عن 6 أحرف' in data.get('error', ''),
+                   f"Status: {resp.status_code}, Error: {data.get('error', '')}")
     except Exception as e:
-        log(f"❌ FAILED: Error testing delivery stock decrement: {e}")
-        return False
+        print_test("PUT with too-short password", False, str(e))
     
-    # Test DELETE /api/orders/:id
-    log("\n1.11 Testing DELETE /api/orders/:id...")
+    # 1h. POST /api/admin/login (with matching credentials)
+    print("\n1h. POST /api/admin/login (with matching credentials)")
     try:
-        r = requests.delete(f"{BASE_URL}/orders/{order_id}", timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: DELETE returned {r.status_code}: {r.text}")
-            return False
-        log(f"✅ Order deleted successfully")
+        payload = {
+            "username": "ghazlan_admin",
+            "password": "newer123"
+        }
+        resp = requests.post(f"{BASE_URL}/admin/login", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("POST /api/admin/login (valid credentials)", 
+                   resp.status_code == 200 and data.get('success') == True and data.get('username') == 'ghazlan_admin',
+                   f"success={data.get('success')}, username={data.get('username')}")
     except Exception as e:
-        log(f"❌ FAILED: Error deleting order: {e}")
-        return False
+        print_test("POST /api/admin/login (valid credentials)", False, str(e))
     
-    log("\n✅ ALL E-COMMERCE ORDERS TESTS PASSED")
-    return True
+    # 1i. POST /api/admin/login (with wrong password)
+    print("\n1i. POST /api/admin/login (with wrong password - should fail)")
+    try:
+        payload = {
+            "username": "ghazlan_admin",
+            "password": "wrongpass"
+        }
+        resp = requests.post(f"{BASE_URL}/admin/login", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("POST /api/admin/login (wrong password)", 
+                   resp.status_code == 401 and 'بيانات الدخول غير صحيحة' in data.get('error', ''),
+                   f"Status: {resp.status_code}, Error: {data.get('error', '')}")
+    except Exception as e:
+        print_test("POST /api/admin/login (wrong password)", False, str(e))
+    
+    # 1j. POST /api/admin/login (with wrong username)
+    print("\n1j. POST /api/admin/login (with wrong username - should fail)")
+    try:
+        payload = {
+            "username": "wronguser",
+            "password": "newer123"
+        }
+        resp = requests.post(f"{BASE_URL}/admin/login", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("POST /api/admin/login (wrong username)", 
+                   resp.status_code == 401 and 'بيانات الدخول غير صحيحة' in data.get('error', ''),
+                   f"Status: {resp.status_code}, Error: {data.get('error', '')}")
+    except Exception as e:
+        print_test("POST /api/admin/login (wrong username)", False, str(e))
+    
+    # Return the last known password for cleanup
+    return "newer123"
 
-
-def test_bcrypt_login():
-    """Test Bcrypt Employee Login with auto-upgrade"""
-    log("\n" + "=" * 80)
-    log("TEST 2: BCRYPT EMPLOYEE LOGIN + AUTO-UPGRADE")
-    log("=" * 80)
+def test_subscribers_search():
+    """Test Subscribers Search Endpoint"""
+    print("\n" + "="*80)
+    print("TEST 2: SUBSCRIBERS SEARCH ENDPOINT")
+    print("="*80)
     
-    # Test with amer/2004 (should be plaintext initially or already upgraded)
-    log("\n2.1 Testing login with amer/2004...")
+    # 2a. GET /api/subscribers/search?q= (empty query)
+    print("\n2a. GET /api/subscribers/search?q= (empty query)")
     try:
-        r = requests.post(f"{BASE_URL}/employees/login", json={
-            "username": "amer",
-            "password": "2004"
-        }, timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: Login returned {r.status_code}: {r.text}")
-            return False
-        data = r.json()
-        if not data.get('success'):
-            log(f"❌ FAILED: Login success should be true")
-            return False
-        if not data.get('token'):
-            log(f"❌ FAILED: Token should be present")
-            return False
-        if not data.get('employee'):
-            log(f"❌ FAILED: Employee object should be present")
-            return False
-        log(f"✅ Login successful: {data.get('employee', {}).get('name')}, token: {data.get('token')[:20]}...")
+        resp = requests.get(f"{BASE_URL}/subscribers/search?q=")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)[:200]}")
+        print_test("GET /api/subscribers/search (empty query)", 
+                   resp.status_code == 200 and isinstance(data, list) and len(data) == 0,
+                   f"Returned {len(data)} results (expected 0)")
     except Exception as e:
-        log(f"❌ FAILED: Error testing login: {e}")
-        return False
+        print_test("GET /api/subscribers/search (empty query)", False, str(e))
     
-    # Test with admin/admin (another valid credential)
-    log("\n2.2 Testing login with admin/admin...")
+    # 2b. GET /api/subscribers/search?q=ا (single Arabic letter)
+    print("\n2b. GET /api/subscribers/search?q=ا (single Arabic letter)")
     try:
-        r = requests.post(f"{BASE_URL}/employees/login", json={
-            "username": "admin",
-            "password": "admin"
-        }, timeout=10)
-        if r.status_code != 200:
-            log(f"⚠️  admin/admin login failed (may not exist): {r.status_code}")
+        resp = requests.get(f"{BASE_URL}/subscribers/search?q=ا")
+        data = resp.json()
+        print(f"Response: Found {len(data)} subscribers")
+        if len(data) > 0:
+            print(f"First result: {json.dumps(data[0], ensure_ascii=False)}")
+            # Verify structure
+            first = data[0]
+            has_required_fields = all(k in first for k in ['id', 'name', 'phone', 'username', 'zoneName', 'ipAddress', 'address', 'userLat', 'userLng', 'status'])
+            has_no_mongo_id = '_id' not in first
+            print_test("GET /api/subscribers/search (Arabic letter)", 
+                       resp.status_code == 200 and len(data) <= 20 and has_required_fields and has_no_mongo_id,
+                       f"Found {len(data)} results, has all required fields, no _id field")
         else:
-            data = r.json()
-            if data.get('success'):
-                log(f"✅ Login successful: {data.get('employee', {}).get('name')}")
+            print_test("GET /api/subscribers/search (Arabic letter)", 
+                       resp.status_code == 200,
+                       "No subscribers found (DB might be empty)")
     except Exception as e:
-        log(f"⚠️  admin/admin test skipped: {e}")
+        print_test("GET /api/subscribers/search (Arabic letter)", False, str(e))
     
-    # Test login again (should still work with bcrypt)
-    log("\n2.3 Testing login again (password should be upgraded to bcrypt now)...")
+    # 2c. GET /api/subscribers/search?q=07 (phone number prefix)
+    print("\n2c. GET /api/subscribers/search?q=07 (phone number prefix)")
     try:
-        r = requests.post(f"{BASE_URL}/employees/login", json={
-            "username": "amer",
-            "password": "2004"
-        }, timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: Second login returned {r.status_code}: {r.text}")
-            return False
-        data = r.json()
-        if not data.get('success'):
-            log(f"❌ FAILED: Second login success should be true")
-            return False
-        log(f"✅ Second login successful (bcrypt.compare working)")
-    except Exception as e:
-        log(f"❌ FAILED: Error testing second login: {e}")
-        return False
-    
-    # Test with wrong password
-    log("\n2.4 Testing login with wrong password...")
-    try:
-        r = requests.post(f"{BASE_URL}/employees/login", json={
-            "username": "amer",
-            "password": "wrong_password"
-        }, timeout=10)
-        if r.status_code != 401:
-            log(f"❌ FAILED: Expected 401, got {r.status_code}")
-            return False
-        error_msg = r.json().get('error', '')
-        if "بيانات الدخول خاطئة" not in error_msg:
-            log(f"❌ FAILED: Expected Arabic error 'بيانات الدخول خاطئة', got: {error_msg}")
-            return False
-        log(f"✅ Correctly rejected wrong password with 401: {error_msg}")
-    except Exception as e:
-        log(f"❌ FAILED: Error testing wrong password: {e}")
-        return False
-    
-    log("\n✅ ALL BCRYPT LOGIN TESTS PASSED")
-    return True
-
-
-def test_activity_logs():
-    """Test Activity Logs endpoint"""
-    log("\n" + "=" * 80)
-    log("TEST 3: ACTIVITY LOGS")
-    log("=" * 80)
-    
-    # Test GET /api/activity-logs
-    log("\n3.1 Testing GET /api/activity-logs...")
-    try:
-        r = requests.get(f"{BASE_URL}/activity-logs", timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: GET /api/activity-logs returned {r.status_code}")
-            return False
-        logs = r.json()
-        if not isinstance(logs, list):
-            log(f"❌ FAILED: Expected array, got: {type(logs)}")
-            return False
-        log(f"✅ GET /api/activity-logs returned {len(logs)} log entries")
-        
-        # Check if we have order_created from previous test
-        order_created_logs = [l for l in logs if l.get('action') == 'order_created']
-        if len(order_created_logs) > 0:
-            log(f"✅ Found {len(order_created_logs)} 'order_created' activity log entries")
+        resp = requests.get(f"{BASE_URL}/subscribers/search?q=07")
+        data = resp.json()
+        print(f"Response: Found {len(data)} subscribers")
+        if len(data) > 0:
+            print(f"First result: {json.dumps(data[0], ensure_ascii=False)}")
+            print_test("GET /api/subscribers/search (phone prefix)", 
+                       resp.status_code == 200 and len(data) <= 20,
+                       f"Found {len(data)} results matching phone prefix '07'")
         else:
-            log(f"⚠️  No 'order_created' entries found (may have been deleted)")
-        
-        # Check if we have login_failed from previous test
-        login_failed_logs = [l for l in logs if l.get('action') == 'login_failed']
-        if len(login_failed_logs) > 0:
-            log(f"✅ Found {len(login_failed_logs)} 'login_failed' activity log entries")
-        else:
-            log(f"⚠️  No 'login_failed' entries found")
-        
-        # Show sample log entry structure
-        if len(logs) > 0:
-            sample = logs[0]
-            log(f"✅ Sample log entry: action={sample.get('action')}, entity={sample.get('entity')}, user={sample.get('user')}")
+            print_test("GET /api/subscribers/search (phone prefix)", 
+                       resp.status_code == 200,
+                       "No subscribers found with phone prefix '07'")
     except Exception as e:
-        log(f"❌ FAILED: Error getting activity logs: {e}")
-        return False
-    
-    log("\n✅ ALL ACTIVITY LOGS TESTS PASSED")
-    return True
+        print_test("GET /api/subscribers/search (phone prefix)", False, str(e))
 
-
-def test_accounting_summary():
-    """Test Accounting Summary endpoint"""
-    log("\n" + "=" * 80)
-    log("TEST 4: ACCOUNTING SUMMARY")
-    log("=" * 80)
+def test_payroll_entries_crud():
+    """Test Payroll Entries Edit/Delete"""
+    print("\n" + "="*80)
+    print("TEST 3: PAYROLL ENTRIES EDIT/DELETE")
+    print("="*80)
     
-    # Test GET /api/accounting/summary
-    log("\n4.1 Testing GET /api/accounting/summary...")
+    # Get an employee to use for testing
+    print("\n3a. Get an employee for testing")
     try:
-        r = requests.get(f"{BASE_URL}/accounting/summary", timeout=10)
-        if r.status_code != 200:
-            log(f"❌ FAILED: GET /api/accounting/summary returned {r.status_code}")
-            return False
-        summary = r.json()
-        
-        # Verify structure
-        required_keys = ['period', 'revenue', 'expenses', 'netProfit', 'debts', 'counts', 'breakdown']
-        for key in required_keys:
-            if key not in summary:
-                log(f"❌ FAILED: Missing key '{key}' in summary")
-                return False
-        
-        # Verify revenue structure
-        revenue = summary.get('revenue', {})
-        if not all(k in revenue for k in ['sales', 'activations', 'repairs', 'total']):
-            log(f"❌ FAILED: Revenue missing required keys")
-            return False
-        
-        # Verify expenses structure
-        expenses = summary.get('expenses', {})
-        if not all(k in expenses for k in ['bonuses', 'salaries', 'advances', 'total']):
-            log(f"❌ FAILED: Expenses missing required keys")
-            return False
-        
-        # Verify debts structure
-        debts = summary.get('debts', {})
-        if not all(k in debts for k in ['count', 'total', 'topDebtors']):
-            log(f"❌ FAILED: Debts missing required keys")
-            return False
-        
-        # Verify counts structure
-        counts = summary.get('counts', {})
-        if not all(k in counts for k in ['sales', 'activations', 'repairs']):
-            log(f"❌ FAILED: Counts missing required keys")
-            return False
-        
-        # Verify breakdown is array
-        breakdown = summary.get('breakdown', [])
-        if not isinstance(breakdown, list):
-            log(f"❌ FAILED: Breakdown should be array")
-            return False
-        
-        log(f"✅ Accounting summary structure valid")
-        log(f"   Period: {summary.get('period')}")
-        log(f"   Revenue: {revenue.get('total')} (sales: {revenue.get('sales')}, activations: {revenue.get('activations')}, repairs: {revenue.get('repairs')})")
-        log(f"   Expenses: {expenses.get('total')} (bonuses: {expenses.get('bonuses')}, salaries: {expenses.get('salaries')}, advances: {expenses.get('advances')})")
-        log(f"   Net Profit: {summary.get('netProfit')}")
-        log(f"   Debts: {debts.get('count')} debtors, total: {debts.get('total')}")
-        log(f"   Counts: {counts.get('sales')} sales, {counts.get('activations')} activations, {counts.get('repairs')} repairs")
-        log(f"   Breakdown: {len(breakdown)} entries")
-        log(f"   Top Debtors: {len(debts.get('topDebtors', []))} entries")
+        resp = requests.get(f"{BASE_URL}/employees")
+        employees = resp.json()
+        if len(employees) == 0:
+            print_test("Get employees", False, "No employees found in DB")
+            return
+        employee = employees[0]
+        employee_id = employee['id']
+        employee_name = employee['name']
+        print_test("Get employees", True, f"Using employee: {employee_name} (id: {employee_id})")
     except Exception as e:
-        log(f"❌ FAILED: Error getting accounting summary: {e}")
-        return False
+        print_test("Get employees", False, str(e))
+        return
     
-    log("\n✅ ALL ACCOUNTING SUMMARY TESTS PASSED")
-    return True
+    # 3b. Get existing payroll entries
+    print("\n3b. GET /api/payroll-entries (before creating test entry)")
+    try:
+        resp = requests.get(f"{BASE_URL}/payroll-entries")
+        entries_before = resp.json()
+        print(f"Response: Found {len(entries_before)} existing payroll entries")
+        print_test("GET /api/payroll-entries", resp.status_code == 200, f"Found {len(entries_before)} entries")
+    except Exception as e:
+        print_test("GET /api/payroll-entries", False, str(e))
+        return
+    
+    # 3c. POST /api/payroll-entries (create test entry)
+    print("\n3c. POST /api/payroll-entries (create test deduction)")
+    try:
+        payload = {
+            "employeeId": employee_id,
+            "employeeName": employee_name,
+            "type": "deduction",
+            "amount": 25000,
+            "reason": "خصم تجريبي",
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "auto": False
+        }
+        resp = requests.post(f"{BASE_URL}/payroll-entries", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        entry_id = data.get('id')
+        print_test("POST /api/payroll-entries", 
+                   resp.status_code == 201 and entry_id is not None,
+                   f"Created entry with id: {entry_id}")
+    except Exception as e:
+        print_test("POST /api/payroll-entries", False, str(e))
+        return
+    
+    # 3d. PUT /api/payroll-entries/:id (update entry)
+    print("\n3d. PUT /api/payroll-entries/:id (update entry)")
+    try:
+        payload = {
+            "amount": 30000,
+            "reason": "خصم معدّل"
+        }
+        resp = requests.put(f"{BASE_URL}/payroll-entries/{entry_id}", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("PUT /api/payroll-entries/:id", 
+                   resp.status_code == 200 and data.get('amount') == 30000 and data.get('reason') == 'خصم معدّل',
+                   f"Updated amount to {data.get('amount')}, reason to '{data.get('reason')}'")
+    except Exception as e:
+        print_test("PUT /api/payroll-entries/:id", False, str(e))
+    
+    # 3e. GET /api/payroll-entries (verify update)
+    print("\n3e. GET /api/payroll-entries (verify update)")
+    try:
+        resp = requests.get(f"{BASE_URL}/payroll-entries")
+        entries = resp.json()
+        updated_entry = next((e for e in entries if e['id'] == entry_id), None)
+        if updated_entry:
+            print(f"Updated entry: {json.dumps(updated_entry, ensure_ascii=False)}")
+            print_test("GET /api/payroll-entries (verify update)", 
+                       updated_entry['amount'] == 30000 and updated_entry['reason'] == 'خصم معدّل',
+                       "Entry updated correctly")
+        else:
+            print_test("GET /api/payroll-entries (verify update)", False, "Entry not found")
+    except Exception as e:
+        print_test("GET /api/payroll-entries (verify update)", False, str(e))
+    
+    # 3f. DELETE /api/payroll-entries/:id
+    print("\n3f. DELETE /api/payroll-entries/:id")
+    try:
+        resp = requests.delete(f"{BASE_URL}/payroll-entries/{entry_id}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("DELETE /api/payroll-entries/:id", 
+                   resp.status_code == 200 and data.get('success') == True,
+                   "Entry deleted successfully")
+    except Exception as e:
+        print_test("DELETE /api/payroll-entries/:id", False, str(e))
+    
+    # 3g. GET /api/payroll-entries (verify deletion)
+    print("\n3g. GET /api/payroll-entries (verify deletion)")
+    try:
+        resp = requests.get(f"{BASE_URL}/payroll-entries")
+        entries_after = resp.json()
+        deleted_entry = next((e for e in entries_after if e['id'] == entry_id), None)
+        print_test("GET /api/payroll-entries (verify deletion)", 
+                   deleted_entry is None,
+                   f"Entry no longer exists. Total entries: {len(entries_after)}")
+    except Exception as e:
+        print_test("GET /api/payroll-entries (verify deletion)", False, str(e))
 
+def test_tasks_subscriber_repair():
+    """Test Tasks with Subscriber Repair Type"""
+    print("\n" + "="*80)
+    print("TEST 4: TASKS WITH SUBSCRIBER REPAIR TYPE")
+    print("="*80)
+    
+    # Get an employee and subscriber for testing
+    print("\n4a. Get employee and subscriber for testing")
+    try:
+        resp = requests.get(f"{BASE_URL}/employees")
+        employees = resp.json()
+        if len(employees) == 0:
+            print_test("Get employees", False, "No employees found")
+            return
+        employee = employees[0]
+        employee_id = employee['id']
+        
+        resp = requests.get(f"{BASE_URL}/subscribers")
+        subscribers = resp.json()
+        if len(subscribers) == 0:
+            print_test("Get subscribers", False, "No subscribers found")
+            return
+        subscriber = subscribers[0]
+        subscriber_id = subscriber['id']
+        
+        print_test("Get test data", True, 
+                   f"Using employee: {employee['name']}, subscriber: {subscriber['name']}")
+    except Exception as e:
+        print_test("Get test data", False, str(e))
+        return
+    
+    # 4b. POST /api/tasks (create task with subscriber_repair type)
+    print("\n4b. POST /api/tasks (create subscriber_repair task)")
+    try:
+        payload = {
+            "title": "صيانة - أحمد",
+            "description": "اختبار مهمة صيانة مشترك",
+            "priority": "high",
+            "assignedTo": employee_id,
+            "assignedToName": employee['name'],
+            "dueDate": datetime.now().strftime("%Y-%m-%d"),
+            "taskType": "subscriber_repair",
+            "subscriberId": subscriber_id,
+            "subscriberName": subscriber.get('name', 'أحمد'),
+            "subscriberPhone": subscriber.get('phone', '07900000000'),
+            "subscriberAddress": subscriber.get('address', 'زون 1'),
+            "subscriberLat": subscriber.get('userLat', 33.31),
+            "subscriberLng": subscriber.get('userLng', 44.40),
+            "faultDescription": "انقطاع في الخدمة"
+        }
+        resp = requests.post(f"{BASE_URL}/tasks", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        task_id = data.get('id')
+        
+        # Verify all subscriber fields are present
+        has_all_fields = all(k in data for k in ['taskType', 'subscriberId', 'subscriberName', 'subscriberPhone', 'subscriberAddress', 'subscriberLat', 'subscriberLng', 'faultDescription'])
+        print_test("POST /api/tasks (subscriber_repair)", 
+                   resp.status_code == 201 and task_id is not None and has_all_fields,
+                   f"Created task with id: {task_id}, all subscriber fields present")
+    except Exception as e:
+        print_test("POST /api/tasks (subscriber_repair)", False, str(e))
+        return
+    
+    # 4c. GET /api/tasks (verify task appears with all fields)
+    print("\n4c. GET /api/tasks (verify task with all custom fields)")
+    try:
+        resp = requests.get(f"{BASE_URL}/tasks")
+        tasks = resp.json()
+        created_task = next((t for t in tasks if t['id'] == task_id), None)
+        if created_task:
+            print(f"Created task: {json.dumps(created_task, ensure_ascii=False)}")
+            has_all_fields = all(k in created_task for k in ['taskType', 'subscriberId', 'subscriberName', 'subscriberPhone', 'subscriberAddress', 'subscriberLat', 'subscriberLng', 'faultDescription'])
+            print_test("GET /api/tasks (verify custom fields)", 
+                       has_all_fields and created_task['taskType'] == 'subscriber_repair',
+                       "All subscriber fields preserved correctly")
+        else:
+            print_test("GET /api/tasks (verify custom fields)", False, "Task not found")
+    except Exception as e:
+        print_test("GET /api/tasks (verify custom fields)", False, str(e))
+    
+    # 4d. DELETE test task (cleanup)
+    print("\n4d. DELETE /api/tasks/:id (cleanup)")
+    try:
+        resp = requests.delete(f"{BASE_URL}/tasks/{task_id}")
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("DELETE /api/tasks/:id (cleanup)", 
+                   resp.status_code == 200 and data.get('success') == True,
+                   "Test task deleted successfully")
+    except Exception as e:
+        print_test("DELETE /api/tasks/:id (cleanup)", False, str(e))
+
+def cleanup_admin_credentials(last_password):
+    """Reset admin credentials back to default"""
+    print("\n" + "="*80)
+    print("CLEANUP: RESET ADMIN CREDENTIALS")
+    print("="*80)
+    
+    try:
+        payload = {
+            "currentPassword": last_password,
+            "newUsername": "admin"
+        }
+        resp = requests.put(f"{BASE_URL}/admin/credentials", json=payload)
+        data = resp.json()
+        print(f"Response: {json.dumps(data, ensure_ascii=False)}")
+        print_test("Reset admin credentials", 
+                   resp.status_code == 200 and data.get('success') == True,
+                   "Admin credentials reset to username='admin'")
+    except Exception as e:
+        print_test("Reset admin credentials", False, str(e))
 
 def main():
-    log("=" * 80)
-    log("BACKEND API TESTING - NEW ENDPOINTS ONLY")
-    log("Testing 4 new tasks: Orders, Bcrypt Login, Activity Logs, Accounting")
-    log("=" * 80)
+    print("\n" + "="*80)
+    print("BACKEND API TESTING - NEW ENDPOINTS")
+    print("Testing: Admin Credentials, Subscribers Search, Payroll Entries, Tasks")
+    print("="*80)
     
-    results = {
-        "E-commerce Orders": False,
-        "Bcrypt Employee Login": False,
-        "Activity Logs": False,
-        "Accounting Summary": False
-    }
+    # Test 1: Admin Credentials Management
+    last_password = test_admin_credentials()
     
-    # Run tests
-    results["E-commerce Orders"] = test_orders_crud()
-    results["Bcrypt Employee Login"] = test_bcrypt_login()
-    results["Activity Logs"] = test_activity_logs()
-    results["Accounting Summary"] = test_accounting_summary()
+    # Test 2: Subscribers Search
+    test_subscribers_search()
     
-    # Summary
-    log("\n" + "=" * 80)
-    log("TEST SUMMARY")
-    log("=" * 80)
-    for task, passed in results.items():
-        status = "✅ PASSED" if passed else "❌ FAILED"
-        log(f"{status}: {task}")
+    # Test 3: Payroll Entries CRUD
+    test_payroll_entries_crud()
     
-    all_passed = all(results.values())
-    if all_passed:
-        log("\n🎉 ALL TESTS PASSED!")
-    else:
-        log("\n❌ SOME TESTS FAILED")
+    # Test 4: Tasks with Subscriber Repair Type
+    test_tasks_subscriber_repair()
     
-    return 0 if all_passed else 1
-
+    # Cleanup: Reset admin credentials
+    if last_password:
+        cleanup_admin_credentials(last_password)
+    
+    print("\n" + "="*80)
+    print("ALL TESTS COMPLETED")
+    print("="*80)
 
 if __name__ == "__main__":
-    exit(main())
+    main()

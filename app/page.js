@@ -308,14 +308,14 @@ function Dashboard({ setActive }) {
   if (!stats) return <LoadingScreen />;
 
   const cards = [
-    { label: 'إجمالي المشتركين', value: stats.totalSubscribers, sub: `${stats.activeSubscribers} نشط`, icon: Wifi, color: 'from-amber-500 to-yellow-600', glow: 'shadow-gold-glow' },
-    { label: 'دخل الاشتراكات/شهر', value: fmtCurrency(stats.monthlyIncome), icon: DollarSign, color: 'from-emerald-500 to-teal-600' },
-    { label: 'مبيعات POS', value: fmtCurrency(stats.totalRevenue), icon: ShoppingCart, color: 'from-cyan-500 to-blue-600', glow: 'shadow-neon-glow' },
-    { label: 'الزونات النشطة', value: `${stats.onlineZones}/${stats.totalZones}`, icon: Network, color: 'from-purple-500 to-pink-600' },
-    { label: 'صيانات قيد التنفيذ', value: stats.pendingRepairs, sub: `من ${stats.totalRepairs} إجمالي`, icon: Wrench, color: 'from-orange-500 to-red-600' },
-    { label: 'منتجات بالمخزون', value: stats.totalProducts, sub: `${stats.lowStockCount} نواقص`, icon: Package, color: 'from-indigo-500 to-purple-600' },
-    { label: 'إجمالي الديون', value: fmtCurrency(stats.totalDebt), icon: AlertCircle, color: 'from-rose-500 to-red-600' },
-    { label: 'الموظفون', value: stats.totalEmployees, icon: Users, color: 'from-fuchsia-500 to-purple-600' },
+    { label: 'إجمالي المشتركين', value: stats.totalSubscribers, sub: `${stats.activeSubscribers} نشط`, icon: Wifi, color: 'from-amber-500 to-yellow-600', glow: 'shadow-gold-glow', target: 'subscribers' },
+    { label: 'دخل الاشتراكات/شهر', value: fmtCurrency(stats.monthlyIncome), icon: DollarSign, color: 'from-emerald-500 to-teal-600', target: 'activations' },
+    { label: 'مبيعات POS', value: fmtCurrency(stats.totalRevenue), icon: ShoppingCart, color: 'from-cyan-500 to-blue-600', glow: 'shadow-neon-glow', target: 'pos' },
+    { label: 'الزونات النشطة', value: `${stats.onlineZones}/${stats.totalZones}`, icon: Network, color: 'from-purple-500 to-pink-600', target: 'noc' },
+    { label: 'صيانات قيد التنفيذ', value: stats.pendingRepairs, sub: `من ${stats.totalRepairs} إجمالي`, icon: Wrench, color: 'from-orange-500 to-red-600', target: 'repairs' },
+    { label: 'منتجات بالمخزون', value: stats.totalProducts, sub: `${stats.lowStockCount} نواقص`, icon: Package, color: 'from-indigo-500 to-purple-600', target: 'products' },
+    { label: 'إجمالي الديون', value: fmtCurrency(stats.totalDebt), icon: AlertCircle, color: 'from-rose-500 to-red-600', target: 'accounting' },
+    { label: 'الموظفون', value: stats.totalEmployees, icon: Users, color: 'from-fuchsia-500 to-purple-600', target: 'employees' },
   ];
 
   return (
@@ -346,7 +346,15 @@ function Dashboard({ setActive }) {
         {cards.map((c, i) => {
           const Icon = c.icon;
           return (
-            <div key={i} className={`stat-card group cursor-pointer ${c.glow || ''}`}>
+            <div
+              key={i}
+              onClick={() => c.target && setActive(c.target)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') c.target && setActive(c.target); }}
+              className={`stat-card group cursor-pointer transition-all hover:-translate-y-1 hover:border-gold/60 ${c.glow || ''}`}
+              title={`فتح ${c.label}`}
+            >
               <div className="flex items-start justify-between mb-3">
                 <div className={`w-11 h-11 rounded-xl bg-gradient-to-br ${c.color} flex items-center justify-center group-hover:scale-110 transition-transform`}>
                   <Icon className="w-5 h-5 text-white" />
@@ -356,10 +364,38 @@ function Dashboard({ setActive }) {
               <p className="text-xs text-muted-foreground mb-1">{c.label}</p>
               <p className="text-xl font-bold text-foreground truncate">{c.value}</p>
               {c.sub && <p className="text-[10px] text-muted-foreground mt-1">{c.sub}</p>}
+              <p className="text-[9px] text-gold/60 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">← فتح القسم</p>
             </div>
           );
         })}
       </div>
+
+      {/* Quick Access Tiles - All Modules */}
+      <Card className="glass-strong border-gold-soft">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2 gold-text">
+            <LayoutDashboard className="w-4 h-4" /> الوصول السريع لكل الأقسام
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
+            {MENU.filter(m => m.id !== 'dashboard').map(m => {
+              const Icon = m.icon;
+              return (
+                <button
+                  key={m.id}
+                  onClick={() => setActive(m.id)}
+                  className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl bg-input/30 border border-gold-soft hover:border-gold hover:bg-gold/10 hover:-translate-y-0.5 transition-all group"
+                  title={m.label}
+                >
+                  <Icon className="w-5 h-5 text-gold group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-bold text-center leading-tight line-clamp-2">{m.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* AI Insights */}
       {insights.length > 0 && (
@@ -1879,13 +1915,45 @@ function TasksManager() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [open, setOpen] = useState(false);
   const [reviewTask, setReviewTask] = useState(null);
-  const blank = { title: '', description: '', priority: 'medium', dueDate: new Date().toISOString().slice(0, 10), assignedTo: '', notes: '', status: 'pending', progress: 0, attachments: [] };
+  const [mapTask, setMapTask] = useState(null);
+  const blank = { title: '', description: '', priority: 'medium', dueDate: new Date().toISOString().slice(0, 10), assignedTo: '', notes: '', status: 'pending', progress: 0, attachments: [], taskType: 'general', subscriberId: '', subscriberName: '', subscriberPhone: '', subscriberAddress: '', subscriberLat: null, subscriberLng: null, faultDescription: '' };
   const [form, setForm] = useState(blank);
+  const [subSearch, setSubSearch] = useState('');
+  const [subResults, setSubResults] = useState([]);
   const load = async () => {
     const [t, e] = await Promise.all([api('tasks'), api('employees')]);
     setItems(t); setEmployees(e);
   };
   useEffect(() => { load(); const i = setInterval(load, 15000); return () => clearInterval(i); }, []);
+
+  // Subscriber autocomplete search (only for subscriber_repair tasks)
+  useEffect(() => {
+    if (form.taskType !== 'subscriber_repair' || !subSearch || subSearch.length < 2) {
+      setSubResults([]);
+      return;
+    }
+    const t = setTimeout(() => {
+      api(`subscribers/search?q=${encodeURIComponent(subSearch)}`).then(r => {
+        if (Array.isArray(r)) setSubResults(r);
+      });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [subSearch, form.taskType]);
+
+  const selectSubscriber = (s) => {
+    setForm(f => ({
+      ...f,
+      subscriberId: s.id,
+      subscriberName: s.name,
+      subscriberPhone: s.phone || '',
+      subscriberAddress: s.address || s.zoneName || '',
+      subscriberLat: s.userLat ?? null,
+      subscriberLng: s.userLng ?? null,
+      title: f.title || `🔧 صيانة - ${s.name}`,
+    }));
+    setSubSearch('');
+    setSubResults([]);
+  };
 
   const filtered = statusFilter === 'all' ? items
     : statusFilter === 'awaiting_review' ? items.filter(t => t.status === 'pending_review')
@@ -1893,6 +1961,10 @@ function TasksManager() {
 
   const save = async () => {
     if (!form.title || !form.assignedTo) { toast.error('العنوان والموظف مطلوبان'); return; }
+    if (form.taskType === 'subscriber_repair' && !form.subscriberId) {
+      toast.error('اختر المشترك من القائمة');
+      return;
+    }
     const emp = employees.find(e => e.id === form.assignedTo);
     await api('tasks', { method: 'POST', body: JSON.stringify({ ...form, assignedToName: emp?.name, createdBy: 'المدير', createdById: 'manager' }) });
     toast.success('✅ تم إنشاء المهمة وإرسال إشعار للموظف'); setOpen(false); setForm(blank); load();
@@ -1956,6 +2028,17 @@ function TasksManager() {
                 <Badge className={priorityCls[t.priority] + ' text-[9px]'}>{t.priority}</Badge>
               </div>
               <p className="text-xs text-muted-foreground line-clamp-2">{t.description}</p>
+
+              {t.taskType === 'subscriber_repair' && t.subscriberName && (
+                <div className="p-2 rounded bg-cyan-500/10 border border-cyan-500/30 text-[10px] space-y-0.5">
+                  <p className="font-bold text-cyan-400">📡 صيانة مشترك</p>
+                  <p>👤 <span className="font-bold">{t.subscriberName}</span></p>
+                  {t.subscriberPhone && <p>📞 <a href={`tel:${t.subscriberPhone}`} className="font-mono hover:text-gold" dir="ltr">{t.subscriberPhone}</a></p>}
+                  {t.subscriberAddress && <p className="line-clamp-1">📍 {t.subscriberAddress}</p>}
+                  {t.faultDescription && <p className="text-red-400">⚠️ {t.faultDescription}</p>}
+                </div>
+              )}
+
               <div className="flex justify-between text-[10px]">
                 <span className="text-cyan-400">👤 {t.assignedToName}</span>
                 <span className="text-muted-foreground">📅 {t.dueDate}</span>
@@ -1989,6 +2072,11 @@ function TasksManager() {
               <div className="flex justify-between items-center pt-2 border-t border-gold-soft">
                 <Badge className={statusCls[t.status] + ' text-[10px]'}>{statusLabel[t.status] || t.status}</Badge>
                 <div className="flex gap-1">
+                  {t.taskType === 'subscriber_repair' && (t.subscriberLat || t.subscriberLng) && (
+                    <Button size="sm" variant="outline" className="h-7 text-[10px] border-cyan-500/30 hover:bg-cyan-500/10 text-cyan-400" onClick={() => setMapTask(t)}>
+                      <MapPin className="w-3 h-3 ml-1" /> خريطة
+                    </Button>
+                  )}
                   {t.status === 'pending_review' && (
                     <Button size="sm" className="btn-gold h-7 text-[10px]" onClick={() => setReviewTask(t)}>
                       مراجعة
@@ -2004,30 +2092,165 @@ function TasksManager() {
 
       {/* Create Task Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="glass-strong border-gold/40">
-          <DialogHeader><DialogTitle className="gold-text">مهمة جديدة</DialogTitle></DialogHeader>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2"><Label>عنوان المهمة</Label><Input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} className="bg-input/30 border-gold/20" /></div>
-            <div className="col-span-2"><Label>الوصف</Label><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-input/30 border-gold/20 h-20" /></div>
-            <div><Label>الموظف المسؤول</Label>
-              <Select value={form.assignedTo} onValueChange={v => setForm({ ...form, assignedTo: v })}>
-                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر موظف" /></SelectTrigger>
-                <SelectContent>{employees.map(e => <SelectItem key={e.id} value={e.id}>{e.photo} {e.name}</SelectItem>)}</SelectContent>
-              </Select>
+        <DialogContent className="glass-strong border-gold/40 max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle className="gold-text">{form.taskType === 'subscriber_repair' ? '🔧 مهمة صيانة مشترك' : '📋 مهمة جديدة'}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            {/* Task Type Selector */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, taskType: 'general' })}
+                className={`p-3 rounded-lg border-2 transition-all text-right ${form.taskType === 'general' ? 'border-gold bg-gold/10' : 'border-gold-soft bg-input/30 hover:border-gold/50'}`}
+              >
+                <div className="font-bold text-sm">📋 مهمة عامة</div>
+                <div className="text-[10px] text-muted-foreground">مهمة داخلية عادية</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, taskType: 'subscriber_repair' })}
+                className={`p-3 rounded-lg border-2 transition-all text-right ${form.taskType === 'subscriber_repair' ? 'border-cyan-500 bg-cyan-500/10' : 'border-gold-soft bg-input/30 hover:border-cyan-500/50'}`}
+              >
+                <div className="font-bold text-sm">🔧 صيانة مشترك</div>
+                <div className="text-[10px] text-muted-foreground">مع موقع GPS تلقائي</div>
+              </button>
             </div>
-            <div><Label>الأولوية</Label>
-              <Select value={form.priority} onValueChange={v => setForm({ ...form, priority: v })}>
-                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="high">🔴 عالية</SelectItem>
-                  <SelectItem value="medium">🟡 متوسطة</SelectItem>
-                  <SelectItem value="low">🟢 منخفضة</SelectItem>
-                </SelectContent>
-              </Select>
+
+            {/* Subscriber Picker for subscriber_repair */}
+            {form.taskType === 'subscriber_repair' && (
+              <div className="p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/30 space-y-3">
+                <div>
+                  <Label className="text-xs flex items-center gap-1">
+                    <Search className="w-3 h-3" /> ابحث عن المشترك (بالاسم/الهاتف/اليوزر)
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      value={subSearch}
+                      onChange={e => setSubSearch(e.target.value)}
+                      placeholder="ابدأ الكتابة..."
+                      className="bg-input/50 border-cyan-500/30"
+                    />
+                    {subResults.length > 0 && (
+                      <div className="absolute z-50 top-full mt-1 right-0 left-0 max-h-64 overflow-y-auto rounded-lg bg-background border-2 border-cyan-500/50 shadow-xl">
+                        {subResults.map(s => (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => selectSubscriber(s)}
+                            className="w-full text-right p-2 hover:bg-cyan-500/10 border-b border-gold-soft/30 last:border-0"
+                          >
+                            <div className="font-bold text-xs">{s.name}</div>
+                            <div className="text-[10px] text-muted-foreground flex gap-2">
+                              <span>📞 {s.phone || '-'}</span>
+                              <span>📍 {s.zoneName || '-'}</span>
+                              {(s.userLat && s.userLng) && <span className="text-emerald-400">🛰️ GPS</span>}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {form.subscriberId && (
+                  <div className="space-y-2 p-2 rounded bg-emerald-500/10 border border-emerald-500/30">
+                    <div className="flex justify-between items-start">
+                      <div className="text-xs">
+                        <p className="font-bold gold-text">{form.subscriberName}</p>
+                        <p className="text-[10px] text-muted-foreground font-mono" dir="ltr">{form.subscriberPhone}</p>
+                        <p className="text-[10px] text-muted-foreground">{form.subscriberAddress}</p>
+                      </div>
+                      <Button size="sm" variant="ghost" className="h-6 text-[10px] hover:text-red-500" onClick={() => setForm({ ...form, subscriberId: '', subscriberName: '', subscriberPhone: '', subscriberAddress: '', subscriberLat: null, subscriberLng: null })}>
+                        <X className="w-3 h-3" />
+                      </Button>
+                    </div>
+                    {form.subscriberLat && form.subscriberLng ? (
+                      <div className="relative">
+                        <GPSMap lat={form.subscriberLat} lng={form.subscriberLng} label={form.subscriberName} height={180} />
+                        <Badge className="absolute top-2 right-2 bg-emerald-500/90 text-white border-0 z-[1000]">🛰️ موقع مدعوم</Badge>
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-amber-400">⚠️ لا توجد إحداثيات GPS لهذا المشترك</p>
+                    )}
+                  </div>
+                )}
+
+                <div>
+                  <Label className="text-xs">وصف العطل / المشكلة</Label>
+                  <Textarea
+                    value={form.faultDescription}
+                    onChange={e => setForm({ ...form, faultDescription: e.target.value })}
+                    placeholder="مثال: انقطاع الإنترنت، ضعف الإشارة، مشكلة بالكابل..."
+                    className="bg-input/30 border-cyan-500/30 h-20"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2"><Label>عنوان المهمة</Label><Input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+              <div className="col-span-2"><Label>{form.taskType === 'subscriber_repair' ? 'تعليمات إضافية للفني' : 'الوصف'}</Label><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-input/30 border-gold/20 h-20" /></div>
+              <div><Label>{form.taskType === 'subscriber_repair' ? 'الفني المسؤول' : 'الموظف المسؤول'}</Label>
+                <Select value={form.assignedTo} onValueChange={v => setForm({ ...form, assignedTo: v })}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر موظف" /></SelectTrigger>
+                  <SelectContent>{employees.map(e => <SelectItem key={e.id} value={e.id}>{e.photo} {e.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div><Label>الأولوية</Label>
+                <Select value={form.priority} onValueChange={v => setForm({ ...form, priority: v })}>
+                  <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="high">🔴 عالية</SelectItem>
+                    <SelectItem value="medium">🟡 متوسطة</SelectItem>
+                    <SelectItem value="low">🟢 منخفضة</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-2"><Label>تاريخ التسليم</Label><Input type="date" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} className="bg-input/30 border-gold/20" /></div>
             </div>
-            <div className="col-span-2"><Label>تاريخ التسليم</Label><Input type="date" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} className="bg-input/30 border-gold/20" /></div>
           </div>
-          <DialogFooter><Button onClick={save} className="btn-gold w-full">إنشاء المهمة وإرسال للموظف</Button></DialogFooter>
+          <DialogFooter><Button onClick={save} className="btn-gold w-full">{form.taskType === 'subscriber_repair' ? '🚀 إنشاء مهمة الصيانة وإرسالها للفني' : '✅ إنشاء المهمة وإرسال للموظف'}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Map View Dialog */}
+      <Dialog open={!!mapTask} onOpenChange={() => setMapTask(null)}>
+        <DialogContent className="glass-strong border-cyan-500/40 max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="text-cyan-400 flex items-center gap-2">
+              <MapPin className="w-5 h-5" /> موقع المشترك - {mapTask?.subscriberName}
+            </DialogTitle>
+          </DialogHeader>
+          {mapTask && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="p-2 rounded bg-input/30 border border-gold-soft">
+                  <p className="text-muted-foreground text-[10px]">المشترك</p>
+                  <p className="font-bold">{mapTask.subscriberName}</p>
+                </div>
+                <div className="p-2 rounded bg-input/30 border border-gold-soft">
+                  <p className="text-muted-foreground text-[10px]">الهاتف</p>
+                  <a href={`tel:${mapTask.subscriberPhone}`} className="font-bold font-mono hover:text-gold" dir="ltr">{mapTask.subscriberPhone}</a>
+                </div>
+                <div className="col-span-2 p-2 rounded bg-red-500/10 border border-red-500/30">
+                  <p className="text-muted-foreground text-[10px]">وصف العطل</p>
+                  <p className="font-bold text-red-400">{mapTask.faultDescription || mapTask.description}</p>
+                </div>
+              </div>
+              <GPSMap lat={mapTask.subscriberLat} lng={mapTask.subscriberLng} label={mapTask.subscriberName} height={400} />
+              <div className="flex gap-2 justify-end">
+                <a href={`https://www.google.com/maps?q=${mapTask.subscriberLat},${mapTask.subscriberLng}`} target="_blank" rel="noreferrer">
+                  <Button variant="outline" className="border-cyan-500/30 hover:bg-cyan-500/10 text-cyan-400">
+                    🗺️ افتح في Google Maps
+                  </Button>
+                </a>
+                <a href={`https://waze.com/ul?ll=${mapTask.subscriberLat},${mapTask.subscriberLng}&navigate=yes`} target="_blank" rel="noreferrer">
+                  <Button className="btn-neon">
+                    🚗 فتح في Waze
+                  </Button>
+                </a>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -2358,17 +2581,71 @@ function PayrollView() {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const [data, setData] = useState(null);
   const [open, setOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState(null);
   const [form, setForm] = useState({ employeeId: '', type: 'bonus', amount: 50000, reason: '' });
 
   useEffect(() => { api('employees').then(e => { setEmployees(e); if (e.length) setSelectedEmp(e[0].id); }); }, []);
-  useEffect(() => { if (selectedEmp && month) api(`employees/${selectedEmp}/payroll?month=${month}`).then(setData); }, [selectedEmp, month]);
+  const reload = () => { if (selectedEmp && month) api(`employees/${selectedEmp}/payroll?month=${month}`).then(setData); };
+  useEffect(() => { reload(); }, [selectedEmp, month]);
 
   const addEntry = async () => {
     if (!form.amount || !form.reason) { toast.error('املأ الحقول'); return; }
     const emp = employees.find(e => e.id === (form.employeeId || selectedEmp));
-    await api('payroll-entries', { method: 'POST', body: JSON.stringify({ ...form, employeeId: form.employeeId || selectedEmp, employeeName: emp?.name, amount: Number(form.amount), date: new Date().toISOString().slice(0, 10), auto: false }) });
-    toast.success('تم الإضافة'); setOpen(false);
-    if (selectedEmp && month) api(`employees/${selectedEmp}/payroll?month=${month}`).then(setData);
+    if (editingEntry) {
+      // Update existing entry
+      const r = await api(`payroll-entries/${editingEntry.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          employeeId: form.employeeId || selectedEmp,
+          employeeName: emp?.name,
+          type: form.type,
+          amount: Number(form.amount),
+          reason: form.reason,
+        }),
+      });
+      if (r?.error) { toast.error(r.error); return; }
+      toast.success('✅ تم التعديل');
+    } else {
+      const r = await api('payroll-entries', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...form,
+          employeeId: form.employeeId || selectedEmp,
+          employeeName: emp?.name,
+          amount: Number(form.amount),
+          date: new Date().toISOString().slice(0, 10),
+          auto: false,
+        }),
+      });
+      if (r?.error) { toast.error(r.error); return; }
+      toast.success('✅ تم الإضافة');
+    }
+    setOpen(false);
+    setEditingEntry(null);
+    reload();
+  };
+
+  const editEntry = (entry) => {
+    setEditingEntry(entry);
+    setForm({
+      employeeId: entry.employeeId || selectedEmp,
+      type: entry.type,
+      amount: entry.amount,
+      reason: entry.reason,
+    });
+    setOpen(true);
+  };
+
+  const deleteEntry = async (entry) => {
+    if (entry.auto) {
+      if (!confirm(`⚠️ هذا القيد تلقائي (${entry.reason}).\nهل أنت متأكد من حذفه؟ سيتم استرجاع المبلغ للراتب.`)) return;
+    } else {
+      if (!confirm(`هل تريد حذف هذا القيد؟\n${entry.type === 'bonus' ? 'مكافأة' : 'خصم'}: ${fmt(entry.amount)} د.ع\nالسبب: ${entry.reason}`)) return;
+    }
+    const r = await api(`payroll-entries/${entry.id}`, { method: 'DELETE' });
+    if (r?.error) { toast.error(r.error); return; }
+    toast.success('🗑️ تم الحذف');
+    reload();
   };
 
   return (
@@ -2397,19 +2674,32 @@ function PayrollView() {
           </div>
 
           <Card className="glass-strong border-gold-soft">
-            <CardHeader><CardTitle className="text-base">الخصومات والمكافآت</CardTitle></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-base">الخصومات والمكافآت</CardTitle>
+              <span className="text-[10px] text-muted-foreground">يمكن تعديل أو حذف أي قيد (يدوي أو تلقائي)</span>
+            </CardHeader>
             <CardContent>
               {data.entries.length === 0 ? <p className="text-xs text-muted-foreground text-center py-6">لا توجد قيود لهذا الشهر</p> :
               <table className="w-full text-sm">
-                <thead><tr className="border-b border-gold-soft text-right text-xs text-muted-foreground"><th className="p-2">التاريخ</th><th>النوع</th><th>المبلغ</th><th>السبب</th><th>تلقائي</th></tr></thead>
+                <thead><tr className="border-b border-gold-soft text-right text-xs text-muted-foreground"><th className="p-2">التاريخ</th><th>النوع</th><th>المبلغ</th><th>السبب</th><th>المصدر</th><th className="text-center">إجراءات</th></tr></thead>
                 <tbody>
                   {data.entries.map(e => (
-                    <tr key={e.id} className="border-b border-gold-soft/30">
+                    <tr key={e.id} className="border-b border-gold-soft/30 hover:bg-gold/5">
                       <td className="p-2 text-xs">{e.date}</td>
                       <td><Badge className={e.type === 'bonus' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px]' : 'bg-red-500/20 text-red-400 border-red-500/30 text-[10px]'}>{e.type === 'bonus' ? '🎁 مكافأة' : '💸 خصم'}</Badge></td>
                       <td className={e.type === 'bonus' ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>{e.type === 'bonus' ? '+' : '-'}{fmt(e.amount)}</td>
                       <td className="text-xs">{e.reason}</td>
                       <td>{e.auto ? <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-[10px]">🤖 تلقائي</Badge> : <Badge variant="outline" className="text-[10px]">يدوي</Badge>}</td>
+                      <td>
+                        <div className="flex gap-1 justify-center">
+                          <Button size="icon" variant="ghost" className="h-7 w-7 hover:bg-amber-500/20 hover:text-amber-400" title="تعديل" onClick={() => editEntry(e)}>
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-7 w-7 hover:bg-red-500/20 hover:text-red-400" title="حذف" onClick={() => deleteEntry(e)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2419,9 +2709,9 @@ function PayrollView() {
         </>
       )}
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setEditingEntry(null); }}>
         <DialogContent className="glass-strong border-gold/40">
-          <DialogHeader><DialogTitle className="gold-text">إضافة قيد راتب</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle className="gold-text">{editingEntry ? '✏️ تعديل قيد راتب' : '➕ إضافة قيد راتب'}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div><Label>الموظف</Label>
               <Select value={form.employeeId} onValueChange={v => setForm({ ...form, employeeId: v })}>
@@ -2441,7 +2731,7 @@ function PayrollView() {
             <div><Label>المبلغ</Label><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} className="bg-input/30 border-gold/20" /></div>
             <div><Label>السبب</Label><Textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className="bg-input/30 border-gold/20 h-20" placeholder="سبب الخصم أو المكافأة..." /></div>
           </div>
-          <DialogFooter><Button onClick={addEntry} className="btn-gold w-full">حفظ</Button></DialogFooter>
+          <DialogFooter><Button onClick={addEntry} className="btn-gold w-full">{editingEntry ? '💾 حفظ التعديل' : '➕ حفظ'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
@@ -2886,7 +3176,101 @@ function GeneralSection({ draft, update }) {
           <Textarea value={(g.branches || []).join('\n')} onChange={e => update('general', 'branches', e.target.value.split('\n').filter(Boolean))} className="bg-input/30 border-gold/20 h-24" />
         </Field>
       </div>
+
+      {/* Admin Credentials */}
+      <div className="md:col-span-2">
+        <AdminCredentialsCard />
+      </div>
     </div>
+  );
+}
+
+function AdminCredentialsCard() {
+  const [current, setCurrent] = useState({ username: 'admin', hasPassword: false });
+  const [form, setForm] = useState({ currentPassword: '', newUsername: '', newPassword: '', confirmPassword: '' });
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const load = () => api('admin/credentials').then(d => {
+    if (d && !d.error) {
+      setCurrent(d);
+      setForm(f => ({ ...f, newUsername: d.username || 'admin' }));
+    }
+  });
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    if (form.newPassword && form.newPassword !== form.confirmPassword) {
+      toast.error('كلمتا المرور غير متطابقتين');
+      return;
+    }
+    if (form.newPassword && form.newPassword.length < 6) {
+      toast.error('كلمة المرور يجب أن لا تقل عن 6 أحرف');
+      return;
+    }
+    if (current.hasPassword && !form.currentPassword) {
+      toast.error('أدخل كلمة المرور الحالية للتأكيد');
+      return;
+    }
+    setSaving(true);
+    const payload = {
+      currentPassword: form.currentPassword,
+      newUsername: form.newUsername !== current.username ? form.newUsername : undefined,
+      newPassword: form.newPassword || undefined,
+    };
+    const r = await api('admin/credentials', { method: 'PUT', body: JSON.stringify(payload) });
+    setSaving(false);
+    if (r?.error) { toast.error(r.error); return; }
+    toast.success('✅ تم تحديث بيانات المدير بنجاح');
+    setForm({ currentPassword: '', newUsername: form.newUsername, newPassword: '', confirmPassword: '' });
+    load();
+  };
+
+  return (
+    <Card className="glass-card border-2 border-amber-500/30 bg-amber-500/5">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2 text-amber-400">
+          🔐 بيانات دخول المدير (المسؤول العام)
+        </CardTitle>
+        <p className="text-[10px] text-muted-foreground">
+          {current.hasPassword
+            ? '✅ كلمة مرور مفعّلة - أدخل كلمة المرور الحالية لتأكيد أي تغيير'
+            : '⚠️ لم يتم تعيين كلمة مرور بعد. الدخول الافتراضي: admin / admin'}
+        </p>
+      </CardHeader>
+      <CardContent className="grid md:grid-cols-2 gap-3">
+        <Field label="اسم المستخدم (Username)">
+          <Input value={form.newUsername} onChange={e => setForm({ ...form, newUsername: e.target.value })} className="bg-input/30 border-gold/20 font-mono" dir="ltr" placeholder="admin" />
+        </Field>
+        {current.hasPassword && (
+          <Field label="كلمة المرور الحالية *">
+            <div className="relative">
+              <Input type={showCurrent ? 'text' : 'password'} value={form.currentPassword} onChange={e => setForm({ ...form, currentPassword: e.target.value })} className="bg-input/30 border-gold/20 font-mono pr-10" dir="ltr" placeholder="••••••••" />
+              <button type="button" onClick={() => setShowCurrent(s => !s)} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-gold">
+                {showCurrent ? '🙈' : '👁️'}
+              </button>
+            </div>
+          </Field>
+        )}
+        <Field label="كلمة مرور جديدة" hint="اتركها فارغة لعدم التغيير - 6 أحرف على الأقل">
+          <div className="relative">
+            <Input type={showNew ? 'text' : 'password'} value={form.newPassword} onChange={e => setForm({ ...form, newPassword: e.target.value })} className="bg-input/30 border-gold/20 font-mono pr-10" dir="ltr" placeholder="جديدة (اختياري)" />
+            <button type="button" onClick={() => setShowNew(s => !s)} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-gold">
+              {showNew ? '🙈' : '👁️'}
+            </button>
+          </div>
+        </Field>
+        <Field label="تأكيد كلمة المرور">
+          <Input type={showNew ? 'text' : 'password'} value={form.confirmPassword} onChange={e => setForm({ ...form, confirmPassword: e.target.value })} className="bg-input/30 border-gold/20 font-mono" dir="ltr" placeholder="إعادة الإدخال" />
+        </Field>
+        <div className="md:col-span-2 flex justify-end">
+          <Button onClick={save} disabled={saving} className="btn-gold">
+            {saving ? '... جاري الحفظ' : '💾 حفظ بيانات المدير'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
