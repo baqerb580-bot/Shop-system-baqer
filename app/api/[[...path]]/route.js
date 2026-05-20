@@ -800,6 +800,145 @@ async function handle(request, params) {
     return ok({ success: true });
   }
 
+  // ============ POS MANAGER REPORTS ============
+  if (path === 'pos/manager-dashboard' && method === 'GET') {
+    const url = new URL(request.url);
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+    const employeeId = url.searchParams.get('employeeId');
+    const paymentMethod = url.searchParams.get('paymentMethod');
+    const productId = url.searchParams.get('productId');
+    const invoiceQ = (url.searchParams.get('invoice') || '').trim();
+    const minDiscount = Number(url.searchParams.get('minDiscount') || 0);
+
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    // Build filter
+    const filter = {};
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(from).toISOString();
+      if (to) {
+        const t = new Date(to); t.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = t.toISOString();
+      }
+    }
+    if (employeeId) filter.cashierId = employeeId;
+    if (paymentMethod) filter.paymentMethod = paymentMethod;
+    if (invoiceQ) filter.invoiceNumber = { $regex: invoiceQ, $options: 'i' };
+
+    const sales = await db.collection('sales').find(filter).sort({ createdAt: -1 }).limit(2000).toArray();
+    let filtered = sales;
+    if (productId) {
+      filtered = sales.filter(s => (s.items || []).some(it => it.productId === productId || it.id === productId));
+    }
+    if (minDiscount > 0) {
+      filtered = filtered.filter(s => Number(s.discount || 0) >= minDiscount);
+    }
+
+    // Aggregate
+    const todaySales = sales.filter(s => new Date(s.createdAt) >= today);
+    const monthSales = sales.filter(s => new Date(s.createdAt) >= monthStart);
+    const sum = (arr, field = 'total') => arr.reduce((s, x) => s + Number(x[field] || 0), 0);
+
+    // By employee
+    const byEmployee = {};
+    for (const s of filtered) {
+      const k = s.cashierId || 'unknown';
+      if (!byEmployee[k]) byEmployee[k] = { id: k, name: s.cashierName || 'غير معروف', invoices: 0, totalSales: 0, totalDiscount: 0, totalItems: 0 };
+      byEmployee[k].invoices++;
+      byEmployee[k].totalSales += Number(s.total || 0);
+      byEmployee[k].totalDiscount += Number(s.discount || 0);
+      byEmployee[k].totalItems += (s.items || []).reduce((a, it) => a + Number(it.quantity || 0), 0);
+    }
+    const employeesReport = Object.values(byEmployee).sort((a, b) => b.totalSales - a.totalSales);
+
+    // Top products
+    const productMap = {};
+    for (const s of filtered) {
+      for (const it of (s.items || [])) {
+        const k = it.productId || it.id || it.name;
+        if (!productMap[k]) productMap[k] = { id: k, name: it.name, sku: it.sku, qty: 0, revenue: 0 };
+        productMap[k].qty += Number(it.quantity || 0);
+        productMap[k].revenue += Number(it.price || 0) * Number(it.quantity || 0);
+      }
+    }
+    const topProducts = Object.values(productMap).sort((a, b) => b.qty - a.qty).slice(0, 20);
+
+    // Discounts breakdown
+    const discounts = filtered.filter(s => Number(s.discount || 0) > 0).map(s => ({
+      saleId: s.id,
+      invoiceNumber: s.invoiceNumber,
+      cashierId: s.cashierId,
+      cashierName: s.cashierName,
+      discount: Number(s.discount || 0),
+      subtotal: Number(s.subtotal || s.total || 0) + Number(s.discount || 0),
+      total: Number(s.total || 0),
+      reason: s.discountReason || '',
+      requiresApproval: !!s.requiresApproval,
+      approved: !!s.approved,
+      createdAt: s.createdAt,
+      paymentMethod: s.paymentMethod,
+    }));
+
+    // Payment methods breakdown
+    const byPayment = {};
+    for (const s of filtered) {
+      const k = s.paymentMethod || 'cash';
+      if (!byPayment[k]) byPayment[k] = { method: k, count: 0, total: 0 };
+      byPayment[k].count++;
+      byPayment[k].total += Number(s.total || 0);
+    }
+
+    // Strip _id
+    const cleanSales = filtered.slice(0, 500).map(s => {
+      delete s._id;
+      return s;
+    });
+
+    return ok({
+      summary: {
+        todayCount: todaySales.length,
+        todayTotal: sum(todaySales),
+        todayDiscount: sum(todaySales, 'discount'),
+        monthCount: monthSales.length,
+        monthTotal: sum(monthSales),
+        monthDiscount: sum(monthSales, 'discount'),
+        rangeCount: filtered.length,
+        rangeTotal: sum(filtered),
+        rangeDiscount: sum(filtered, 'discount'),
+        rangeProfit: filtered.reduce((s, x) => s + Number(x.profit || 0), 0),
+        topEmployee: employeesReport[0] || null,
+        topProduct: topProducts[0] || null,
+      },
+      employeesReport,
+      topProducts,
+      discounts,
+      byPayment: Object.values(byPayment),
+      sales: cleanSales,
+    });
+  }
+
+  // Cancel sale (admin only)
+  if (path.match(/^sales\/[^/]+\/cancel$/) && method === 'POST') {
+    const saleId = path.split('/')[1];
+    const { reason } = await getJsonBody(request);
+    const s = await db.collection('sales').findOne({ id: saleId });
+    if (!s) return err('الفاتورة غير موجودة', 404);
+    if (s.cancelled) return err('الفاتورة ملغاة مسبقاً', 400);
+    const now = new Date().toISOString();
+    await db.collection('sales').updateOne({ id: saleId }, { $set: { cancelled: true, cancelledAt: now, cancelReason: reason || '', status: 'cancelled' } });
+    // Return stock for each item
+    for (const it of (s.items || [])) {
+      if (it.productId || it.id) {
+        await db.collection('products').updateOne({ id: it.productId || it.id }, { $inc: { stock: Number(it.quantity || 0) } });
+      }
+    }
+    await logActivity(db, { action: 'sale_cancelled', entity: 'sales', entityId: saleId, user: 'المدير', details: `إلغاء فاتورة ${s.invoiceNumber || saleId} (${Number(s.total || 0).toLocaleString()} د.ع)${reason ? ' - السبب: ' + reason : ''}`, ip: clientIp });
+    return ok({ success: true });
+  }
+
   // ============ CUSTOM FIELDS (Dynamic Schema Per Entity) ============
   // Supported entities: subscribers, networks, zones, employees, products, agents, repairs, tasks
   const ALLOWED_CF_ENTITIES = ['subscribers', 'networks', 'zones', 'employees', 'products', 'agents', 'repairs', 'tasks'];
