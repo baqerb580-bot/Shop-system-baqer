@@ -1,578 +1,488 @@
 #!/usr/bin/env python3
 """
-Backend API Testing Script for HR Features
-Tests: Attendance with photo, Leaves, Advances, Notifications, Telegram, Payroll
+Backend API Testing for NEW Endpoints (E-commerce Orders, Bcrypt Login, Activity Logs, Accounting)
+Tests only the 4 new tasks as specified in review_request.
 """
 
 import requests
 import json
-import sys
+import time
 from datetime import datetime
 
 BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
 
-def log(msg, level="INFO"):
-    """Print formatted log message"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] [{level}] {msg}")
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-def test_api(method, endpoint, data=None, expected_status=200, description=""):
-    """Generic API test helper"""
-    url = f"{BASE_URL}/{endpoint}"
-    log(f"Testing: {description or endpoint}")
+def test_orders_crud():
+    """Test E-commerce Orders endpoints"""
+    log("=" * 80)
+    log("TEST 1: E-COMMERCE ORDERS")
+    log("=" * 80)
     
+    # Get existing products first
+    log("\n1.1 Getting existing products to use in order...")
     try:
-        if method == "GET":
-            response = requests.get(url, timeout=10)
-        elif method == "POST":
-            response = requests.post(url, json=data, timeout=10)
-        elif method == "PUT":
-            response = requests.put(url, json=data, timeout=10)
-        elif method == "DELETE":
-            response = requests.delete(url, timeout=10)
-        else:
-            log(f"Unknown method: {method}", "ERROR")
-            return None
-        
-        status_ok = response.status_code == expected_status
-        status_indicator = "✅" if status_ok else "❌"
-        
-        log(f"{status_indicator} Status: {response.status_code} (expected {expected_status})", 
-            "PASS" if status_ok else "FAIL")
-        
-        try:
-            result = response.json()
-            if not status_ok:
-                log(f"Response: {json.dumps(result, ensure_ascii=False)[:200]}", "DEBUG")
-            return result
-        except:
-            log(f"Response text: {response.text[:200]}", "DEBUG")
-            return {"status_code": response.status_code, "text": response.text}
-            
+        r = requests.get(f"{BASE_URL}/products", timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: Cannot get products (status {r.status_code})")
+            return False
+        products = r.json()
+        if not products or len(products) == 0:
+            log(f"❌ FAILED: No products found in database")
+            return False
+        product = products[0]
+        log(f"✅ Found product: {product.get('name')} (id: {product.get('id')}, price: {product.get('price')})")
     except Exception as e:
-        log(f"❌ Exception: {str(e)}", "ERROR")
-        return None
+        log(f"❌ FAILED: Error getting products: {e}")
+        return False
+    
+    # Test GET /api/orders (empty or existing)
+    log("\n1.2 Testing GET /api/orders...")
+    try:
+        r = requests.get(f"{BASE_URL}/orders", timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: GET /api/orders returned {r.status_code}")
+            return False
+        orders = r.json()
+        log(f"✅ GET /api/orders returned {len(orders)} orders")
+    except Exception as e:
+        log(f"❌ FAILED: Error getting orders: {e}")
+        return False
+    
+    # Test POST /api/orders with missing data
+    log("\n1.3 Testing POST /api/orders with missing customerName (should fail)...")
+    try:
+        r = requests.post(f"{BASE_URL}/orders", json={
+            "customerPhone": "07701234567",
+            "items": [{"id": product['id'], "quantity": 1}]
+        }, timeout=10)
+        if r.status_code != 400:
+            log(f"❌ FAILED: Expected 400, got {r.status_code}")
+            return False
+        error_msg = r.json().get('error', '')
+        if "بيانات الطلب ناقصة" not in error_msg:
+            log(f"❌ FAILED: Expected Arabic error 'بيانات الطلب ناقصة', got: {error_msg}")
+            return False
+        log(f"✅ Correctly rejected with 400: {error_msg}")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing missing data: {e}")
+        return False
+    
+    # Test POST /api/orders with non-existent product
+    log("\n1.4 Testing POST /api/orders with non-existent product ids...")
+    try:
+        r = requests.post(f"{BASE_URL}/orders", json={
+            "customerName": "أحمد محمد",
+            "customerPhone": "07701234567",
+            "customerAddress": "بغداد - الكرادة",
+            "items": [{"id": "non-existent-id-12345", "quantity": 1}],
+            "paymentMethod": "cod"
+        }, timeout=10)
+        if r.status_code != 400:
+            log(f"❌ FAILED: Expected 400, got {r.status_code}")
+            return False
+        error_msg = r.json().get('error', '')
+        if "لا توجد منتجات صالحة" not in error_msg:
+            log(f"❌ FAILED: Expected Arabic error 'لا توجد منتجات صالحة', got: {error_msg}")
+            return False
+        log(f"✅ Correctly rejected with 400: {error_msg}")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing non-existent product: {e}")
+        return False
+    
+    # Test POST /api/orders with valid data (subtotal < 50000, should have shipping)
+    log("\n1.5 Testing POST /api/orders with valid data (subtotal < 50000)...")
+    try:
+        order_data = {
+            "customerName": "علي حسن",
+            "customerPhone": "07701234567",
+            "customerAddress": "بغداد - الكرادة - شارع 52",
+            "items": [{"id": product['id'], "quantity": 2}],
+            "paymentMethod": "cod",
+            "notes": "توصيل سريع من فضلك"
+        }
+        r = requests.post(f"{BASE_URL}/orders", json=order_data, timeout=10)
+        if r.status_code != 201:
+            log(f"❌ FAILED: Expected 201, got {r.status_code}: {r.text}")
+            return False
+        order = r.json()
+        
+        # Verify order structure
+        if not order.get('orderNumber', '').startswith('ORD-'):
+            log(f"❌ FAILED: orderNumber should start with 'ORD-', got: {order.get('orderNumber')}")
+            return False
+        if order.get('status') != 'pending':
+            log(f"❌ FAILED: status should be 'pending', got: {order.get('status')}")
+            return False
+        
+        # Verify shipping calculation
+        subtotal = order.get('subtotal', 0)
+        shipping = order.get('shipping', 0)
+        total = order.get('total', 0)
+        
+        expected_shipping = 5000 if subtotal < 50000 else 0
+        if shipping != expected_shipping:
+            log(f"❌ FAILED: shipping should be {expected_shipping} (subtotal={subtotal}), got: {shipping}")
+            return False
+        
+        if total != subtotal + shipping:
+            log(f"❌ FAILED: total should be {subtotal + shipping}, got: {total}")
+            return False
+        
+        order_id = order.get('id')
+        log(f"✅ Order created: {order.get('orderNumber')}, subtotal={subtotal}, shipping={shipping}, total={total}")
+    except Exception as e:
+        log(f"❌ FAILED: Error creating order: {e}")
+        return False
+    
+    # Test GET /api/orders?phone=
+    log("\n1.6 Testing GET /api/orders?phone=07701234567...")
+    try:
+        r = requests.get(f"{BASE_URL}/orders?phone=07701234567", timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: GET with phone filter returned {r.status_code}")
+            return False
+        filtered_orders = r.json()
+        if len(filtered_orders) == 0:
+            log(f"❌ FAILED: Expected at least 1 order with phone 07701234567")
+            return False
+        log(f"✅ Phone filter returned {len(filtered_orders)} orders")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing phone filter: {e}")
+        return False
+    
+    # Test POST /api/orders/:id/status with invalid status
+    log("\n1.7 Testing POST /api/orders/:id/status with invalid status...")
+    try:
+        r = requests.post(f"{BASE_URL}/orders/{order_id}/status", json={
+            "status": "invalid_status"
+        }, timeout=10)
+        if r.status_code != 400:
+            log(f"❌ FAILED: Expected 400, got {r.status_code}")
+            return False
+        error_msg = r.json().get('error', '')
+        if "حالة غير صالحة" not in error_msg:
+            log(f"❌ FAILED: Expected Arabic error 'حالة غير صالحة', got: {error_msg}")
+            return False
+        log(f"✅ Correctly rejected invalid status with 400: {error_msg}")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing invalid status: {e}")
+        return False
+    
+    # Test POST /api/orders/:id/status to confirmed
+    log("\n1.8 Testing POST /api/orders/:id/status to 'confirmed'...")
+    try:
+        r = requests.post(f"{BASE_URL}/orders/{order_id}/status", json={
+            "status": "confirmed"
+        }, timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: Status update to confirmed returned {r.status_code}: {r.text}")
+            return False
+        log(f"✅ Order status updated to 'confirmed'")
+    except Exception as e:
+        log(f"❌ FAILED: Error updating status to confirmed: {e}")
+        return False
+    
+    # Get product stock before delivery
+    log("\n1.9 Getting product stock before delivery...")
+    try:
+        r = requests.get(f"{BASE_URL}/products", timeout=10)
+        products_before = r.json()
+        product_before = next((p for p in products_before if p['id'] == product['id']), None)
+        if not product_before:
+            log(f"❌ FAILED: Cannot find product after order creation")
+            return False
+        stock_before = product_before.get('stock', 0)
+        log(f"✅ Product stock before delivery: {stock_before}")
+    except Exception as e:
+        log(f"❌ FAILED: Error getting product stock: {e}")
+        return False
+    
+    # Test POST /api/orders/:id/status to delivered (should decrement stock)
+    log("\n1.10 Testing POST /api/orders/:id/status to 'delivered' (should decrement stock)...")
+    try:
+        r = requests.post(f"{BASE_URL}/orders/{order_id}/status", json={
+            "status": "delivered"
+        }, timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: Status update to delivered returned {r.status_code}: {r.text}")
+            return False
+        log(f"✅ Order status updated to 'delivered'")
+        
+        # Verify stock was decremented
+        time.sleep(0.5)  # Small delay to ensure DB update
+        r = requests.get(f"{BASE_URL}/products", timeout=10)
+        products_after = r.json()
+        product_after = next((p for p in products_after if p['id'] == product['id']), None)
+        if not product_after:
+            log(f"❌ FAILED: Cannot find product after delivery")
+            return False
+        stock_after = product_after.get('stock', 0)
+        
+        expected_stock = stock_before - 2  # We ordered quantity 2
+        if stock_after != expected_stock:
+            log(f"❌ FAILED: Stock should be {expected_stock} (was {stock_before}, ordered 2), got: {stock_after}")
+            return False
+        log(f"✅ Product stock correctly decremented: {stock_before} → {stock_after}")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing delivery stock decrement: {e}")
+        return False
+    
+    # Test DELETE /api/orders/:id
+    log("\n1.11 Testing DELETE /api/orders/:id...")
+    try:
+        r = requests.delete(f"{BASE_URL}/orders/{order_id}", timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: DELETE returned {r.status_code}: {r.text}")
+            return False
+        log(f"✅ Order deleted successfully")
+    except Exception as e:
+        log(f"❌ FAILED: Error deleting order: {e}")
+        return False
+    
+    log("\n✅ ALL E-COMMERCE ORDERS TESTS PASSED")
+    return True
+
+
+def test_bcrypt_login():
+    """Test Bcrypt Employee Login with auto-upgrade"""
+    log("\n" + "=" * 80)
+    log("TEST 2: BCRYPT EMPLOYEE LOGIN + AUTO-UPGRADE")
+    log("=" * 80)
+    
+    # Test with amer/2004 (should be plaintext initially or already upgraded)
+    log("\n2.1 Testing login with amer/2004...")
+    try:
+        r = requests.post(f"{BASE_URL}/employees/login", json={
+            "username": "amer",
+            "password": "2004"
+        }, timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: Login returned {r.status_code}: {r.text}")
+            return False
+        data = r.json()
+        if not data.get('success'):
+            log(f"❌ FAILED: Login success should be true")
+            return False
+        if not data.get('token'):
+            log(f"❌ FAILED: Token should be present")
+            return False
+        if not data.get('employee'):
+            log(f"❌ FAILED: Employee object should be present")
+            return False
+        log(f"✅ Login successful: {data.get('employee', {}).get('name')}, token: {data.get('token')[:20]}...")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing login: {e}")
+        return False
+    
+    # Test with admin/admin (another valid credential)
+    log("\n2.2 Testing login with admin/admin...")
+    try:
+        r = requests.post(f"{BASE_URL}/employees/login", json={
+            "username": "admin",
+            "password": "admin"
+        }, timeout=10)
+        if r.status_code != 200:
+            log(f"⚠️  admin/admin login failed (may not exist): {r.status_code}")
+        else:
+            data = r.json()
+            if data.get('success'):
+                log(f"✅ Login successful: {data.get('employee', {}).get('name')}")
+    except Exception as e:
+        log(f"⚠️  admin/admin test skipped: {e}")
+    
+    # Test login again (should still work with bcrypt)
+    log("\n2.3 Testing login again (password should be upgraded to bcrypt now)...")
+    try:
+        r = requests.post(f"{BASE_URL}/employees/login", json={
+            "username": "amer",
+            "password": "2004"
+        }, timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: Second login returned {r.status_code}: {r.text}")
+            return False
+        data = r.json()
+        if not data.get('success'):
+            log(f"❌ FAILED: Second login success should be true")
+            return False
+        log(f"✅ Second login successful (bcrypt.compare working)")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing second login: {e}")
+        return False
+    
+    # Test with wrong password
+    log("\n2.4 Testing login with wrong password...")
+    try:
+        r = requests.post(f"{BASE_URL}/employees/login", json={
+            "username": "amer",
+            "password": "wrong_password"
+        }, timeout=10)
+        if r.status_code != 401:
+            log(f"❌ FAILED: Expected 401, got {r.status_code}")
+            return False
+        error_msg = r.json().get('error', '')
+        if "بيانات الدخول خاطئة" not in error_msg:
+            log(f"❌ FAILED: Expected Arabic error 'بيانات الدخول خاطئة', got: {error_msg}")
+            return False
+        log(f"✅ Correctly rejected wrong password with 401: {error_msg}")
+    except Exception as e:
+        log(f"❌ FAILED: Error testing wrong password: {e}")
+        return False
+    
+    log("\n✅ ALL BCRYPT LOGIN TESTS PASSED")
+    return True
+
+
+def test_activity_logs():
+    """Test Activity Logs endpoint"""
+    log("\n" + "=" * 80)
+    log("TEST 3: ACTIVITY LOGS")
+    log("=" * 80)
+    
+    # Test GET /api/activity-logs
+    log("\n3.1 Testing GET /api/activity-logs...")
+    try:
+        r = requests.get(f"{BASE_URL}/activity-logs", timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: GET /api/activity-logs returned {r.status_code}")
+            return False
+        logs = r.json()
+        if not isinstance(logs, list):
+            log(f"❌ FAILED: Expected array, got: {type(logs)}")
+            return False
+        log(f"✅ GET /api/activity-logs returned {len(logs)} log entries")
+        
+        # Check if we have order_created from previous test
+        order_created_logs = [l for l in logs if l.get('action') == 'order_created']
+        if len(order_created_logs) > 0:
+            log(f"✅ Found {len(order_created_logs)} 'order_created' activity log entries")
+        else:
+            log(f"⚠️  No 'order_created' entries found (may have been deleted)")
+        
+        # Check if we have login_failed from previous test
+        login_failed_logs = [l for l in logs if l.get('action') == 'login_failed']
+        if len(login_failed_logs) > 0:
+            log(f"✅ Found {len(login_failed_logs)} 'login_failed' activity log entries")
+        else:
+            log(f"⚠️  No 'login_failed' entries found")
+        
+        # Show sample log entry structure
+        if len(logs) > 0:
+            sample = logs[0]
+            log(f"✅ Sample log entry: action={sample.get('action')}, entity={sample.get('entity')}, user={sample.get('user')}")
+    except Exception as e:
+        log(f"❌ FAILED: Error getting activity logs: {e}")
+        return False
+    
+    log("\n✅ ALL ACTIVITY LOGS TESTS PASSED")
+    return True
+
+
+def test_accounting_summary():
+    """Test Accounting Summary endpoint"""
+    log("\n" + "=" * 80)
+    log("TEST 4: ACCOUNTING SUMMARY")
+    log("=" * 80)
+    
+    # Test GET /api/accounting/summary
+    log("\n4.1 Testing GET /api/accounting/summary...")
+    try:
+        r = requests.get(f"{BASE_URL}/accounting/summary", timeout=10)
+        if r.status_code != 200:
+            log(f"❌ FAILED: GET /api/accounting/summary returned {r.status_code}")
+            return False
+        summary = r.json()
+        
+        # Verify structure
+        required_keys = ['period', 'revenue', 'expenses', 'netProfit', 'debts', 'counts', 'breakdown']
+        for key in required_keys:
+            if key not in summary:
+                log(f"❌ FAILED: Missing key '{key}' in summary")
+                return False
+        
+        # Verify revenue structure
+        revenue = summary.get('revenue', {})
+        if not all(k in revenue for k in ['sales', 'activations', 'repairs', 'total']):
+            log(f"❌ FAILED: Revenue missing required keys")
+            return False
+        
+        # Verify expenses structure
+        expenses = summary.get('expenses', {})
+        if not all(k in expenses for k in ['bonuses', 'salaries', 'advances', 'total']):
+            log(f"❌ FAILED: Expenses missing required keys")
+            return False
+        
+        # Verify debts structure
+        debts = summary.get('debts', {})
+        if not all(k in debts for k in ['count', 'total', 'topDebtors']):
+            log(f"❌ FAILED: Debts missing required keys")
+            return False
+        
+        # Verify counts structure
+        counts = summary.get('counts', {})
+        if not all(k in counts for k in ['sales', 'activations', 'repairs']):
+            log(f"❌ FAILED: Counts missing required keys")
+            return False
+        
+        # Verify breakdown is array
+        breakdown = summary.get('breakdown', [])
+        if not isinstance(breakdown, list):
+            log(f"❌ FAILED: Breakdown should be array")
+            return False
+        
+        log(f"✅ Accounting summary structure valid")
+        log(f"   Period: {summary.get('period')}")
+        log(f"   Revenue: {revenue.get('total')} (sales: {revenue.get('sales')}, activations: {revenue.get('activations')}, repairs: {revenue.get('repairs')})")
+        log(f"   Expenses: {expenses.get('total')} (bonuses: {expenses.get('bonuses')}, salaries: {expenses.get('salaries')}, advances: {expenses.get('advances')})")
+        log(f"   Net Profit: {summary.get('netProfit')}")
+        log(f"   Debts: {debts.get('count')} debtors, total: {debts.get('total')}")
+        log(f"   Counts: {counts.get('sales')} sales, {counts.get('activations')} activations, {counts.get('repairs')} repairs")
+        log(f"   Breakdown: {len(breakdown)} entries")
+        log(f"   Top Debtors: {len(debts.get('topDebtors', []))} entries")
+    except Exception as e:
+        log(f"❌ FAILED: Error getting accounting summary: {e}")
+        return False
+    
+    log("\n✅ ALL ACCOUNTING SUMMARY TESTS PASSED")
+    return True
+
 
 def main():
     log("=" * 80)
-    log("STARTING HR FEATURES BACKEND TESTING")
+    log("BACKEND API TESTING - NEW ENDPOINTS ONLY")
+    log("Testing 4 new tasks: Orders, Bcrypt Login, Activity Logs, Accounting")
     log("=" * 80)
     
-    # Step 1: Get employee credentials (ssaa/ssaa)
-    log("\n### STEP 1: Employee Login ###")
-    login_result = test_api("POST", "employees/login", 
-                           {"username": "ssaa", "password": "ssaa"},
-                           expected_status=200,
-                           description="Login with ssaa/ssaa")
-    
-    if not login_result or not login_result.get("success"):
-        log("❌ CRITICAL: Cannot login with ssaa/ssaa. Checking if employee exists...", "ERROR")
-        
-        # Try to get all employees to see what's available
-        employees = test_api("GET", "employees", description="Get all employees")
-        if employees:
-            log(f"Found {len(employees)} employees in DB", "INFO")
-            # Try to find ssaa or create one
-            ssaa_emp = None
-            for emp in employees:
-                if emp.get("username") == "ssaa":
-                    ssaa_emp = emp
-                    break
-            
-            if not ssaa_emp:
-                log("Employee 'ssaa' not found. Creating one...", "INFO")
-                create_result = test_api("POST", "employees",
-                                       {"username": "ssaa", "password": "ssaa", 
-                                        "name": "موظف الاختبار", "role": "موظف",
-                                        "salary": 500000, "kpi": 80},
-                                       expected_status=201,
-                                       description="Create ssaa employee")
-                if create_result:
-                    employee_id = create_result.get("id")
-                    log(f"✅ Created employee with ID: {employee_id}", "PASS")
-                else:
-                    log("❌ Failed to create employee", "ERROR")
-                    return
-            else:
-                employee_id = ssaa_emp.get("id")
-                log(f"✅ Found existing ssaa employee with ID: {employee_id}", "PASS")
-        else:
-            log("❌ Cannot retrieve employees list", "ERROR")
-            return
-    else:
-        employee_id = login_result.get("employee", {}).get("id")
-        log(f"✅ Login successful. Employee ID: {employee_id}", "PASS")
-    
-    # Step 2: Test Attendance with Mandatory Photo
-    log("\n### STEP 2: ATTENDANCE WITH MANDATORY PHOTO (CRITICAL) ###")
-    
-    # Test 2.1: Check-in WITHOUT photoUrl (should fail with 400)
-    log("\n--- Test 2.1: Check-in without photoUrl (expect 400) ---")
-    checkin_no_photo = test_api("POST", "attendance/checkin",
-                               {"employeeId": employee_id},
-                               expected_status=400,
-                               description="Check-in WITHOUT photoUrl")
-    
-    if checkin_no_photo and "error" in checkin_no_photo:
-        error_msg = checkin_no_photo.get("error", "")
-        if "صورة الحضور إلزامية" in error_msg or "صورة" in error_msg:
-            log(f"✅ PASS: Got expected Arabic error: '{error_msg}'", "PASS")
-        else:
-            log(f"⚠️ WARNING: Got error but not the expected Arabic message: '{error_msg}'", "WARN")
-    else:
-        log("❌ FAIL: Expected 400 error with Arabic message", "FAIL")
-    
-    # Test 2.2: Check-in WITH photoUrl (should succeed or duplicate error)
-    log("\n--- Test 2.2: Check-in with photoUrl ---")
-    checkin_with_photo = test_api("POST", "attendance/checkin",
-                                 {"employeeId": employee_id, "photoUrl": "/uploads/test.jpg"},
-                                 expected_status=[200, 400],  # 200 success or 400 duplicate
-                                 description="Check-in WITH photoUrl")
-    
-    if checkin_with_photo:
-        if checkin_with_photo.get("success"):
-            log("✅ PASS: Check-in successful", "PASS")
-            record = checkin_with_photo.get("record", {})
-            if record.get("checkInPhoto") == "/uploads/test.jpg":
-                log(f"✅ PASS: checkInPhoto saved correctly: {record.get('checkInPhoto')}", "PASS")
-            else:
-                log(f"❌ FAIL: checkInPhoto not saved correctly", "FAIL")
-        elif "تم تسجيل الحضور مسبقاً اليوم" in checkin_with_photo.get("error", ""):
-            log("✅ PASS: Got expected duplicate check-in error (employee already checked in today)", "PASS")
-        else:
-            log(f"⚠️ Unexpected response: {checkin_with_photo}", "WARN")
-    
-    # Test 2.3: Check-out WITHOUT photoUrl (should fail with 400)
-    log("\n--- Test 2.3: Check-out without photoUrl (expect 400) ---")
-    checkout_no_photo = test_api("POST", "attendance/checkout",
-                                {"employeeId": employee_id},
-                                expected_status=400,
-                                description="Check-out WITHOUT photoUrl")
-    
-    if checkout_no_photo and "error" in checkout_no_photo:
-        error_msg = checkout_no_photo.get("error", "")
-        if "صورة الانصراف إلزامية" in error_msg or "صورة" in error_msg:
-            log(f"✅ PASS: Got expected Arabic error: '{error_msg}'", "PASS")
-        else:
-            log(f"⚠️ WARNING: Got error but not the expected Arabic message: '{error_msg}'", "WARN")
-    else:
-        log("❌ FAIL: Expected 400 error with Arabic message", "FAIL")
-    
-    # Test 2.4: Check-out WITH photoUrl
-    log("\n--- Test 2.4: Check-out with photoUrl ---")
-    checkout_with_photo = test_api("POST", "attendance/checkout",
-                                  {"employeeId": employee_id, "photoUrl": "/uploads/test_checkout.jpg"},
-                                  expected_status=[200, 400],
-                                  description="Check-out WITH photoUrl")
-    
-    if checkout_with_photo:
-        if checkout_with_photo.get("success"):
-            log("✅ PASS: Check-out successful", "PASS")
-        elif "تم تسجيل الانصراف مسبقاً" in checkout_with_photo.get("error", ""):
-            log("✅ PASS: Got expected duplicate check-out error", "PASS")
-        elif "لم تسجل حضور اليوم" in checkout_with_photo.get("error", ""):
-            log("⚠️ INFO: Cannot check-out without check-in (expected if check-in failed)", "INFO")
-    
-    # Step 3: Test Leaves System
-    log("\n### STEP 3: LEAVES SYSTEM ###")
-    
-    # Test 3.1: Get all leaves
-    log("\n--- Test 3.1: GET /api/leaves ---")
-    leaves_list = test_api("GET", "leaves", description="Get all leaves")
-    if leaves_list is not None:
-        log(f"✅ PASS: Retrieved {len(leaves_list)} leaves", "PASS")
-    
-    # Test 3.2: Create leave request
-    log("\n--- Test 3.2: POST /api/leaves (create leave request) ---")
-    leave_data = {
-        "employeeId": employee_id,
-        "type": "annual",
-        "reason": "إجازة سنوية",
-        "startDate": "2026-06-01",
-        "endDate": "2026-06-05",
-        "days": 5
+    results = {
+        "E-commerce Orders": False,
+        "Bcrypt Employee Login": False,
+        "Activity Logs": False,
+        "Accounting Summary": False
     }
-    leave_created = test_api("POST", "leaves", leave_data,
-                            expected_status=201,
-                            description="Create leave request")
     
-    leave_id = None
-    if leave_created and leave_created.get("id"):
-        leave_id = leave_created.get("id")
-        log(f"✅ PASS: Leave created with ID: {leave_id}, status: {leave_created.get('status')}", "PASS")
-        if leave_created.get("status") == "pending":
-            log("✅ PASS: Leave status is 'pending' as expected", "PASS")
-    else:
-        log("❌ FAIL: Failed to create leave", "FAIL")
+    # Run tests
+    results["E-commerce Orders"] = test_orders_crud()
+    results["Bcrypt Employee Login"] = test_bcrypt_login()
+    results["Activity Logs"] = test_activity_logs()
+    results["Accounting Summary"] = test_accounting_summary()
     
-    # Test 3.3: Get leaves filtered by employeeId
-    log("\n--- Test 3.3: GET /api/leaves?employeeId=X ---")
-    emp_leaves = test_api("GET", f"leaves?employeeId={employee_id}",
-                         description="Get leaves for employee")
-    if emp_leaves is not None:
-        log(f"✅ PASS: Retrieved {len(emp_leaves)} leaves for employee", "PASS")
-        if leave_id and any(l.get("id") == leave_id for l in emp_leaves):
-            log("✅ PASS: Created leave appears in employee's leaves list", "PASS")
-    
-    # Test 3.4: Get leave balance
-    log("\n--- Test 3.4: GET /api/employees/:id/leave-balance ---")
-    leave_balance = test_api("GET", f"employees/{employee_id}/leave-balance",
-                            description="Get leave balance")
-    if leave_balance:
-        log(f"✅ PASS: Leave balance retrieved", "PASS")
-        log(f"  Year: {leave_balance.get('year')}", "INFO")
-        log(f"  Allowance: {leave_balance.get('allowance')}", "INFO")
-        log(f"  Used: {leave_balance.get('used')}", "INFO")
-        log(f"  Pending: {leave_balance.get('pending')}", "INFO")
-        log(f"  Remaining: {leave_balance.get('remaining')}", "INFO")
-        
-        if leave_balance.get("allowance") == 24:
-            log("✅ PASS: Yearly allowance is 24 days (default)", "PASS")
-        if leave_balance.get("pending") == 5:
-            log("✅ PASS: Pending days is 5 (our leave request)", "PASS")
-    
-    # Test 3.5: Approve leave
-    if leave_id:
-        log("\n--- Test 3.5: POST /api/leaves/:id/approve ---")
-        approve_result = test_api("POST", f"leaves/{leave_id}/approve",
-                                 {"approvedBy": "المدير"},
-                                 expected_status=200,
-                                 description="Approve leave")
-        if approve_result and approve_result.get("success"):
-            log("✅ PASS: Leave approved successfully", "PASS")
-            
-            # Verify leave balance updated
-            log("\n--- Test 3.5b: Verify leave balance after approval ---")
-            balance_after = test_api("GET", f"employees/{employee_id}/leave-balance",
-                                    description="Get leave balance after approval")
-            if balance_after:
-                log(f"  Used: {balance_after.get('used')}", "INFO")
-                log(f"  Pending: {balance_after.get('pending')}", "INFO")
-                log(f"  Remaining: {balance_after.get('remaining')}", "INFO")
-                
-                if balance_after.get("used") == 5:
-                    log("✅ PASS: Used days updated to 5", "PASS")
-                if balance_after.get("pending") == 0:
-                    log("✅ PASS: Pending days updated to 0", "PASS")
-    
-    # Test 3.6: Create another leave and reject it
-    log("\n--- Test 3.6: Create another leave and reject it ---")
-    leave_data2 = {
-        "employeeId": employee_id,
-        "type": "sick",
-        "reason": "إجازة مرضية",
-        "startDate": "2026-06-10",
-        "endDate": "2026-06-12",
-        "days": 3
-    }
-    leave_created2 = test_api("POST", "leaves", leave_data2,
-                             expected_status=201,
-                             description="Create second leave request")
-    
-    leave_id2 = None
-    if leave_created2 and leave_created2.get("id"):
-        leave_id2 = leave_created2.get("id")
-        log(f"✅ PASS: Second leave created with ID: {leave_id2}", "PASS")
-        
-        # Reject it
-        log("\n--- Test 3.6b: POST /api/leaves/:id/reject ---")
-        reject_result = test_api("POST", f"leaves/{leave_id2}/reject",
-                                {"approvedBy": "المدير", "reason": "لا توجد موارد"},
-                                expected_status=200,
-                                description="Reject leave")
-        if reject_result and reject_result.get("success"):
-            log("✅ PASS: Leave rejected successfully", "PASS")
-    
-    # Test 3.7: Verify notifications created
-    log("\n--- Test 3.7: Verify notifications for employee ---")
-    notifications = test_api("GET", f"notifications?userId={employee_id}",
-                            description="Get employee notifications")
-    if notifications is not None:
-        log(f"✅ PASS: Retrieved {len(notifications)} notifications", "PASS")
-        leave_notifs = [n for n in notifications if "leave" in n.get("type", "")]
-        if leave_notifs:
-            log(f"✅ PASS: Found {len(leave_notifs)} leave-related notifications", "PASS")
-            for notif in leave_notifs[:2]:
-                log(f"  - {notif.get('title')}: {notif.get('message')[:50]}...", "INFO")
-    
-    # Step 4: Test Advances System
-    log("\n### STEP 4: ADVANCES SYSTEM ###")
-    
-    # Test 4.1: Create advance request
-    log("\n--- Test 4.1: POST /api/advances (create advance request) ---")
-    advance_data = {
-        "employeeId": employee_id,
-        "amount": 300000,
-        "reason": "سلفة طارئة",
-        "installments": 3
-    }
-    advance_created = test_api("POST", "advances", advance_data,
-                              expected_status=201,
-                              description="Create advance request")
-    
-    advance_id = None
-    if advance_created and advance_created.get("id"):
-        advance_id = advance_created.get("id")
-        log(f"✅ PASS: Advance created with ID: {advance_id}", "PASS")
-        log(f"  Status: {advance_created.get('status')}", "INFO")
-        log(f"  Amount: {advance_created.get('amount')}", "INFO")
-        log(f"  Installments: {advance_created.get('installments')}", "INFO")
-        log(f"  Per Installment: {advance_created.get('perInstallment')}", "INFO")
-        
-        if advance_created.get("status") == "pending":
-            log("✅ PASS: Advance status is 'pending'", "PASS")
-        if advance_created.get("perInstallment") == 100000:
-            log("✅ PASS: Per installment calculated correctly (300000/3=100000)", "PASS")
-    
-    # Test 4.2: Get advances for employee
-    log("\n--- Test 4.2: GET /api/advances?employeeId=X ---")
-    emp_advances = test_api("GET", f"advances?employeeId={employee_id}",
-                           description="Get advances for employee")
-    if emp_advances is not None:
-        log(f"✅ PASS: Retrieved {len(emp_advances)} advances", "PASS")
-    
-    # Test 4.3: Approve advance with modified installments
-    if advance_id:
-        log("\n--- Test 4.3: POST /api/advances/:id/approve (with installments=6) ---")
-        approve_adv = test_api("POST", f"advances/{advance_id}/approve",
-                              {"installments": 6},
-                              expected_status=200,
-                              description="Approve advance with 6 installments")
-        if approve_adv and approve_adv.get("success"):
-            log("✅ PASS: Advance approved successfully", "PASS")
-            
-            # Verify installments updated
-            adv_after = test_api("GET", f"advances?employeeId={employee_id}",
-                                description="Get advances after approval")
-            if adv_after:
-                approved_adv = next((a for a in adv_after if a.get("id") == advance_id), None)
-                if approved_adv:
-                    log(f"  Status: {approved_adv.get('status')}", "INFO")
-                    log(f"  Installments: {approved_adv.get('installments')}", "INFO")
-                    log(f"  Per Installment: {approved_adv.get('perInstallment')}", "INFO")
-                    
-                    if approved_adv.get("installments") == 6:
-                        log("✅ PASS: Installments updated to 6", "PASS")
-                    if approved_adv.get("perInstallment") == 50000:
-                        log("✅ PASS: Per installment recalculated (300000/6=50000)", "PASS")
-    
-    # Test 4.4: Check payroll with advance deduction
-    log("\n--- Test 4.4: GET /api/employees/:id/payroll?month=2026-05 ---")
-    payroll = test_api("GET", f"employees/{employee_id}/payroll?month=2026-05",
-                      description="Get payroll with advance deduction")
-    if payroll:
-        log(f"✅ PASS: Payroll retrieved", "PASS")
-        log(f"  Base Salary: {payroll.get('baseSalary')}", "INFO")
-        log(f"  Bonuses: {payroll.get('bonuses')}", "INFO")
-        log(f"  Late Deductions: {payroll.get('lateDeductions')}", "INFO")
-        log(f"  Advance Deduction: {payroll.get('advanceDeduction')}", "INFO")
-        log(f"  Total Deductions: {payroll.get('deductions')}", "INFO")
-        log(f"  Final Salary: {payroll.get('finalSalary')}", "INFO")
-        
-        if payroll.get("advanceDeduction") == 50000:
-            log("✅ PASS: Advance deduction is 50000 (one installment)", "PASS")
-        
-        active_advances = payroll.get("activeAdvances", [])
-        if active_advances:
-            log(f"✅ PASS: Found {len(active_advances)} active advances in payroll", "PASS")
-            for adv in active_advances:
-                log(f"  - Amount: {adv.get('amount')}, Per Installment: {adv.get('perInstallment')}, Paid: {adv.get('paid')}/{adv.get('installments')}", "INFO")
-    
-    # Test 4.5: Pay installment
-    if advance_id:
-        log("\n--- Test 4.5: POST /api/advances/:id/pay-installment ---")
-        pay_result = test_api("POST", f"advances/{advance_id}/pay-installment",
-                             expected_status=200,
-                             description="Pay one installment")
-        if pay_result and pay_result.get("success"):
-            log(f"✅ PASS: Installment paid successfully", "PASS")
-            log(f"  Paid Installments: {pay_result.get('paidInstallments')}", "INFO")
-            log(f"  Remaining: {pay_result.get('remaining')}", "INFO")
-            
-            if pay_result.get("paidInstallments") == 1:
-                log("✅ PASS: Paid installments incremented to 1", "PASS")
-            if pay_result.get("remaining") == 250000:
-                log("✅ PASS: Remaining amount is 250000 (300000 - 50000)", "PASS")
-        
-        # Pay remaining installments to complete
-        log("\n--- Test 4.5b: Pay remaining 5 installments ---")
-        for i in range(2, 7):
-            pay_result = test_api("POST", f"advances/{advance_id}/pay-installment",
-                                 expected_status=200,
-                                 description=f"Pay installment {i}/6")
-            if pay_result:
-                log(f"  Installment {i}/6 paid. Remaining: {pay_result.get('remaining')}", "INFO")
-        
-        # Verify final status
-        adv_final = test_api("GET", f"advances?employeeId={employee_id}",
-                            description="Get advances after all payments")
-        if adv_final:
-            completed_adv = next((a for a in adv_final if a.get("id") == advance_id), None)
-            if completed_adv:
-                log(f"  Final Status: {completed_adv.get('status')}", "INFO")
-                if completed_adv.get("status") == "paid":
-                    log("✅ PASS: Advance status changed to 'paid' after all installments", "PASS")
-    
-    # Test 4.6: Create and reject another advance
-    log("\n--- Test 4.6: Create and reject another advance ---")
-    advance_data2 = {
-        "employeeId": employee_id,
-        "amount": 500000,
-        "reason": "سلفة كبيرة",
-        "installments": 10
-    }
-    advance_created2 = test_api("POST", "advances", advance_data2,
-                               expected_status=201,
-                               description="Create second advance")
-    
-    advance_id2 = None
-    if advance_created2 and advance_created2.get("id"):
-        advance_id2 = advance_created2.get("id")
-        log(f"✅ PASS: Second advance created with ID: {advance_id2}", "PASS")
-        
-        # Reject it
-        log("\n--- Test 4.6b: POST /api/advances/:id/reject ---")
-        reject_adv = test_api("POST", f"advances/{advance_id2}/reject",
-                             {"reason": "تجاوز الحد"},
-                             expected_status=200,
-                             description="Reject advance")
-        if reject_adv and reject_adv.get("success"):
-            log("✅ PASS: Advance rejected successfully", "PASS")
-    
-    # Step 5: Test Notifications (Admin)
-    log("\n### STEP 5: NOTIFICATIONS (ADMIN) ###")
-    
-    # Test 5.1: Get admin notifications
-    log("\n--- Test 5.1: GET /api/notifications/admin ---")
-    admin_notifs = test_api("GET", "notifications/admin",
-                           description="Get admin/manager notifications")
-    if admin_notifs is not None:
-        log(f"✅ PASS: Retrieved {len(admin_notifs)} admin notifications", "PASS")
-        
-        # Check for leave/advance notifications
-        leave_notifs = [n for n in admin_notifs if "leave" in n.get("type", "")]
-        advance_notifs = [n for n in admin_notifs if "advance" in n.get("type", "")]
-        
-        if leave_notifs:
-            log(f"✅ PASS: Found {len(leave_notifs)} leave notifications for managers", "PASS")
-        if advance_notifs:
-            log(f"✅ PASS: Found {len(advance_notifs)} advance notifications for managers", "PASS")
-        
-        # Show sample notifications
-        for notif in admin_notifs[:3]:
-            log(f"  - [{notif.get('type')}] {notif.get('title')}", "INFO")
-    else:
-        log("⚠️ INFO: No admin notifications (may be empty if no manager exists in DB)", "INFO")
-    
-    # Test 5.2: Mark all admin notifications as read
-    log("\n--- Test 5.2: POST /api/notifications/admin/read-all ---")
-    read_all = test_api("POST", "notifications/admin/read-all",
-                       expected_status=200,
-                       description="Mark all admin notifications as read")
-    if read_all and read_all.get("success"):
-        log("✅ PASS: All admin notifications marked as read", "PASS")
-        
-        # Verify all are read
-        admin_notifs_after = test_api("GET", "notifications/admin",
-                                     description="Get admin notifications after read-all")
-        if admin_notifs_after:
-            unread = [n for n in admin_notifs_after if not n.get("read")]
-            if len(unread) == 0:
-                log("✅ PASS: All notifications are now read=true", "PASS")
-            else:
-                log(f"⚠️ WARNING: Still have {len(unread)} unread notifications", "WARN")
-    
-    # Step 6: Test Telegram (with fake token, must not crash)
-    log("\n### STEP 6: TELEGRAM (CONFIGURED WITH FAKE TOKEN) ###")
-    
-    # Test 6.1: Configure telegram with fake token
-    log("\n--- Test 6.1: PUT /api/settings (enable telegram with fake token) ---")
-    telegram_settings = {
-        "telegram": {
-            "enabled": True,
-            "botToken": "123:fakeToken",
-            "managerChatId": "999"
-        }
-    }
-    settings_result = test_api("PUT", "settings", telegram_settings,
-                              expected_status=200,
-                              description="Enable telegram with fake token")
-    if settings_result:
-        log("✅ PASS: Settings updated with telegram config", "PASS")
-    
-    # Test 6.2: Create a leave/advance to trigger telegram notification (should not crash)
-    log("\n--- Test 6.2: Create leave to trigger telegram (should not crash) ---")
-    leave_data3 = {
-        "employeeId": employee_id,
-        "type": "emergency",
-        "reason": "إجازة طارئة",
-        "startDate": "2026-06-20",
-        "endDate": "2026-06-21",
-        "days": 2
-    }
-    leave_with_telegram = test_api("POST", "leaves", leave_data3,
-                                  expected_status=201,
-                                  description="Create leave with telegram enabled")
-    if leave_with_telegram and leave_with_telegram.get("id"):
-        log("✅ PASS: Leave created successfully (telegram did not crash the app)", "PASS")
-    else:
-        log("❌ FAIL: Leave creation failed (telegram may have crashed)", "FAIL")
-    
-    # Test 6.3: Test telegram endpoint directly
-    log("\n--- Test 6.3: POST /api/settings/test/telegram ---")
-    telegram_test = test_api("POST", "settings/test/telegram",
-                            expected_status=[200, 400],
-                            description="Test telegram endpoint")
-    if telegram_test:
-        if telegram_test.get("error"):
-            log(f"✅ PASS: Telegram test returned error gracefully (no crash): {telegram_test.get('error')}", "PASS")
-        elif telegram_test.get("success"):
-            log("✅ PASS: Telegram test succeeded (unexpected with fake token)", "PASS")
-    
-    # Test 6.4: Disable telegram
-    log("\n--- Test 6.4: PUT /api/settings (disable telegram) ---")
-    disable_telegram = {
-        "telegram": {
-            "enabled": False
-        }
-    }
-    disable_result = test_api("PUT", "settings", disable_telegram,
-                             expected_status=200,
-                             description="Disable telegram")
-    if disable_result:
-        log("✅ PASS: Telegram disabled", "PASS")
-    
-    # Step 7: Cleanup
-    log("\n### STEP 7: CLEANUP ###")
-    
-    # Delete test leaves
-    if leave_id:
-        log(f"\n--- Deleting test leave {leave_id} ---")
-        test_api("DELETE", f"leaves/{leave_id}", description="Delete test leave 1")
-    if leave_id2:
-        log(f"--- Deleting test leave {leave_id2} ---")
-        test_api("DELETE", f"leaves/{leave_id2}", description="Delete test leave 2")
-    
-    # Delete test advances
-    if advance_id:
-        log(f"\n--- Deleting test advance {advance_id} ---")
-        test_api("DELETE", f"advances/{advance_id}", description="Delete test advance 1")
-    if advance_id2:
-        log(f"--- Deleting test advance {advance_id2} ---")
-        test_api("DELETE", f"advances/{advance_id2}", description="Delete test advance 2")
-    
+    # Summary
     log("\n" + "=" * 80)
-    log("TESTING COMPLETE")
+    log("TEST SUMMARY")
     log("=" * 80)
+    for task, passed in results.items():
+        status = "✅ PASSED" if passed else "❌ FAILED"
+        log(f"{status}: {task}")
+    
+    all_passed = all(results.values())
+    if all_passed:
+        log("\n🎉 ALL TESTS PASSED!")
+    else:
+        log("\n❌ SOME TESTS FAILED")
+    
+    return 0 if all_passed else 1
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        log("\n\nTesting interrupted by user", "WARN")
-        sys.exit(1)
-    except Exception as e:
-        log(f"\n\nFATAL ERROR: {str(e)}", "ERROR")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    exit(main())

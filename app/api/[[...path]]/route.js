@@ -936,7 +936,7 @@ async function handle(request, params) {
     };
     await db.collection('orders').insertOne(doc);
     delete doc._id;
-    await logActivity(db, { action: 'order_created', entity: 'orders', entityId: doc.id, user: customerName, details: `طلب جديد ${orderNumber} بقيمة ${fmt(total)} د.ع`, ip: clientIp });
+    await logActivity(db, { action: 'order_created', entity: 'orders', entityId: doc.id, user: customerName, details: `طلب جديد ${orderNumber} بقيمة ${total.toLocaleString('en-US')} د.ع`, ip: clientIp });
     await notifyManager(db, {
       type: 'order_new', title: `🛒 طلب جديد: ${orderNumber}`,
       message: `العميل: ${customerName}\nالهاتف: ${customerPhone}\nالمنتجات: ${cleanItems.length}\nالإجمالي: ${total.toLocaleString('en-US')} د.ع`,
