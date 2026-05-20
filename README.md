@@ -68,19 +68,31 @@ npm start              # listens on 0.0.0.0:3000
 1. Push project to GitHub
 2. Go to [vercel.com/new](https://vercel.com/new) → Import repo
 3. **Framework Preset:** Next.js (auto-detected)
-4. **Environment Variables** — add these:
+4. **Environment Variables** — add these (in Project → Settings → Environment Variables):
 
-   | Key | Value |
-   |---|---|
-   | `MONGO_URL` | Your MongoDB Atlas URI |
-   | `DB_NAME` | `ghazlan_erp` |
-   | `NEXT_PUBLIC_BASE_URL` | `https://your-app.vercel.app` |
-   | `EMERGENT_LLM_KEY` | (optional) |
-   | `TELEGRAM_BOT_TOKEN` | (optional) |
+   | Key | Required | Value |
+   |---|---|---|
+   | `MONGO_URL` | ✅ Yes | Your MongoDB Atlas URI: `mongodb+srv://USER:PASS@cluster.xxxx.mongodb.net/?retryWrites=true&w=majority` |
+   | `DB_NAME` | ✅ Yes | `ghazlan_erp` |
+   | `NEXT_PUBLIC_BASE_URL` | ✅ Yes | `https://your-app.vercel.app` |
+   | `EMERGENT_LLM_KEY` | optional | Enables AI Assistant |
+   | `TELEGRAM_BOT_TOKEN` | optional | Enables Telegram Bot |
+   | `TELEGRAM_SUPER_ADMIN_ID` | optional | Numeric Telegram ID |
+   | `NEXT_PUBLIC_API_URL` | leave EMPTY | Only set if you split backend onto a separate domain |
 
 5. Click **Deploy** ✅
 
-> `vercel.json` already configured for 60s function timeout + CORS headers.
+6. **After deploy — verify health:**
+   ```
+   https://your-app.vercel.app/api/health
+   ```
+   Should return:
+   ```json
+   { "status": "ok", "dbConnected": true, "dbError": null, "ts": "…" }
+   ```
+   If `dbConnected: false`, double-check `MONGO_URL` in Vercel env vars and that the Atlas IP allowlist includes `0.0.0.0/0` (or Vercel's egress IPs).
+
+> **Tip:** All three "Application Error" / 500 cases (`/api/dashboard/stats`, `/api/notifications/admin`, `/api/ai/insights`) are now self-healing — even if Mongo is briefly unreachable, the endpoints return safe-shape empty data so the UI never crashes. `vercel.json` is already configured for 60s function timeout + CORS headers.
 
 ### 2️⃣ Render
 
