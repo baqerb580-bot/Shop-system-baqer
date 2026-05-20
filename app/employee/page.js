@@ -1523,6 +1523,32 @@ function EmployeeDashboard({ employee, onLogout }) {
   );
 }
 
+// ============================== IDLE LOGOUT HOOK ==============================
+function useIdleLogout(onLogout, timeoutMs = 10 * 60 * 1000) {
+  useEffect(() => {
+    let timer;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { onLogout(true); }, timeoutMs);
+    };
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    events.forEach(e => window.addEventListener(e, reset));
+    reset();
+    // Session validation every 60s
+    const ival = setInterval(async () => {
+      const t = getToken();
+      if (!t) return;
+      const r = await api('sessions/validate', { method: 'POST', body: JSON.stringify({ token: t }) });
+      if (r.error) onLogout(true);
+    }, 60000);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(ival);
+      events.forEach(e => window.removeEventListener(e, reset));
+    };
+  }, [onLogout, timeoutMs]);
+}
+
 // ============================== ROOT ==============================
 function EmployeePortal() {
   const [employee, setEmployee] = useState(null);
@@ -1532,13 +1558,20 @@ function EmployeePortal() {
     if (s) try { setEmployee(JSON.parse(s).employee); } catch {}
     setLoading(false);
   }, []);
-  const logout = () => { localStorage.removeItem('emp_session'); setEmployee(null); };
+  const logout = async (idle = false) => {
+    const t = getToken();
+    if (t) await api('sessions/logout', { method: 'POST', body: JSON.stringify({ token: t }) }).catch(() => null);
+    localStorage.removeItem('emp_session');
+    setEmployee(null);
+    if (idle) toast.error('🔒 تم تسجيل الخروج تلقائياً بسبب الخمول');
+  };
+  useIdleLogout(logout);
 
   if (loading) return null;
 
   return (
     <>
-      {employee ? <EmployeeDashboard employee={employee} onLogout={logout} /> : <LoginScreen onLogin={setEmployee} />}
+      {employee ? <EmployeeDashboard employee={employee} onLogout={() => logout(false)} /> : <LoginScreen onLogin={setEmployee} />}
       <Toaster position="top-center" theme="dark" richColors />
     </>
   );

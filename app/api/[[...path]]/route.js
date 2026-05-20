@@ -500,6 +500,15 @@ async function notifyManager(db, { title, message, type, taskId, employeeId }) {
 }
 
 import { tgSend, tgEdit, tgAnswerCallback, buildHome, buildReports, buildEmployees, buildSubscribers, buildFinance, buildMaintenance, buildNetwork, buildMe, buildLogs, buildAdmin, ROLE_DEFAULT_PERMS, PERMS_ALL } from '@/lib/telegram-bot';
+import bcrypt from 'bcryptjs';
+
+const isBcrypt = (s) => typeof s === 'string' && s.startsWith('$2');
+const verifyPassword = async (plain, stored) => {
+  if (!stored) return false;
+  if (isBcrypt(stored)) return bcrypt.compare(plain, stored);
+  return plain === stored; // legacy plaintext fallback
+};
+const hashPassword = async (plain) => bcrypt.hash(plain, 10);
 
 async function handle(request, params) {
   const path = (params?.path || []).join('/');
@@ -566,6 +575,33 @@ async function handle(request, params) {
     'tasks': 'tasks',
     'payroll-entries': 'payroll_entries',
   };
+
+  // Hash password when creating an employee
+  if (path === 'employees' && method === 'POST') {
+    const body = await getJsonBody(request);
+    if (body.password) body.password = await hashPassword(body.password);
+    const doc = { id: uuidv4(), ...body, createdAt: new Date().toISOString() };
+    await db.collection('employees').insertOne(doc);
+    delete doc._id;
+    await logActivity(db, { action: 'employee_created', entity: 'employees', entityId: doc.id, user: 'المدير', details: `إضافة موظف ${doc.name}`, ip: clientIp });
+    return ok(doc, 201);
+  }
+  // Hash password when updating an employee (only if password provided)
+  if (path.match(/^employees\/[^/]+$/) && method === 'PUT' && !path.includes('/repairs/')) {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    delete body._id; delete body.id;
+    if (body.password) {
+      if (!isBcrypt(body.password)) body.password = await hashPassword(body.password);
+    } else {
+      delete body.password; // don't clobber if not provided
+    }
+    await db.collection('employees').updateOne({ id }, { $set: body });
+    const updated = await db.collection('employees').findOne({ id });
+    if (updated) { delete updated._id; delete updated.password; }
+    await logActivity(db, { action: 'employee_updated', entity: 'employees', entityId: id, user: 'المدير', details: `تعديل موظف ${updated?.name || ''}`, ip: clientIp });
+    return ok(updated);
+  }
 
   // Special-case: when creating a task, default status='pending' and notify assignee
   if (path === 'tasks' && method === 'POST') {
@@ -793,10 +829,86 @@ async function handle(request, params) {
   // ============ HR / EMPLOYEE ENDPOINTS ============
   if (path === 'employees/login' && method === 'POST') {
     const { username, password } = await getJsonBody(request);
-    const emp = await db.collection('employees').findOne({ username, password });
-    if (!emp) return err('بيانات الدخول خاطئة', 401);
+    const emp = await db.collection('employees').findOne({ username });
+    if (!emp) {
+      await logActivity(db, { action: 'login_failed', entity: 'employees', user: username, details: 'username not found', ip: clientIp });
+      return err('بيانات الدخول خاطئة', 401);
+    }
+    const ok2 = await verifyPassword(password, emp.password);
+    if (!ok2) {
+      await logActivity(db, { action: 'login_failed', entity: 'employees', user: username, userId: emp.id, details: 'wrong password', ip: clientIp });
+      return err('بيانات الدخول خاطئة', 401);
+    }
+    // Upgrade legacy plaintext to bcrypt on successful login
+    if (!isBcrypt(emp.password)) {
+      const newHash = await hashPassword(password);
+      await db.collection('employees').updateOne({ id: emp.id }, { $set: { password: newHash } });
+    }
     delete emp._id;
-    return ok({ success: true, employee: emp, token: `emp_${emp.id}_${Date.now()}` });
+    const token = `emp_${emp.id}_${Date.now()}`;
+    await db.collection('sessions').insertOne({
+      id: uuidv4(), token, employeeId: emp.id, employeeName: emp.name,
+      ip: clientIp, userAgent: request.headers.get('user-agent') || '',
+      createdAt: new Date().toISOString(), lastActivity: new Date().toISOString(), active: true,
+    });
+    await logActivity(db, { action: 'login_success', entity: 'employees', user: emp.name, userId: emp.id, details: 'تسجيل دخول ناجح', ip: clientIp });
+    delete emp.password;
+    return ok({ success: true, employee: emp, token });
+  }
+
+  // Session validation (for idle logout)
+  if (path === 'sessions/validate' && method === 'POST') {
+    const { token } = await getJsonBody(request);
+    if (!token) return err('غير مصرح', 401);
+    const s = await db.collection('sessions').findOne({ token, active: true });
+    if (!s) return err('انتهت الجلسة', 401);
+    await db.collection('sessions').updateOne({ id: s.id }, { $set: { lastActivity: new Date().toISOString() } });
+    return ok({ valid: true });
+  }
+  // Logout
+  if (path === 'sessions/logout' && method === 'POST') {
+    const { token } = await getJsonBody(request);
+    if (token) {
+      const s = await db.collection('sessions').findOne({ token });
+      if (s) {
+        await db.collection('sessions').updateOne({ id: s.id }, { $set: { active: false, loggedOutAt: new Date().toISOString() } });
+        await logActivity(db, { action: 'logout', entity: 'employees', user: s.employeeName, userId: s.employeeId, ip: clientIp });
+      }
+    }
+    return ok({ success: true });
+  }
+  // Sessions list (admin)
+  if (path === 'sessions' && method === 'GET') {
+    const sessions = await db.collection('sessions').find({}).sort({ createdAt: -1 }).limit(200).toArray();
+    return ok(sessions.map(s => { delete s._id; return s; }));
+  }
+  // Terminate session (admin)
+  if (path.match(/^sessions\/[^/]+\/terminate$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    await db.collection('sessions').updateOne({ id }, { $set: { active: false, terminatedAt: new Date().toISOString() } });
+    return ok({ success: true });
+  }
+
+  // ============ ACTIVITY LOGS VIEWER ============
+  if (path === 'activity-logs' && method === 'GET') {
+    const url = new URL(request.url);
+    const limit = Math.min(1000, Number(url.searchParams.get('limit') || 200));
+    const action = url.searchParams.get('action');
+    const entity = url.searchParams.get('entity');
+    const userId = url.searchParams.get('userId');
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+    const q = {};
+    if (action) q.action = action;
+    if (entity) q.entity = entity;
+    if (userId) q.userId = userId;
+    if (from || to) {
+      q.timestamp = {};
+      if (from) q.timestamp.$gte = from;
+      if (to) q.timestamp.$lte = to;
+    }
+    const items = await db.collection('activity_logs').find(q).sort({ timestamp: -1 }).limit(limit).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
   }
 
   // Check-in
