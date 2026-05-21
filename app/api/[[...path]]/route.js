@@ -555,6 +555,158 @@ async function notifyManager(db, { title, message, type, taskId, employeeId }) {
 
 import { tgSend, tgEdit, tgAnswerCallback, buildHome, buildReports, buildEmployees, buildSubscribers, buildFinance, buildMaintenance, buildNetwork, buildMe, buildLogs, buildAdmin, ROLE_DEFAULT_PERMS, PERMS_ALL } from '@/lib/telegram-bot';
 import bcrypt from 'bcryptjs';
+import { isConfigured as waIsConfigured, waStatus, waHealth, waQr, waConnect, waDisconnect, waSend, waSendBulk } from '@/lib/whatsapp-client';
+
+// ============ WHATSAPP TEMPLATES (with variable substitution) ============
+const WA_DEFAULT_TEMPLATES = {
+  activation: `🎉 *تم تفعيل اشتراكك بنجاح* 🎉
+
+عزيزي *{name}*، تفاصيل اشتراكك:
+
+👤 *اليوزر:* {username}
+📦 *الباقة:* {package}
+⚡ *السرعة:* {speed}
+💰 *مبلغ الاشتراك:* {amount} د.ع
+✅ *المبلغ الواصل:* {paid} د.ع
+❌ *المبلغ المتبقي:* {remaining} د.ع
+📅 *تاريخ التفعيل:* {startDate}
+⏰ *تاريخ الانتهاء:* {endDate}
+🧾 *رقم الوصل:* {receiptNo}
+🏢 *المكتب/الوكيل:* {office}
+
+شكراً لاختيارك *مركز الغزلان* 🌟
+للاستفسار: {companyPhone}`,
+  expiry: `⚠️ *انتهاء الاشتراك*
+
+عزيزي *{name}*،
+انتهى اشتراك الإنترنت الخاص بك في *{endDate}*.
+
+📦 الباقة: {package}
+💰 رسوم التجديد: {amount} د.ع
+
+يرجى التواصل لتجديد اشتراكك:
+📞 {companyPhone}
+
+*مركز الغزلان* 🌟`,
+  expiry_alert: `🔔 *تنبيه: قارب اشتراكك على الانتهاء*
+
+عزيزي *{name}*،
+سينتهي اشتراك الإنترنت الخاص بك بعد *{daysLeft}* يوم/أيام.
+
+📅 تاريخ الانتهاء: {endDate}
+📦 الباقة: {package}
+💰 رسوم التجديد: {amount} د.ع
+
+للتجديد المبكر: 📞 {companyPhone}
+*مركز الغزلان* 🌟`,
+  debt: `💸 *تذكير بمستحقات مالية*
+
+عزيزي *{name}*،
+لديك مبلغ غير مدفوع مقابل خدمة الإنترنت:
+
+💰 *مبلغ الدين:* {debt} د.ع
+📅 تاريخ آخر فاتورة: {endDate}
+
+يرجى التسديد في أقرب وقت لتجنب إيقاف الخدمة.
+📞 {companyPhone}
+
+*مركز الغزلان*`,
+  receipt: `🧾 *وصل اشتراك*
+
+السيد/ة *{name}*،
+رقم الوصل: *{receiptNo}*
+
+📦 الباقة: {package}
+⚡ السرعة: {speed}
+💰 المبلغ الإجمالي: {amount} د.ع
+✅ المدفوع: {paid} د.ع
+❌ المتبقي: {remaining} د.ع
+📅 التفعيل: {startDate}
+⏰ الانتهاء: {endDate}
+🏢 المكتب: {office}
+
+شكراً لاختياركم *مركز الغزلان*`,
+  generic: `مرحباً *{name}*،
+
+{message}
+
+*مركز الغزلان*`,
+};
+
+const fillWaTemplate = (tpl, vars) => {
+  if (!tpl) return '';
+  return String(tpl).replace(/\{(\w+)\}/g, (_, k) => {
+    const v = vars[k];
+    if (v === undefined || v === null) return '';
+    if (typeof v === 'number') return v.toLocaleString();
+    return String(v);
+  });
+};
+
+const buildSubscriberVars = async (db, sub, extra = {}) => {
+  const settings = (await db.collection('settings').findOne({})) || {};
+  const general = settings?.general || SETTINGS_DEFAULTS.general;
+  return {
+    name: sub?.name || '',
+    username: sub?.username || '',
+    phone: sub?.phone || '',
+    package: sub?.package || extra.packageName || '',
+    speed: sub?.speed || extra.speed || '',
+    amount: sub?.fee || extra.amount || 0,
+    paid: extra.paid ?? 0,
+    remaining: extra.remaining ?? 0,
+    debt: sub?.debt || 0,
+    endDate: sub?.endDate ? new Date(sub.endDate).toLocaleDateString('ar-IQ') : (extra.endDate || ''),
+    startDate: extra.startDate || (sub?.startDate ? new Date(sub.startDate).toLocaleDateString('ar-IQ') : ''),
+    daysLeft: extra.daysLeft ?? '',
+    receiptNo: extra.receiptNo || '',
+    office: extra.office || sub?.agentName || general.companyName || '',
+    companyName: general.companyName || 'مركز الغزلان',
+    companyPhone: general.phone || '07901234567',
+    address: general.address || '',
+    message: extra.message || '',
+    ...extra,
+  };
+};
+
+// Persist message + send to service. Returns { success, messageRecord, serviceResp }
+async function dispatchWhatsApp(db, { subscriberId, subscriberName, phone, type, message, ...meta }) {
+  const id = uuidv4();
+  const rec = {
+    id,
+    subscriberId: subscriberId || null,
+    subscriberName: subscriberName || null,
+    phone: phone || '',
+    type: type || 'generic',
+    message: String(message || ''),
+    status: 'queued',
+    retries: 0,
+    createdAt: new Date().toISOString(),
+    ...meta,
+  };
+  await db.collection('whatsapp_messages').insertOne({ ...rec });
+
+  if (!waIsConfigured() || !phone || phone === 'MANAGER') {
+    await db.collection('whatsapp_messages').updateOne({ id }, { $set: { status: 'queued', note: 'service_not_configured_or_no_phone' } });
+    return { success: false, queued: true, message: rec };
+  }
+  try {
+    const resp = await waSend(phone, rec.message);
+    const ok = !!resp?.ok;
+    await db.collection('whatsapp_messages').updateOne({ id }, {
+      $set: {
+        status: ok ? 'sent' : 'failed',
+        sentAt: ok ? new Date().toISOString() : null,
+        externalId: resp?.id || null,
+        error: ok ? null : (resp?.error || 'send_failed'),
+      },
+    });
+    return { success: ok, message: { ...rec, status: ok ? 'sent' : 'failed' }, serviceResp: resp };
+  } catch (e) {
+    await db.collection('whatsapp_messages').updateOne({ id }, { $set: { status: 'failed', error: e?.message || 'exception' } });
+    return { success: false, error: e?.message, message: rec };
+  }
+}
 
 const isBcrypt = (s) => typeof s === 'string' && s.startsWith('$2');
 const verifyPassword = async (plain, stored) => {
@@ -599,6 +751,202 @@ async function handle(request, params) {
     if (path === 'noc/dashboard') return ok({ zones: [], alerts: [] });
     // Generic safe fallbacks
     return ok({ data: [], items: [], _offline: true, error: errMsg }, 200);
+  }
+
+  // ============ WHATSAPP (whatsapp-web.js service integration) ============
+  // Status of the WhatsApp microservice (connection state, phone, errors)
+  if (path === 'whatsapp/status' && method === 'GET') {
+    try {
+      const health = await waHealth();
+      const status = await waStatus();
+      return ok({
+        configured: waIsConfigured(),
+        serviceUp: !!health?.ok,
+        ...status,
+        sessionExists: !!health?.sessionExists,
+      });
+    } catch (e) {
+      return ok({ configured: waIsConfigured(), serviceUp: false, status: 'disconnected', error: e?.message });
+    }
+  }
+  if (path === 'whatsapp/qr' && method === 'GET') {
+    const r = await waQr();
+    if (!r?.ok) return ok({ qrDataUrl: null, error: r?.error || 'no_qr', status: r?.status || 'unknown' });
+    return ok({ qrDataUrl: r.qrDataUrl, qr: r.qr, lastQrAt: r.lastQrAt, status: r.status });
+  }
+  if (path === 'whatsapp/connect' && method === 'POST') {
+    const r = await waConnect();
+    await logActivity(db, { action: 'whatsapp_connect', entity: 'whatsapp', details: 'بدء جلسة واتساب', ip: clientIp });
+    return ok(r);
+  }
+  if (path === 'whatsapp/disconnect' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const r = await waDisconnect(!!body?.wipe);
+    await logActivity(db, { action: 'whatsapp_disconnect', entity: 'whatsapp', details: `قطع واتساب${body?.wipe ? ' + مسح الجلسة' : ''}`, ip: clientIp });
+    return ok(r);
+  }
+
+  // List templates (defaults merged with user overrides)
+  if (path === 'whatsapp/templates' && method === 'GET') {
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const userTpls = settings?.whatsappTemplates || {};
+    const merged = { ...WA_DEFAULT_TEMPLATES, ...userTpls };
+    return ok({ templates: merged, defaults: WA_DEFAULT_TEMPLATES });
+  }
+  // Save templates (PUT { templates: { key: text } })
+  if (path === 'whatsapp/templates' && method === 'PUT') {
+    const body = await getJsonBody(request);
+    if (!body?.templates || typeof body.templates !== 'object') return err('templates object required', 400);
+    await db.collection('settings').updateOne({}, { $set: { whatsappTemplates: body.templates, updatedAt: new Date().toISOString() } }, { upsert: true });
+    return ok({ success: true });
+  }
+
+  // Send single message to a subscriber (or arbitrary phone)
+  // body: { subscriberId?, phone?, templateKey?, message?, vars?: {} }
+  if (path === 'whatsapp/send' && method === 'POST') {
+    const body = await getJsonBody(request);
+    let { subscriberId, phone, templateKey, message, vars } = body || {};
+    let subscriber = null;
+    if (subscriberId) {
+      subscriber = await db.collection('subscribers').findOne({ id: subscriberId });
+      if (!subscriber) return err('المشترك غير موجود', 404);
+      phone = phone || subscriber.phone;
+    }
+    if (!phone) return err('phone مطلوب', 400);
+
+    // Resolve message body
+    let finalMessage = message;
+    if (!finalMessage && templateKey) {
+      const settings = (await db.collection('settings').findOne({})) || {};
+      const tpls = { ...WA_DEFAULT_TEMPLATES, ...(settings?.whatsappTemplates || {}) };
+      const tpl = tpls[templateKey];
+      if (!tpl) return err(`القالب "${templateKey}" غير موجود`, 400);
+      const allVars = await buildSubscriberVars(db, subscriber || {}, vars || {});
+      finalMessage = fillWaTemplate(tpl, allVars);
+    }
+    if (!finalMessage) return err('message أو templateKey مطلوب', 400);
+
+    const result = await dispatchWhatsApp(db, {
+      subscriberId: subscriber?.id || null,
+      subscriberName: subscriber?.name || null,
+      phone,
+      type: templateKey || 'manual',
+      message: finalMessage,
+    });
+    if (result.success) {
+      await db.collection('events').insertOne({
+        id: uuidv4(), type: 'whatsapp_sent',
+        subscriberId: subscriber?.id, subscriberName: subscriber?.name, phone,
+        templateKey: templateKey || 'manual', ts: new Date().toISOString(),
+      });
+    }
+    return ok({ ...result });
+  }
+
+  // Bulk send with audience filter
+  // body: { audience: 'all'|'active'|'expired'|'debt'|'by_zone'|'by_agent'|'by_fat', zoneId?, agentId?, fatNumber?, templateKey?, message?, vars? }
+  if (path === 'whatsapp/send-bulk' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { audience = 'all', zoneId, agentId, fatNumber, templateKey, message, vars, delayMs = 1500 } = body || {};
+
+    // Build filter
+    const now = new Date().toISOString().slice(0, 10);
+    let filter = {};
+    if (audience === 'active') filter = { status: 'active' };
+    else if (audience === 'expired') filter = { $or: [{ status: 'expired' }, { status: 'suspended' }, { endDate: { $lt: now } }] };
+    else if (audience === 'debt') filter = { debt: { $gt: 0 } };
+    else if (audience === 'by_zone' && zoneId) filter = { zoneId };
+    else if (audience === 'by_agent' && agentId) filter = { agentId };
+    else if (audience === 'by_fat' && fatNumber) filter = { fatNumber };
+
+    const subs = await db.collection('subscribers').find(filter).toArray();
+    const valid = subs.filter(s => s.phone);
+    if (valid.length === 0) return ok({ success: true, total: 0, sent: 0, failed: 0, items: [] });
+
+    // Resolve template once (shared across recipients)
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const tpls = { ...WA_DEFAULT_TEMPLATES, ...(settings?.whatsappTemplates || {}) };
+    const tpl = templateKey ? tpls[templateKey] : null;
+
+    // Build items
+    const items = [];
+    for (const s of valid) {
+      const allVars = await buildSubscriberVars(db, s, vars || {});
+      const finalMsg = tpl ? fillWaTemplate(tpl, allVars) : fillWaTemplate(message || '', allVars);
+      if (!finalMsg) continue;
+      items.push({ phone: s.phone, message: finalMsg, subscriberId: s.id, subscriberName: s.name });
+    }
+
+    // Pre-insert all as queued (so user sees a job preview)
+    const batchId = uuidv4();
+    const ts = new Date().toISOString();
+    const records = items.map(it => ({
+      id: uuidv4(), batchId, subscriberId: it.subscriberId, subscriberName: it.subscriberName,
+      phone: it.phone, type: templateKey || 'bulk', message: it.message,
+      status: 'queued', retries: 0, createdAt: ts,
+    }));
+    if (records.length > 0) await db.collection('whatsapp_messages').insertMany(records);
+
+    // Send via service
+    if (!waIsConfigured()) {
+      return ok({ success: false, queued: true, total: items.length, sent: 0, failed: 0, batchId, note: 'service_not_configured' });
+    }
+    const resp = await waSendBulk(items.map(it => ({ phone: it.phone, message: it.message })), delayMs);
+
+    // Update statuses
+    if (Array.isArray(resp?.results)) {
+      for (let i = 0; i < resp.results.length; i++) {
+        const r = resp.results[i];
+        const rec = records[i];
+        if (!rec) continue;
+        await db.collection('whatsapp_messages').updateOne({ id: rec.id }, {
+          $set: {
+            status: r.ok ? 'sent' : 'failed',
+            sentAt: r.ok ? new Date().toISOString() : null,
+            externalId: r.id || null,
+            error: r.ok ? null : (r.error || 'send_failed'),
+          },
+        });
+      }
+    }
+    return ok({ success: !!resp?.ok, batchId, total: items.length, sent: resp?.sent || 0, failed: resp?.failed || 0, audience });
+  }
+
+  // Webhook from the WhatsApp microservice — receives connection events, incoming messages, etc.
+  if (path === 'whatsapp/webhook' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { event, data } = body || {};
+    try {
+      await db.collection('whatsapp_events').insertOne({
+        id: uuidv4(), event, data: data || {}, ts: new Date().toISOString(),
+      });
+      // Broadcast to live SSE clients
+      await db.collection('events').insertOne({
+        id: uuidv4(), type: `whatsapp_${event || 'event'}`, data: data || {},
+        ts: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn('[whatsapp/webhook] persist error:', e?.message);
+    }
+    return ok({ received: true });
+  }
+
+  // Messages log (with optional filter ?type=&status=&q=&limit=)
+  if (path === 'whatsapp/messages' && method === 'GET') {
+    const url = new URL(request.url);
+    const type = url.searchParams.get('type');
+    const status = url.searchParams.get('status');
+    const q = (url.searchParams.get('q') || '').trim();
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10), 1000);
+    const filter = {};
+    if (type) filter.type = type;
+    if (status) filter.status = status;
+    if (q) {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [{ subscriberName: re }, { phone: re }, { message: re }];
+    }
+    const items = await db.collection('whatsapp_messages').find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
+    return ok(items.map(x => { try { delete x._id; } catch {} return x; }));
   }
 
   if (path === 'dashboard/stats' && method === 'GET') {
@@ -1291,38 +1639,38 @@ async function handle(request, params) {
       });
     }
 
-    // Build WhatsApp message
-    const waMsg = `🎉 *تم تفعيل اشتراكك بنجاح* 🎉
+    // Build WhatsApp message via template (with full subscriber + activation context)
+    const settingsDoc = (await db.collection('settings').findOne({})) || {};
+    const _tpls = { ...WA_DEFAULT_TEMPLATES, ...(settingsDoc?.whatsappTemplates || {}) };
+    const _activationTpl = _tpls.activation;
+    const _vars = await buildSubscriberVars(db, subscriber, {
+      packageName: activation.packageName,
+      speed: finalSpeed,
+      amount: finalAmount,
+      paid: paymentMethod === 'cash' ? finalAmount : (Number(activation.paidAmount) || finalAmount),
+      remaining: Math.max(0, finalAmount - (paymentMethod === 'cash' ? finalAmount : (Number(activation.paidAmount) || finalAmount))),
+      startDate: startDate.toLocaleDateString('ar-IQ'),
+      endDate: endDate.toLocaleDateString('ar-IQ'),
+      receiptNo: activation.receiptNo || subId.slice(0, 8).toUpperCase(),
+      office: activation.agentName,
+    });
+    const waMsg = fillWaTemplate(_activationTpl, _vars);
 
-عزيزي *${subscriber.name}*، تفاصيل اشتراكك:
-
-👤 *اليوزر:* ${activation.username}
-🆔 *المعرف:* ${subId.slice(0, 8).toUpperCase()}
-📦 *الباقة:* ${activation.packageName}
-⚡ *السرعة:* ${finalSpeed}
-💰 *المبلغ:* ${finalAmount.toLocaleString()} د.ع
-💳 *طريقة الدفع:* ${({cash:'كاش',master:'ماستر',fastpay:'فاست باي',transfer:'تحويل'})[paymentMethod] || paymentMethod}
-📅 *تاريخ التفعيل:* ${startDate.toLocaleDateString('ar-IQ')}
-⏰ *تاريخ الانتهاء:* ${endDate.toLocaleDateString('ar-IQ')}
-🏢 *الفرع/الوكيل:* ${activation.agentName}
-
-شكراً لاختيارك *مركز الغزلان* 🌟
-للاستفسار: 07901234567`;
-
-    const waLog = {
-      id: uuidv4(),
-      subscriberId: subId,
-      subscriberName: subscriber.name,
-      activationId: activation.id,
-      phone: subscriber.phone,
-      type: 'activation',
-      message: waMsg,
-      status: 'queued', // pending real API; will become 'sent' when integrated
-      retries: 0,
-      createdAt: new Date().toISOString(),
-    };
-    await db.collection('whatsapp_messages').insertOne(waLog);
-    delete waLog._id;
+    // Send via WhatsApp service (or queue if not configured) — persists message record automatically
+    let waSendResult = { success: false };
+    try {
+      waSendResult = await dispatchWhatsApp(db, {
+        subscriberId: subId,
+        subscriberName: subscriber.name,
+        phone: subscriber.phone,
+        type: 'activation',
+        message: waMsg,
+        activationId: activation.id,
+      });
+    } catch (e) {
+      console.warn('[activation] WA dispatch error:', e?.message);
+    }
+    const waLog = waSendResult.message || { id: uuidv4(), status: 'queued' };
 
     // Manager notification (Telegram log + WhatsApp manager copy)
     const managerMsg = `🔔 *تفعيل جديد*
@@ -1359,7 +1707,7 @@ async function handle(request, params) {
     return ok({ activation, whatsappMessage: waMsg, success: true }, 201);
   }
 
-  // Resend WhatsApp message
+  // Resend WhatsApp message (actually attempt send via service)
   if (path.match(/^whatsapp-messages\/[^/]+\/resend$/) && method === 'POST') {
     const id = path.split('/')[1];
     const msg = await db.collection('whatsapp_messages').findOne({ id });
@@ -1368,7 +1716,19 @@ async function handle(request, params) {
       $inc: { retries: 1 },
       $set: { status: 'queued', lastRetryAt: new Date().toISOString() },
     });
-    return ok({ success: true, message: 'تم إعادة وضع الرسالة في الطابور' });
+    if (waIsConfigured() && msg.phone && msg.phone !== 'MANAGER') {
+      const r = await waSend(msg.phone, msg.message || '');
+      await db.collection('whatsapp_messages').updateOne({ id }, {
+        $set: {
+          status: r?.ok ? 'sent' : 'failed',
+          sentAt: r?.ok ? new Date().toISOString() : null,
+          externalId: r?.id || null,
+          error: r?.ok ? null : (r?.error || 'send_failed'),
+        },
+      });
+      return ok({ success: !!r?.ok, ...r });
+    }
+    return ok({ success: false, queued: true, message: 'تم وضعها في الطابور — لم يتم توصيل خدمة الواتساب' });
   }
 
   // ============ ACCOUNTING / FINANCIAL REPORTS ============
