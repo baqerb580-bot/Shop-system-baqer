@@ -48,6 +48,18 @@ export default function WhatsAppManager({ api }) {
   const [bulkSending, setBulkSending] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
 
+  // Test send state
+  const [testPhone, setTestPhone] = useState('');
+  const [testMsg, setTestMsg] = useState('مرحباً، رسالة اختبار من مركز الغزلان ERP');
+  const [testSending, setTestSending] = useState(false);
+
+  // Job state
+  const [jobRunning, setJobRunning] = useState(null);
+  const [jobResult, setJobResult] = useState(null);
+
+  // WhatsApp stats
+  const [waStats, setWaStats] = useState(null);
+
   const [messages, setMessages] = useState([]);
   const [filter, setFilter] = useState({ status: '', type: '', q: '' });
 
@@ -87,11 +99,42 @@ export default function WhatsAppManager({ api }) {
     loadStatus();
     loadTemplates();
     loadMessages();
+    loadStats();
     api('zones').then(d => setZones(Array.isArray(d) ? d : []));
     api('agents').then(d => setAgents(Array.isArray(d) ? d : []));
-    pollRef.current = setInterval(loadStatus, 4000);
+    pollRef.current = setInterval(() => { loadStatus(); loadStats(); }, 4000);
     return () => clearInterval(pollRef.current);
   }, []);
+
+  const loadStats = async () => {
+    const s = await api('whatsapp/stats');
+    if (s && !s._failed) setWaStats(s);
+  };
+
+  const handleTestSend = async () => {
+    if (!testPhone.trim() || !testMsg.trim()) { toast.error('أكمل الرقم والرسالة'); return; }
+    setTestSending(true);
+    try {
+      const r = await api('whatsapp/test-send', { method: 'POST', body: JSON.stringify({ phone: testPhone.trim(), message: testMsg.trim() }) });
+      if (r?.success) toast.success('✅ تم الإرسال بنجاح');
+      else toast.error('فشل: ' + (r?.error || 'تأكد من اتصال الواتساب'));
+      await loadMessages(); await loadStats();
+    } finally { setTestSending(false); }
+  };
+
+  const runJob = async (path, label, payload = {}) => {
+    setJobRunning(path);
+    setJobResult(null);
+    try {
+      const r = await api(path, { method: 'POST', body: JSON.stringify(payload) });
+      setJobResult({ path, label, ...r });
+      if (r?.success || r?.queued) toast.success(`📋 ${label}: ${r.sent || 0}/${r.total || 0}`);
+      else toast.error(`فشل: ${r?.error || ''}`);
+      await loadMessages(); await loadStats();
+    } catch (e) {
+      toast.error('خطأ: ' + e.message);
+    } finally { setJobRunning(null); }
+  };
 
   useEffect(() => {
     setTplText((templates || {})[activeTpl] || '');
@@ -229,12 +272,103 @@ export default function WhatsAppManager({ api }) {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="templates" className="w-full">
+      <Tabs defaultValue="actions" className="w-full">
         <TabsList className="bg-input/30 border border-gold-soft">
+          <TabsTrigger value="actions">⚡ إجراءات سريعة</TabsTrigger>
           <TabsTrigger value="templates"><FileText className="w-3 h-3 ml-1" /> القوالب</TabsTrigger>
           <TabsTrigger value="bulk"><Users className="w-3 h-3 ml-1" /> إرسال جماعي</TabsTrigger>
           <TabsTrigger value="log"><MessageSquare className="w-3 h-3 ml-1" /> سجل الرسائل</TabsTrigger>
         </TabsList>
+
+        {/* QUICK ACTIONS TAB */}
+        <TabsContent value="actions">
+          <div className="grid md:grid-cols-2 gap-3">
+            {/* Stats card */}
+            <Card className="glass-strong border-gold-soft">
+              <CardHeader className="pb-2"><CardTitle className="text-base gold-text flex items-center gap-2">📊 إحصائيات الإرسال</CardTitle></CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <div className="glass-card rounded p-2"><p className="text-[10px] text-muted-foreground">اليوم</p><p className="text-xl font-bold gold-text">{waStats?.todaySent || 0}</p></div>
+                  <div className="glass-card rounded p-2"><p className="text-[10px] text-muted-foreground">آخر أسبوع</p><p className="text-xl font-bold neon-text">{waStats?.weekSent || 0}</p></div>
+                  <div className="glass-card rounded p-2"><p className="text-[10px] text-muted-foreground">✅ إجمالي مرسلة</p><p className="text-xl font-bold text-emerald-400">{waStats?.totalSent || 0}</p></div>
+                  <div className="glass-card rounded p-2"><p className="text-[10px] text-muted-foreground">❌ فاشلة</p><p className="text-xl font-bold text-red-400">{waStats?.totalFailed || 0}</p></div>
+                </div>
+                {(waStats?.totalQueued || 0) > 0 && (
+                  <p className="text-[10px] text-amber-400 mt-2">⏳ {waStats.totalQueued} رسالة بانتظار الإرسال</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Test send card */}
+            <Card className="glass-strong border-gold-soft">
+              <CardHeader className="pb-2"><CardTitle className="text-base gold-text flex items-center gap-2">🧪 اختبار سريع</CardTitle></CardHeader>
+              <CardContent className="space-y-2">
+                <Input placeholder="07901234567 أو 9647901234567" value={testPhone} onChange={e => setTestPhone(e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" />
+                <Textarea value={testMsg} onChange={e => setTestMsg(e.target.value)} rows={3} className="bg-input/30 border-gold/20 text-xs" />
+                <Button onClick={handleTestSend} disabled={testSending || status?.status !== 'ready'} className="btn-gold w-full">
+                  <Send className="w-3 h-3 ml-1" /> {testSending ? 'يتم الإرسال…' : 'إرسال اختبار'}
+                </Button>
+                {status?.status !== 'ready' && <p className="text-[10px] text-amber-400 text-center">يجب ربط واتساب أولاً</p>}
+              </CardContent>
+            </Card>
+
+            {/* Scheduled jobs card */}
+            <Card className="glass-strong border-gold-soft md:col-span-2">
+              <CardHeader className="pb-2"><CardTitle className="text-base gold-text flex items-center gap-2">⏰ مهام مجدولة (تشغيل الآن)</CardTitle></CardHeader>
+              <CardContent className="space-y-2">
+                <div className="grid md:grid-cols-3 gap-2">
+                  <Button
+                    variant="outline"
+                    className="border-cyan-500/40 hover:bg-cyan-500/10 h-auto py-3"
+                    onClick={() => runJob('whatsapp/run-expiry-alerts', 'تنبيهات الانتهاء (5 أيام)', { daysAhead: 5 })}
+                    disabled={!!jobRunning || status?.status !== 'ready'}
+                  >
+                    <div className="text-center w-full">
+                      <div className="text-lg mb-1">🔔</div>
+                      <div className="text-xs font-bold">تنبيهات الانتهاء</div>
+                      <div className="text-[9px] text-muted-foreground">المشتركون المنتهون خلال 5 أيام</div>
+                    </div>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="border-red-500/40 hover:bg-red-500/10 h-auto py-3"
+                    onClick={() => runJob('whatsapp/run-debt-reminders', 'تذكير الديون')}
+                    disabled={!!jobRunning || status?.status !== 'ready'}
+                  >
+                    <div className="text-center w-full">
+                      <div className="text-lg mb-1">💸</div>
+                      <div className="text-xs font-bold">تذكير بالديون</div>
+                      <div className="text-[9px] text-muted-foreground">إرسال للمشتركين الذين عليهم ديون</div>
+                    </div>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="border-amber-500/40 hover:bg-amber-500/10 h-auto py-3"
+                    onClick={() => runJob('whatsapp/resend-failed', 'إعادة الرسائل الفاشلة')}
+                    disabled={!!jobRunning || status?.status !== 'ready'}
+                  >
+                    <div className="text-center w-full">
+                      <div className="text-lg mb-1">🔄</div>
+                      <div className="text-xs font-bold">إعادة الفاشلة</div>
+                      <div className="text-[9px] text-muted-foreground">حتى 200 رسالة فاشلة</div>
+                    </div>
+                  </Button>
+                </div>
+                {jobRunning && (
+                  <p className="text-xs text-cyan-400 text-center animate-pulse">⚙️ جاري تنفيذ المهمة…</p>
+                )}
+                {jobResult && (
+                  <div className="glass-card rounded-lg p-3 text-xs border border-emerald-500/30">
+                    <p className="font-bold gold-text mb-1">📊 نتيجة "{jobResult.label}"</p>
+                    <p>✅ مرسل: <span className="text-emerald-400 font-bold">{jobResult.sent || 0}</span></p>
+                    <p>❌ فشل: <span className="text-red-400 font-bold">{jobResult.failed || 0}</span></p>
+                    <p>📊 الإجمالي: <span className="gold-text font-bold">{jobResult.total || 0}</span></p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
 
         {/* TEMPLATES TAB */}
         <TabsContent value="templates">
@@ -354,7 +488,7 @@ export default function WhatsAppManager({ api }) {
         <TabsContent value="log">
           <Card className="glass-strong border-gold-soft">
             <CardContent className="p-4 space-y-3">
-              <div className="grid md:grid-cols-4 gap-2">
+              <div className="grid md:grid-cols-5 gap-2">
                 <Input placeholder="بحث (اسم/هاتف/رسالة)" value={filter.q} onChange={e => setFilter(f => ({ ...f, q: e.target.value }))} className="bg-input/30 border-gold/20" />
                 <Select value={filter.status} onValueChange={v => setFilter(f => ({ ...f, status: v }))}>
                   <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="الحالة" /></SelectTrigger>
@@ -376,10 +510,19 @@ export default function WhatsAppManager({ api }) {
                     <SelectItem value="receipt">وصل</SelectItem>
                     <SelectItem value="manual">يدوي</SelectItem>
                     <SelectItem value="bulk">جماعي</SelectItem>
+                    <SelectItem value="test">اختبار</SelectItem>
+                    <SelectItem value="manager_alert">إشعار مدير</SelectItem>
                   </SelectContent>
                 </Select>
                 <Button onClick={loadMessages} variant="outline" className="border-gold/30">
                   <Filter className="w-4 h-4 ml-1" /> تطبيق
+                </Button>
+                <Button
+                  onClick={() => runJob('whatsapp/resend-failed', 'إعادة الفاشلة')}
+                  disabled={!!jobRunning || status?.status !== 'ready' || (waStats?.totalFailed || 0) === 0}
+                  className="btn-gold"
+                >
+                  <RefreshCw className="w-4 h-4 ml-1" /> إعادة الفاشلة ({waStats?.totalFailed || 0})
                 </Button>
               </div>
 

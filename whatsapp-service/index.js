@@ -117,6 +117,8 @@ const createClient = () => {
   });
 
   c.on('loading_screen', (percent, msg) => {
+    // Once we are ready/authenticated, ignore late loading events (would otherwise downgrade status)
+    if (state.status === 'ready' || state.status === 'authenticated') return;
     console.log(`[WA] loading ${percent}% — ${msg}`);
     setState({ status: 'initializing' });
   });

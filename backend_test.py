@@ -1,586 +1,426 @@
 #!/usr/bin/env python3
 """
-Backend Test Script for Custom Fields API (Schema Editor)
-Tests ONLY the NEW custom fields endpoints added in this iteration.
+Backend API Testing Script for WhatsApp Enhancement Features
+Tests all new WhatsApp endpoints added to the ISP NOC Hub ERP system
 """
 
 import requests
 import json
-import sys
 from datetime import datetime
 
-# Base URL from environment
+# Backend URL from .env
 BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
 
-def log(msg):
-    """Print timestamped log message"""
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+def print_test_header(test_name):
+    print(f"\n{'='*80}")
+    print(f"TEST: {test_name}")
+    print(f"{'='*80}")
 
-def test_custom_fields_api():
-    """Test Custom Fields API endpoints"""
-    
-    log("=" * 80)
-    log("CUSTOM FIELDS API TESTING - Schema Editor")
-    log("=" * 80)
-    
-    test_results = {
-        "passed": 0,
-        "failed": 0,
-        "tests": []
-    }
-    
-    def record_test(name, passed, details=""):
-        test_results["tests"].append({"name": name, "passed": passed, "details": details})
-        if passed:
-            test_results["passed"] += 1
-            log(f"✅ PASS: {name}")
-        else:
-            test_results["failed"] += 1
-            log(f"❌ FAIL: {name}")
-        if details:
-            log(f"   Details: {details}")
+def print_result(success, message, data=None):
+    status = "✅ PASSED" if success else "❌ FAILED"
+    print(f"{status}: {message}")
+    if data:
+        print(f"Response: {json.dumps(data, indent=2, ensure_ascii=False)}")
+
+def test_whatsapp_stats():
+    """Test 1: GET /api/whatsapp/stats - Should return 200 with all 5 counters"""
+    print_test_header("GET /api/whatsapp/stats")
     
     try:
-        # ============================================================
-        # TEST 1: GET /api/custom-fields (all entities)
-        # ============================================================
-        log("\n--- TEST 1: GET /api/custom-fields (all entities) ---")
-        try:
-            response = requests.get(f"{BASE_URL}/custom-fields", timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                expected_entities = ['subscribers', 'networks', 'zones', 'employees', 'products', 'agents', 'repairs', 'tasks']
-                
-                # Check all 8 entities are present
-                all_present = all(entity in data for entity in expected_entities)
-                
-                # Check all values are arrays
-                all_arrays = all(isinstance(data.get(entity), list) for entity in expected_entities)
-                
-                if all_present and all_arrays:
-                    record_test("GET /api/custom-fields returns all 8 entities as arrays", True, 
-                               f"Found entities: {list(data.keys())}")
-                else:
-                    record_test("GET /api/custom-fields returns all 8 entities as arrays", False,
-                               f"Missing entities or wrong types. Data: {data}")
-            else:
-                record_test("GET /api/custom-fields returns 200", False, f"Got {response.status_code}")
-        except Exception as e:
-            record_test("GET /api/custom-fields", False, f"Exception: {str(e)}")
+        response = requests.get(f"{BASE_URL}/whatsapp/stats", timeout=10)
         
-        # ============================================================
-        # TEST 2: GET /api/custom-fields/subscribers (specific entity)
-        # ============================================================
-        log("\n--- TEST 2: GET /api/custom-fields/subscribers ---")
-        try:
-            response = requests.get(f"{BASE_URL}/custom-fields/subscribers", timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "entity" in data and data["entity"] == "subscribers" and "fields" in data and isinstance(data["fields"], list):
-                    record_test("GET /api/custom-fields/subscribers returns correct structure", True,
-                               f"entity={data['entity']}, fields count={len(data['fields'])}")
-                else:
-                    record_test("GET /api/custom-fields/subscribers returns correct structure", False,
-                               f"Wrong structure: {data}")
-            else:
-                record_test("GET /api/custom-fields/subscribers", False, f"Got {response.status_code}")
-        except Exception as e:
-            record_test("GET /api/custom-fields/subscribers", False, f"Exception: {str(e)}")
+        if response.status_code != 200:
+            print_result(False, f"Expected 200, got {response.status_code}", response.text)
+            return False
         
-        # ============================================================
-        # TEST 3: GET /api/custom-fields/invalid_entity (expect 400)
-        # ============================================================
-        log("\n--- TEST 3: GET /api/custom-fields/invalid_entity (expect 400) ---")
-        try:
-            response = requests.get(f"{BASE_URL}/custom-fields/invalid_entity", timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "نوع غير مدعوم" in data.get("error", ""):
-                    record_test("GET /api/custom-fields/invalid_entity returns 400 with Arabic error", True,
-                               f"Error: {data.get('error')}")
-                else:
-                    record_test("GET /api/custom-fields/invalid_entity returns 400 with Arabic error", False,
-                               f"Wrong error message: {data}")
-            else:
-                record_test("GET /api/custom-fields/invalid_entity returns 400", False, f"Got {response.status_code}")
-        except Exception as e:
-            record_test("GET /api/custom-fields/invalid_entity", False, f"Exception: {str(e)}")
+        data = response.json()
         
-        # ============================================================
-        # TEST 4: PUT /api/custom-fields/subscribers (valid fields)
-        # ============================================================
-        log("\n--- TEST 4: PUT /api/custom-fields/subscribers (valid fields) ---")
-        try:
-            valid_fields = {
-                "fields": [
-                    {
-                        "key": "router_model",
-                        "label": "موديل الراوتر",
-                        "type": "text",
-                        "required": False
-                    },
-                    {
-                        "key": "wall_color",
-                        "label": "لون الجدار",
-                        "type": "select",
-                        "required": False,
-                        "options": [
-                            {"value": "white", "label": "أبيض"},
-                            {"value": "blue", "label": "أزرق"}
-                        ]
-                    },
-                    {
-                        "key": "monthly_quota",
-                        "label": "الحصة الشهرية",
-                        "type": "currency",
-                        "required": True
-                    }
-                ]
-            }
-            
-            response = requests.put(f"{BASE_URL}/custom-fields/subscribers", 
-                                   json=valid_fields, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("entity") == "subscribers" and len(data.get("fields", [])) == 3:
-                    record_test("PUT /api/custom-fields/subscribers with valid fields", True,
-                               f"Created 3 fields successfully")
-                else:
-                    record_test("PUT /api/custom-fields/subscribers with valid fields", False,
-                               f"Wrong response: {data}")
-            else:
-                record_test("PUT /api/custom-fields/subscribers with valid fields", False, 
-                           f"Got {response.status_code}: {response.text}")
-        except Exception as e:
-            record_test("PUT /api/custom-fields/subscribers with valid fields", False, f"Exception: {str(e)}")
+        # Verify all 5 counters exist and are numbers
+        required_fields = ['totalSent', 'totalFailed', 'totalQueued', 'todaySent', 'weekSent']
+        missing_fields = [f for f in required_fields if f not in data]
         
-        # ============================================================
-        # TEST 5: GET /api/custom-fields/subscribers (verify persistence)
-        # ============================================================
-        log("\n--- TEST 5: GET /api/custom-fields/subscribers (verify persistence) ---")
-        try:
-            response = requests.get(f"{BASE_URL}/custom-fields/subscribers", timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                fields = data.get("fields", [])
-                
-                # Check if all 3 fields are persisted
-                field_keys = [f["key"] for f in fields]
-                expected_keys = ["router_model", "wall_color", "monthly_quota"]
-                
-                if all(key in field_keys for key in expected_keys):
-                    record_test("Custom fields persisted correctly", True,
-                               f"Found all 3 fields: {field_keys}")
-                else:
-                    record_test("Custom fields persisted correctly", False,
-                               f"Missing fields. Found: {field_keys}, Expected: {expected_keys}")
-            else:
-                record_test("GET /api/custom-fields/subscribers after PUT", False, f"Got {response.status_code}")
-        except Exception as e:
-            record_test("GET /api/custom-fields/subscribers after PUT", False, f"Exception: {str(e)}")
+        if missing_fields:
+            print_result(False, f"Missing fields: {missing_fields}", data)
+            return False
         
-        # ============================================================
-        # TEST 6: PUT validation tests
-        # ============================================================
-        log("\n--- TEST 6: PUT validation tests ---")
+        # Verify all are numbers
+        non_numeric = [f for f in required_fields if not isinstance(data[f], (int, float))]
+        if non_numeric:
+            print_result(False, f"Non-numeric fields: {non_numeric}", data)
+            return False
         
-        # 6a: Invalid key (uppercase/spaces)
-        try:
-            invalid_key = {"fields": [{"key": "Bad Key", "label": "x", "type": "text"}]}
-            response = requests.put(f"{BASE_URL}/custom-fields/subscribers", 
-                                   json=invalid_key, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"6a - Invalid key status: {response.status_code}")
-            
-            if response.status_code == 400:
-                record_test("PUT validation: Invalid key (uppercase/spaces) returns 400", True,
-                           f"Error: {response.json().get('error', '')}")
-            else:
-                record_test("PUT validation: Invalid key (uppercase/spaces) returns 400", False,
-                           f"Got {response.status_code}")
-        except Exception as e:
-            record_test("PUT validation: Invalid key", False, f"Exception: {str(e)}")
-        
-        # 6b: Missing label
-        try:
-            missing_label = {"fields": [{"key": "ok", "type": "text"}]}
-            response = requests.put(f"{BASE_URL}/custom-fields/subscribers", 
-                                   json=missing_label, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"6b - Missing label status: {response.status_code}")
-            
-            if response.status_code == 400:
-                record_test("PUT validation: Missing label returns 400", True,
-                           f"Error: {response.json().get('error', '')}")
-            else:
-                record_test("PUT validation: Missing label returns 400", False,
-                           f"Got {response.status_code}")
-        except Exception as e:
-            record_test("PUT validation: Missing label", False, f"Exception: {str(e)}")
-        
-        # 6c: Invalid type
-        try:
-            invalid_type = {"fields": [{"key": "ok", "label": "x", "type": "alien_type"}]}
-            response = requests.put(f"{BASE_URL}/custom-fields/subscribers", 
-                                   json=invalid_type, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"6c - Invalid type status: {response.status_code}")
-            
-            if response.status_code == 400:
-                record_test("PUT validation: Invalid type returns 400", True,
-                           f"Error: {response.json().get('error', '')}")
-            else:
-                record_test("PUT validation: Invalid type returns 400", False,
-                           f"Got {response.status_code}")
-        except Exception as e:
-            record_test("PUT validation: Invalid type", False, f"Exception: {str(e)}")
-        
-        # 6d: select without options
-        try:
-            select_no_options = {"fields": [{"key": "ok", "label": "x", "type": "select"}]}
-            response = requests.put(f"{BASE_URL}/custom-fields/subscribers", 
-                                   json=select_no_options, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"6d - select without options status: {response.status_code}")
-            
-            if response.status_code == 400:
-                record_test("PUT validation: select without options returns 400", True,
-                           f"Error: {response.json().get('error', '')}")
-            else:
-                record_test("PUT validation: select without options returns 400", False,
-                           f"Got {response.status_code}")
-        except Exception as e:
-            record_test("PUT validation: select without options", False, f"Exception: {str(e)}")
-        
-        # 6e: Duplicate keys
-        try:
-            duplicate_keys = {"fields": [
-                {"key": "a", "label": "1", "type": "text"},
-                {"key": "a", "label": "2", "type": "text"}
-            ]}
-            response = requests.put(f"{BASE_URL}/custom-fields/subscribers", 
-                                   json=duplicate_keys, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"6e - Duplicate keys status: {response.status_code}")
-            
-            if response.status_code == 400:
-                record_test("PUT validation: Duplicate keys returns 400", True,
-                           f"Error: {response.json().get('error', '')}")
-            else:
-                record_test("PUT validation: Duplicate keys returns 400", False,
-                           f"Got {response.status_code}")
-        except Exception as e:
-            record_test("PUT validation: Duplicate keys", False, f"Exception: {str(e)}")
-        
-        # ============================================================
-        # TEST 7: PUT /api/custom-fields/networks (test another entity)
-        # ============================================================
-        log("\n--- TEST 7: PUT /api/custom-fields/networks ---")
-        try:
-            network_fields = {
-                "fields": [
-                    {
-                        "key": "fiber_type",
-                        "label": "نوع الألياف",
-                        "type": "select",
-                        "required": False,
-                        "options": [
-                            {"value": "single", "label": "أحادي"},
-                            {"value": "multi", "label": "متعدد"}
-                        ]
-                    }
-                ]
-            }
-            
-            response = requests.put(f"{BASE_URL}/custom-fields/networks", 
-                                   json=network_fields, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("entity") == "networks" and len(data.get("fields", [])) == 1:
-                    record_test("PUT /api/custom-fields/networks with valid fields", True,
-                               f"Created 1 field for networks")
-                else:
-                    record_test("PUT /api/custom-fields/networks with valid fields", False,
-                               f"Wrong response: {data}")
-            else:
-                record_test("PUT /api/custom-fields/networks with valid fields", False, 
-                           f"Got {response.status_code}: {response.text}")
-        except Exception as e:
-            record_test("PUT /api/custom-fields/networks", False, f"Exception: {str(e)}")
-        
-        # ============================================================
-        # TEST 8: PUT /api/custom-fields/invalid_entity (expect 400)
-        # ============================================================
-        log("\n--- TEST 8: PUT /api/custom-fields/invalid_entity (expect 400) ---")
-        try:
-            response = requests.put(f"{BASE_URL}/custom-fields/invalid_entity", 
-                                   json={"fields": []}, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 400:
-                data = response.json()
-                if "نوع غير مدعوم" in data.get("error", ""):
-                    record_test("PUT /api/custom-fields/invalid_entity returns 400", True,
-                               f"Error: {data.get('error')}")
-                else:
-                    record_test("PUT /api/custom-fields/invalid_entity returns 400", False,
-                               f"Wrong error: {data}")
-            else:
-                record_test("PUT /api/custom-fields/invalid_entity returns 400", False, 
-                           f"Got {response.status_code}")
-        except Exception as e:
-            record_test("PUT /api/custom-fields/invalid_entity", False, f"Exception: {str(e)}")
-        
-        # ============================================================
-        # TEST 9: Create subscriber with customFields
-        # ============================================================
-        log("\n--- TEST 9: Create subscriber with customFields ---")
-        test_subscriber_id = None
-        try:
-            subscriber_data = {
-                "name": "مشترك تجريبي للحقول المخصصة",
-                "phone": "07900000099",
-                "username": "cftest_user",
-                "customFields": {
-                    "router_model": "TP-Link Archer C6",
-                    "monthly_quota": 50000
-                }
-            }
-            
-            response = requests.post(f"{BASE_URL}/subscribers", 
-                                    json=subscriber_data, 
-                                    headers={"Content-Type": "application/json"},
-                                    timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 201:
-                data = response.json()
-                test_subscriber_id = data.get("id")
-                
-                # Check if customFields is in response
-                if "customFields" in data and data["customFields"].get("router_model") == "TP-Link Archer C6":
-                    record_test("POST /api/subscribers with customFields", True,
-                               f"Created subscriber with customFields: {data['customFields']}")
-                else:
-                    record_test("POST /api/subscribers with customFields", False,
-                               f"customFields not in response or wrong data: {data}")
-            else:
-                record_test("POST /api/subscribers with customFields", False, 
-                           f"Got {response.status_code}: {response.text}")
-        except Exception as e:
-            record_test("POST /api/subscribers with customFields", False, f"Exception: {str(e)}")
-        
-        # ============================================================
-        # TEST 10: GET /api/subscribers (verify customFields preserved)
-        # ============================================================
-        log("\n--- TEST 10: GET /api/subscribers (verify customFields preserved) ---")
-        if test_subscriber_id:
-            try:
-                response = requests.get(f"{BASE_URL}/subscribers", timeout=10)
-                log(f"Status: {response.status_code}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    # Find our test subscriber
-                    test_sub = next((s for s in data if s.get("id") == test_subscriber_id), None)
-                    
-                    if test_sub and "customFields" in test_sub:
-                        cf = test_sub["customFields"]
-                        if cf.get("router_model") == "TP-Link Archer C6" and cf.get("monthly_quota") == 50000:
-                            record_test("GET /api/subscribers preserves customFields", True,
-                                       f"customFields intact: {cf}")
-                        else:
-                            record_test("GET /api/subscribers preserves customFields", False,
-                                       f"customFields wrong: {cf}")
-                    else:
-                        record_test("GET /api/subscribers preserves customFields", False,
-                                   f"Subscriber not found or no customFields")
-                else:
-                    record_test("GET /api/subscribers", False, f"Got {response.status_code}")
-            except Exception as e:
-                record_test("GET /api/subscribers", False, f"Exception: {str(e)}")
-        else:
-            record_test("GET /api/subscribers (verify customFields)", False, "No test subscriber created")
-        
-        # ============================================================
-        # TEST 11: PUT /api/subscribers/:id (update customFields)
-        # ============================================================
-        log("\n--- TEST 11: PUT /api/subscribers/:id (update customFields) ---")
-        if test_subscriber_id:
-            try:
-                update_data = {
-                    "customFields": {
-                        "router_model": "Mikrotik hEX",
-                        "wall_color": "blue",
-                        "monthly_quota": 75000
-                    }
-                }
-                
-                response = requests.put(f"{BASE_URL}/subscribers/{test_subscriber_id}", 
-                                       json=update_data, 
-                                       headers={"Content-Type": "application/json"},
-                                       timeout=10)
-                log(f"Status: {response.status_code}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    if "customFields" in data:
-                        cf = data["customFields"]
-                        if (cf.get("router_model") == "Mikrotik hEX" and 
-                            cf.get("wall_color") == "blue" and 
-                            cf.get("monthly_quota") == 75000):
-                            record_test("PUT /api/subscribers/:id updates customFields", True,
-                                       f"Updated customFields: {cf}")
-                        else:
-                            record_test("PUT /api/subscribers/:id updates customFields", False,
-                                       f"customFields not updated correctly: {cf}")
-                    else:
-                        record_test("PUT /api/subscribers/:id updates customFields", False,
-                                   f"No customFields in response")
-                else:
-                    record_test("PUT /api/subscribers/:id updates customFields", False, 
-                               f"Got {response.status_code}: {response.text}")
-            except Exception as e:
-                record_test("PUT /api/subscribers/:id updates customFields", False, f"Exception: {str(e)}")
-        else:
-            record_test("PUT /api/subscribers/:id (update customFields)", False, "No test subscriber created")
-        
-        # ============================================================
-        # TEST 12: Verify update with GET
-        # ============================================================
-        log("\n--- TEST 12: Verify customFields update with GET ---")
-        if test_subscriber_id:
-            try:
-                response = requests.get(f"{BASE_URL}/subscribers", timeout=10)
-                log(f"Status: {response.status_code}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    test_sub = next((s for s in data if s.get("id") == test_subscriber_id), None)
-                    
-                    if test_sub and "customFields" in test_sub:
-                        cf = test_sub["customFields"]
-                        if (cf.get("router_model") == "Mikrotik hEX" and 
-                            cf.get("wall_color") == "blue" and 
-                            cf.get("monthly_quota") == 75000):
-                            record_test("GET verifies customFields update persisted", True,
-                                       f"Updated customFields persisted: {cf}")
-                        else:
-                            record_test("GET verifies customFields update persisted", False,
-                                       f"customFields not persisted correctly: {cf}")
-                    else:
-                        record_test("GET verifies customFields update persisted", False,
-                                   f"Subscriber not found or no customFields")
-                else:
-                    record_test("GET verifies customFields update", False, f"Got {response.status_code}")
-            except Exception as e:
-                record_test("GET verifies customFields update", False, f"Exception: {str(e)}")
-        else:
-            record_test("GET verifies customFields update", False, "No test subscriber created")
-        
-        # ============================================================
-        # CLEANUP: Delete test subscriber
-        # ============================================================
-        log("\n--- CLEANUP: Delete test subscriber ---")
-        if test_subscriber_id:
-            try:
-                response = requests.delete(f"{BASE_URL}/subscribers/{test_subscriber_id}", timeout=10)
-                log(f"Status: {response.status_code}")
-                
-                if response.status_code == 200:
-                    log("✅ Test subscriber deleted successfully")
-                else:
-                    log(f"⚠️ Failed to delete test subscriber: {response.status_code}")
-            except Exception as e:
-                log(f"⚠️ Exception during cleanup: {str(e)}")
-        
-        # ============================================================
-        # CLEANUP: Reset custom fields for subscribers
-        # ============================================================
-        log("\n--- CLEANUP: Reset custom fields for subscribers ---")
-        try:
-            response = requests.put(f"{BASE_URL}/custom-fields/subscribers", 
-                                   json={"fields": []}, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                log("✅ Subscribers custom fields reset successfully")
-            else:
-                log(f"⚠️ Failed to reset subscribers custom fields: {response.status_code}")
-        except Exception as e:
-            log(f"⚠️ Exception during cleanup: {str(e)}")
-        
-        # ============================================================
-        # CLEANUP: Reset custom fields for networks
-        # ============================================================
-        log("\n--- CLEANUP: Reset custom fields for networks ---")
-        try:
-            response = requests.put(f"{BASE_URL}/custom-fields/networks", 
-                                   json={"fields": []}, 
-                                   headers={"Content-Type": "application/json"},
-                                   timeout=10)
-            log(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                log("✅ Networks custom fields reset successfully")
-            else:
-                log(f"⚠️ Failed to reset networks custom fields: {response.status_code}")
-        except Exception as e:
-            log(f"⚠️ Exception during cleanup: {str(e)}")
+        print_result(True, f"All 5 counters present and numeric", data)
+        return True
         
     except Exception as e:
-        log(f"❌ CRITICAL ERROR: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+def test_whatsapp_history():
+    """Test 2: GET /api/whatsapp/history/:subscriberId - Should return 200 with array"""
+    print_test_header("GET /api/whatsapp/history/:subscriberId")
     
-    # ============================================================
-    # SUMMARY
-    # ============================================================
-    log("\n" + "=" * 80)
-    log("TEST SUMMARY")
-    log("=" * 80)
-    log(f"Total Tests: {test_results['passed'] + test_results['failed']}")
-    log(f"✅ Passed: {test_results['passed']}")
-    log(f"❌ Failed: {test_results['failed']}")
-    log("=" * 80)
+    try:
+        # First get a real subscriber ID
+        print("Step 1: Getting subscriber list...")
+        subs_response = requests.get(f"{BASE_URL}/subscribers", timeout=10)
+        
+        if subs_response.status_code != 200:
+            print_result(False, f"Failed to get subscribers: {subs_response.status_code}")
+            return False
+        
+        subscribers = subs_response.json()
+        if not subscribers or len(subscribers) == 0:
+            print_result(False, "No subscribers found in database")
+            return False
+        
+        # Pick first subscriber with a phone
+        subscriber = None
+        for sub in subscribers:
+            if sub.get('phone'):
+                subscriber = sub
+                break
+        
+        if not subscriber:
+            print_result(False, "No subscriber with phone found")
+            return False
+        
+        subscriber_id = subscriber['id']
+        subscriber_name = subscriber.get('name', 'Unknown')
+        print(f"Step 2: Testing with subscriber: {subscriber_name} (ID: {subscriber_id})")
+        
+        # Now test the history endpoint
+        response = requests.get(f"{BASE_URL}/whatsapp/history/{subscriber_id}", timeout=10)
+        
+        if response.status_code != 200:
+            print_result(False, f"Expected 200, got {response.status_code}", response.text)
+            return False
+        
+        data = response.json()
+        
+        if not isinstance(data, list):
+            print_result(False, f"Expected array, got {type(data)}", data)
+            return False
+        
+        print_result(True, f"Returns array with {len(data)} messages for subscriber {subscriber_name}", 
+                    {"subscriberId": subscriber_id, "messageCount": len(data), "sample": data[:2] if data else []})
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+def test_whatsapp_test_send():
+    """Test 3: POST /api/whatsapp/test-send - Should return 200 with success shape"""
+    print_test_header("POST /api/whatsapp/test-send")
     
-    if test_results['failed'] > 0:
-        log("\nFailed Tests:")
-        for test in test_results['tests']:
-            if not test['passed']:
-                log(f"  ❌ {test['name']}")
-                if test['details']:
-                    log(f"     {test['details']}")
+    try:
+        payload = {
+            "phone": "07901234567",
+            "message": "Test ping from automated testing"
+        }
+        
+        response = requests.post(f"{BASE_URL}/whatsapp/test-send", json=payload, timeout=10)
+        
+        if response.status_code == 500:
+            print_result(False, "Got 500 error - endpoint crashed", response.text)
+            return False
+        
+        if response.status_code != 200:
+            print_result(False, f"Expected 200, got {response.status_code}", response.text)
+            return False
+        
+        data = response.json()
+        
+        # Should have success field
+        if 'success' not in data:
+            print_result(False, "Missing 'success' field", data)
+            return False
+        
+        print_result(True, f"Test send completed with success={data.get('success')}", data)
+        
+        # Verify message was persisted
+        print("\nStep 2: Verifying message was persisted in DB...")
+        messages_response = requests.get(f"{BASE_URL}/whatsapp/messages?type=test&limit=5", timeout=10)
+        
+        if messages_response.status_code == 200:
+            messages = messages_response.json()
+            test_messages = [m for m in messages if m.get('type') == 'test']
+            print_result(True, f"Found {len(test_messages)} test messages in DB", 
+                        {"latestTestMessage": test_messages[0] if test_messages else None})
+        else:
+            print_result(False, f"Failed to verify persistence: {messages_response.status_code}")
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+def test_whatsapp_resend_failed():
+    """Test 4: POST /api/whatsapp/resend-failed - Should return 200 with correct shape"""
+    print_test_header("POST /api/whatsapp/resend-failed")
     
-    return test_results['failed'] == 0
+    try:
+        response = requests.post(f"{BASE_URL}/whatsapp/resend-failed", json={}, timeout=10)
+        
+        if response.status_code != 200:
+            print_result(False, f"Expected 200, got {response.status_code}", response.text)
+            return False
+        
+        data = response.json()
+        
+        # Verify shape: {success, total, sent, failed}
+        required_fields = ['success', 'total', 'sent', 'failed']
+        missing_fields = [f for f in required_fields if f not in data]
+        
+        if missing_fields:
+            print_result(False, f"Missing fields: {missing_fields}", data)
+            return False
+        
+        if not isinstance(data['success'], bool):
+            print_result(False, "'success' should be boolean", data)
+            return False
+        
+        for field in ['total', 'sent', 'failed']:
+            if not isinstance(data[field], (int, float)):
+                print_result(False, f"'{field}' should be numeric", data)
+                return False
+        
+        print_result(True, f"Resend-failed completed: total={data['total']}, sent={data['sent']}, failed={data['failed']}", data)
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+def test_whatsapp_run_expiry_alerts():
+    """Test 5: POST /api/whatsapp/run-expiry-alerts - Should return 200 with correct shape"""
+    print_test_header("POST /api/whatsapp/run-expiry-alerts")
+    
+    try:
+        # First, get count of active subscribers expiring in next 30 days
+        print("Step 1: Getting active subscribers expiring in next 30 days...")
+        subs_response = requests.get(f"{BASE_URL}/subscribers", timeout=10)
+        
+        if subs_response.status_code != 200:
+            print_result(False, f"Failed to get subscribers: {subs_response.status_code}")
+            return False
+        
+        subscribers = subs_response.json()
+        
+        # Filter: status='active' AND endDate within next 30 days
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        future_30_days = now + timedelta(days=30)
+        
+        expiring_count = 0
+        for sub in subscribers:
+            if sub.get('status') == 'active' and sub.get('endDate'):
+                try:
+                    end_date = datetime.fromisoformat(sub['endDate'].replace('Z', '+00:00'))
+                    if now <= end_date <= future_30_days:
+                        expiring_count += 1
+                except:
+                    pass
+        
+        print(f"Expected subscribers expiring in next 30 days: {expiring_count}")
+        
+        # Now test the endpoint
+        payload = {"daysAhead": 30}
+        response = requests.post(f"{BASE_URL}/whatsapp/run-expiry-alerts", json=payload, timeout=10)
+        
+        if response.status_code != 200:
+            print_result(False, f"Expected 200, got {response.status_code}", response.text)
+            return False
+        
+        data = response.json()
+        
+        # Verify shape: {success, total, sent, failed, daysAhead}
+        required_fields = ['success', 'total', 'sent', 'failed', 'daysAhead']
+        missing_fields = [f for f in required_fields if f not in data]
+        
+        if missing_fields:
+            print_result(False, f"Missing fields: {missing_fields}", data)
+            return False
+        
+        if data['daysAhead'] != 30:
+            print_result(False, f"daysAhead should be 30, got {data['daysAhead']}", data)
+            return False
+        
+        print_result(True, f"Expiry alerts completed: total={data['total']}, sent={data['sent']}, failed={data['failed']}, daysAhead={data['daysAhead']}", data)
+        
+        # Verify count matches (approximately - may differ if some don't have phones)
+        if data['total'] > expiring_count:
+            print(f"⚠️  WARNING: API returned more subscribers ({data['total']}) than expected ({expiring_count})")
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+def test_whatsapp_run_debt_reminders():
+    """Test 6: POST /api/whatsapp/run-debt-reminders - Should return 200 with correct shape"""
+    print_test_header("POST /api/whatsapp/run-debt-reminders")
+    
+    try:
+        # First, get count of subscribers with debt > 0
+        print("Step 1: Getting subscribers with debt > 0...")
+        subs_response = requests.get(f"{BASE_URL}/subscribers", timeout=10)
+        
+        if subs_response.status_code != 200:
+            print_result(False, f"Failed to get subscribers: {subs_response.status_code}")
+            return False
+        
+        subscribers = subs_response.json()
+        
+        debt_count = sum(1 for sub in subscribers if sub.get('debt', 0) > 0)
+        print(f"Expected subscribers with debt > 0: {debt_count}")
+        
+        # Now test the endpoint
+        response = requests.post(f"{BASE_URL}/whatsapp/run-debt-reminders", json={}, timeout=10)
+        
+        if response.status_code != 200:
+            print_result(False, f"Expected 200, got {response.status_code}", response.text)
+            return False
+        
+        data = response.json()
+        
+        # Verify shape: {success, total, sent, failed, batchId}
+        required_fields = ['success', 'total', 'sent', 'failed', 'batchId']
+        missing_fields = [f for f in required_fields if f not in data]
+        
+        if missing_fields:
+            print_result(False, f"Missing fields: {missing_fields}", data)
+            return False
+        
+        print_result(True, f"Debt reminders completed: total={data['total']}, sent={data['sent']}, failed={data['failed']}, batchId={data['batchId']}", data)
+        
+        # Verify count matches (approximately - may differ if some don't have phones)
+        if data['total'] > debt_count:
+            print(f"⚠️  WARNING: API returned more subscribers ({data['total']}) than expected ({debt_count})")
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+def test_regression_endpoints():
+    """Test 7: Regression tests - Ensure no regression from new code"""
+    print_test_header("REGRESSION TESTS")
+    
+    results = {}
+    
+    # Test 1: Dashboard stats
+    try:
+        print("\n1. Testing GET /api/dashboard/stats...")
+        response = requests.get(f"{BASE_URL}/dashboard/stats", timeout=10)
+        results['dashboard_stats'] = response.status_code == 200
+        print_result(results['dashboard_stats'], f"Dashboard stats: {response.status_code}")
+    except Exception as e:
+        results['dashboard_stats'] = False
+        print_result(False, f"Dashboard stats exception: {str(e)}")
+    
+    # Test 2: WhatsApp status
+    try:
+        print("\n2. Testing GET /api/whatsapp/status...")
+        response = requests.get(f"{BASE_URL}/whatsapp/status", timeout=10)
+        results['whatsapp_status'] = response.status_code == 200
+        if response.status_code == 200:
+            data = response.json()
+            status = data.get('status')
+            phone = data.get('phone')
+            print_result(True, f"WhatsApp status: {status}, phone: {phone}", data)
+        else:
+            print_result(False, f"WhatsApp status: {response.status_code}")
+    except Exception as e:
+        results['whatsapp_status'] = False
+        print_result(False, f"WhatsApp status exception: {str(e)}")
+    
+    # Test 3: WhatsApp templates
+    try:
+        print("\n3. Testing GET /api/whatsapp/templates...")
+        response = requests.get(f"{BASE_URL}/whatsapp/templates", timeout=10)
+        results['whatsapp_templates'] = response.status_code == 200
+        if response.status_code == 200:
+            data = response.json()
+            template_count = len(data)
+            print_result(True, f"WhatsApp templates: {template_count} templates found", {"count": template_count, "templates": list(data.keys())})
+        else:
+            print_result(False, f"WhatsApp templates: {response.status_code}")
+    except Exception as e:
+        results['whatsapp_templates'] = False
+        print_result(False, f"WhatsApp templates exception: {str(e)}")
+    
+    # Test 4: Subscribers
+    try:
+        print("\n4. Testing GET /api/subscribers...")
+        response = requests.get(f"{BASE_URL}/subscribers", timeout=10)
+        results['subscribers'] = response.status_code == 200
+        if response.status_code == 200:
+            data = response.json()
+            print_result(True, f"Subscribers: {len(data)} subscribers found")
+        else:
+            print_result(False, f"Subscribers: {response.status_code}")
+    except Exception as e:
+        results['subscribers'] = False
+        print_result(False, f"Subscribers exception: {str(e)}")
+    
+    all_passed = all(results.values())
+    print(f"\n{'='*80}")
+    print(f"REGRESSION SUMMARY: {'✅ ALL PASSED' if all_passed else '❌ SOME FAILED'}")
+    print(f"{'='*80}")
+    for endpoint, passed in results.items():
+        print(f"  {endpoint}: {'✅' if passed else '❌'}")
+    
+    return all_passed
+
+def main():
+    print(f"""
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                                                                                ║
+║           WhatsApp Enhancement Features - Backend API Testing                 ║
+║                                                                                ║
+║  Testing Backend URL: {BASE_URL}                                              ║
+║                                                                                ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+""")
+    
+    results = {}
+    
+    # Run all tests
+    results['whatsapp_stats'] = test_whatsapp_stats()
+    results['whatsapp_history'] = test_whatsapp_history()
+    results['whatsapp_test_send'] = test_whatsapp_test_send()
+    results['whatsapp_resend_failed'] = test_whatsapp_resend_failed()
+    results['whatsapp_run_expiry_alerts'] = test_whatsapp_run_expiry_alerts()
+    results['whatsapp_run_debt_reminders'] = test_whatsapp_run_debt_reminders()
+    results['regression'] = test_regression_endpoints()
+    
+    # Final summary
+    print(f"\n\n{'='*80}")
+    print(f"FINAL TEST SUMMARY")
+    print(f"{'='*80}")
+    
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+    
+    for test_name, result in results.items():
+        status = "✅ PASSED" if result else "❌ FAILED"
+        print(f"{status}: {test_name}")
+    
+    print(f"\n{'='*80}")
+    print(f"TOTAL: {passed}/{total} tests passed")
+    print(f"{'='*80}")
+    
+    if passed == total:
+        print("\n🎉 ALL TESTS PASSED! WhatsApp enhancement features are working correctly.")
+        return 0
+    else:
+        print(f"\n⚠️  {total - passed} test(s) failed. Please review the failures above.")
+        return 1
 
 if __name__ == "__main__":
-    success = test_custom_fields_api()
-    sys.exit(0 if success else 1)
+    exit(main())

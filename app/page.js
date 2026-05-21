@@ -514,6 +514,17 @@ function WhatsAppSubscriberButton({ subscriber }) {
   const [sending, setSending] = useState(null);
   const [customOpen, setCustomOpen] = useState(false);
   const [customMsg, setCustomMsg] = useState('');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const d = await api(`whatsapp/history/${subscriber.id}`);
+      setHistory(Array.isArray(d) ? d : []);
+    } finally { setHistoryLoading(false); }
+  };
 
   const sendTpl = async (templateKey, label, extraVars = {}) => {
     if (!subscriber?.phone) { toast.error('لا يوجد رقم هاتف'); return; }
@@ -581,6 +592,9 @@ function WhatsAppSubscriberButton({ subscriber }) {
               <button onClick={() => { setOpen(false); setCustomOpen(true); }} className="w-full text-right text-xs px-3 py-2 hover:bg-gold/10 rounded flex items-center gap-2">
                 <span>✍️</span> رسالة مخصصة
               </button>
+              <button onClick={() => { setOpen(false); setHistoryOpen(true); loadHistory(); }} className="w-full text-right text-xs px-3 py-2 hover:bg-gold/10 rounded flex items-center gap-2">
+                <span>📜</span> سجل رسائل هذا المشترك
+              </button>
             </div>
           </>
         )}
@@ -602,6 +616,37 @@ function WhatsAppSubscriberButton({ subscriber }) {
                 <Send className="w-3 h-3 ml-1" /> إرسال
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+      {historyOpen && (
+        <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+          <DialogContent className="glass-strong border-emerald-500/30 max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-emerald-400 flex items-center gap-2">
+                <MessageSquare className="w-4 h-4" /> سجل رسائل {subscriber.name}
+                <span className="text-[10px] text-muted-foreground" dir="ltr">({subscriber.phone})</span>
+              </DialogTitle>
+            </DialogHeader>
+            {historyLoading ? <p className="text-center text-muted-foreground py-6">جاري التحميل…</p> :
+            history.length === 0 ? <p className="text-center text-muted-foreground py-6">لا توجد رسائل بعد</p> :
+            <div className="space-y-2">
+              {history.map(m => (
+                <div key={m.id} className={`glass-card rounded-lg p-3 text-xs border ${m.status === 'sent' ? 'border-emerald-500/30' : m.status === 'failed' ? 'border-red-500/30' : 'border-amber-500/30'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <Badge variant="outline" className="text-[9px]">{m.type}</Badge>
+                    <span className="text-[10px] text-muted-foreground">{m.createdAt ? new Date(m.createdAt).toLocaleString('ar-IQ') : ''}</span>
+                  </div>
+                  <p className="whitespace-pre-line text-[11px] mb-1">{m.message}</p>
+                  <div className="flex items-center gap-2">
+                    {m.status === 'sent' && <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/40 text-[9px]"><CheckCircle2 className="w-3 h-3 ml-1" /> مرسلة</Badge>}
+                    {m.status === 'failed' && <Badge className="bg-red-500/20 text-red-400 border-red-500/40 text-[9px]"><XCircle className="w-3 h-3 ml-1" /> فاشلة</Badge>}
+                    {m.status === 'queued' && <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/40 text-[9px]"><Clock className="w-3 h-3 ml-1" /> منتظرة</Badge>}
+                    {m.error && <span className="text-[9px] text-red-400">⚠ {m.error}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>}
           </DialogContent>
         </Dialog>
       )}

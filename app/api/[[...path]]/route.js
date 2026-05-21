@@ -949,6 +949,155 @@ async function handle(request, params) {
     return ok(items.map(x => { try { delete x._id; } catch {} return x; }));
   }
 
+  // Per-subscriber WhatsApp history (last 50 messages)
+  if (path.match(/^whatsapp\/history\/[^/]+$/) && method === 'GET') {
+    const subId = path.split('/')[2];
+    const items = await db.collection('whatsapp_messages').find({ subscriberId: subId }).sort({ createdAt: -1 }).limit(50).toArray();
+    return ok(items.map(x => { try { delete x._id; } catch {} return x; }));
+  }
+
+  // Quick test send (no subscriber, just phone + message)
+  if (path === 'whatsapp/test-send' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { phone, message } = body || {};
+    if (!phone || !message) return err('phone و message مطلوبان', 400);
+    if (!waIsConfigured()) return err('خدمة واتساب غير مُعدّة', 503);
+    const r = await waSend(phone, message);
+    await db.collection('whatsapp_messages').insertOne({
+      id: uuidv4(), subscriberId: null, subscriberName: 'Test', phone, type: 'test',
+      message, status: r?.ok ? 'sent' : 'failed', externalId: r?.id || null,
+      error: r?.ok ? null : (r?.error || 'send_failed'),
+      sentAt: r?.ok ? new Date().toISOString() : null,
+      createdAt: new Date().toISOString(),
+    });
+    return ok({ success: !!r?.ok, ...r });
+  }
+
+  // Resend ALL failed messages (bulk retry)
+  if (path === 'whatsapp/resend-failed' && method === 'POST') {
+    if (!waIsConfigured()) return err('خدمة واتساب غير مُعدّة', 503);
+    const failed = await db.collection('whatsapp_messages').find({ status: 'failed' }).sort({ createdAt: -1 }).limit(200).toArray();
+    if (failed.length === 0) return ok({ success: true, total: 0, sent: 0, failed: 0 });
+    let sent = 0, fail = 0;
+    for (const m of failed) {
+      if (!m.phone || m.phone === 'MANAGER') { fail++; continue; }
+      try {
+        const r = await waSend(m.phone, m.message || '');
+        await db.collection('whatsapp_messages').updateOne({ id: m.id }, {
+          $inc: { retries: 1 },
+          $set: {
+            status: r?.ok ? 'sent' : 'failed',
+            sentAt: r?.ok ? new Date().toISOString() : null,
+            externalId: r?.id || null,
+            error: r?.ok ? null : (r?.error || 'send_failed'),
+            lastRetryAt: new Date().toISOString(),
+          },
+        });
+        if (r?.ok) sent++; else fail++;
+      } catch (e) {
+        fail++;
+      }
+      await new Promise(r => setTimeout(r, 1200));
+    }
+    return ok({ success: true, total: failed.length, sent, failed: fail });
+  }
+
+  // Run expiry alerts: find subs expiring in next N days → send template
+  // POST { daysAhead?: number (default 5) }
+  if (path === 'whatsapp/run-expiry-alerts' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const daysAhead = parseInt(body?.daysAhead || 5, 10);
+    const now = new Date();
+    const cutoff = new Date(now.getTime() + daysAhead * 86400000).toISOString().slice(0, 10);
+    const todayStr = now.toISOString().slice(0, 10);
+
+    const subs = await db.collection('subscribers').find({
+      status: 'active',
+      endDate: { $gte: todayStr, $lte: cutoff },
+    }).toArray();
+    const valid = subs.filter(s => s.phone);
+
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const tpls = { ...WA_DEFAULT_TEMPLATES, ...(settings?.whatsappTemplates || {}) };
+    const tpl = tpls.expiry_alert;
+
+    const items = [];
+    for (const s of valid) {
+      const daysLeft = Math.max(1, Math.ceil((new Date(s.endDate).getTime() - now.getTime()) / 86400000));
+      const vars = await buildSubscriberVars(db, s, { daysLeft });
+      items.push({ phone: s.phone, message: fillWaTemplate(tpl, vars), subscriberId: s.id, subscriberName: s.name });
+    }
+    if (items.length === 0) return ok({ success: true, total: 0, sent: 0, failed: 0, daysAhead });
+
+    const batchId = uuidv4(); const ts = new Date().toISOString();
+    const records = items.map(it => ({
+      id: uuidv4(), batchId, subscriberId: it.subscriberId, subscriberName: it.subscriberName,
+      phone: it.phone, type: 'expiry_alert', message: it.message, status: 'queued', retries: 0, createdAt: ts,
+    }));
+    await db.collection('whatsapp_messages').insertMany(records);
+
+    if (!waIsConfigured()) {
+      return ok({ success: false, queued: true, total: items.length, batchId, daysAhead, note: 'service_not_configured' });
+    }
+    const resp = await waSendBulk(items.map(it => ({ phone: it.phone, message: it.message })), 1500);
+    if (Array.isArray(resp?.results)) {
+      for (let i = 0; i < resp.results.length; i++) {
+        const r = resp.results[i]; const rec = records[i]; if (!rec) continue;
+        await db.collection('whatsapp_messages').updateOne({ id: rec.id }, {
+          $set: { status: r.ok ? 'sent' : 'failed', sentAt: r.ok ? new Date().toISOString() : null, externalId: r.id || null, error: r.ok ? null : (r.error || 'send_failed') },
+        });
+      }
+    }
+    await logActivity(db, { action: 'whatsapp_run_expiry_alerts', entity: 'whatsapp', details: `${resp?.sent || 0}/${items.length} (خلال ${daysAhead} يوم)`, ip: clientIp });
+    return ok({ success: !!resp?.ok, total: items.length, sent: resp?.sent || 0, failed: resp?.failed || 0, batchId, daysAhead });
+  }
+
+  // Run debt reminders: subs with debt > 0
+  if (path === 'whatsapp/run-debt-reminders' && method === 'POST') {
+    const subs = await db.collection('subscribers').find({ debt: { $gt: 0 } }).toArray();
+    const valid = subs.filter(s => s.phone);
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const tpls = { ...WA_DEFAULT_TEMPLATES, ...(settings?.whatsappTemplates || {}) };
+    const tpl = tpls.debt;
+    const items = [];
+    for (const s of valid) {
+      const vars = await buildSubscriberVars(db, s);
+      items.push({ phone: s.phone, message: fillWaTemplate(tpl, vars), subscriberId: s.id, subscriberName: s.name });
+    }
+    if (items.length === 0) return ok({ success: true, total: 0, sent: 0, failed: 0 });
+    const batchId = uuidv4(); const ts = new Date().toISOString();
+    const records = items.map(it => ({
+      id: uuidv4(), batchId, subscriberId: it.subscriberId, subscriberName: it.subscriberName,
+      phone: it.phone, type: 'debt', message: it.message, status: 'queued', retries: 0, createdAt: ts,
+    }));
+    await db.collection('whatsapp_messages').insertMany(records);
+    if (!waIsConfigured()) return ok({ success: false, queued: true, total: items.length, batchId });
+    const resp = await waSendBulk(items.map(it => ({ phone: it.phone, message: it.message })), 1500);
+    if (Array.isArray(resp?.results)) {
+      for (let i = 0; i < resp.results.length; i++) {
+        const r = resp.results[i]; const rec = records[i]; if (!rec) continue;
+        await db.collection('whatsapp_messages').updateOne({ id: rec.id }, {
+          $set: { status: r.ok ? 'sent' : 'failed', sentAt: r.ok ? new Date().toISOString() : null, externalId: r.id || null, error: r.ok ? null : (r.error || 'send_failed') },
+        });
+      }
+    }
+    await logActivity(db, { action: 'whatsapp_run_debt_reminders', entity: 'whatsapp', details: `${resp?.sent || 0}/${items.length}`, ip: clientIp });
+    return ok({ success: !!resp?.ok, total: items.length, sent: resp?.sent || 0, failed: resp?.failed || 0, batchId });
+  }
+
+  // WhatsApp stats card data (for dashboard widget)
+  if (path === 'whatsapp/stats' && method === 'GET') {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const weekAgo = new Date(today.getTime() - 7 * 86400000);
+    const totalSent = await db.collection('whatsapp_messages').countDocuments({ status: 'sent' });
+    const totalFailed = await db.collection('whatsapp_messages').countDocuments({ status: 'failed' });
+    const totalQueued = await db.collection('whatsapp_messages').countDocuments({ status: 'queued' });
+    const todaySent = await db.collection('whatsapp_messages').countDocuments({ status: 'sent', createdAt: { $gte: today.toISOString() } });
+    const weekSent = await db.collection('whatsapp_messages').countDocuments({ status: 'sent', createdAt: { $gte: weekAgo.toISOString() } });
+    return ok({ totalSent, totalFailed, totalQueued, todaySent, weekSent });
+  }
+
+
   if (path === 'dashboard/stats' && method === 'GET') {
     try {
       const safe = async (fn, def) => { try { return await fn(); } catch { return def; } };
@@ -1679,11 +1828,27 @@ async function handle(request, params) {
 💰 ${finalAmount.toLocaleString()} د.ع (${paymentMethod})
 👨‍💼 ${activation.agentName}
 ⏰ ينتهي: ${endDate.toLocaleDateString('ar-IQ')}`;
-    await db.collection('whatsapp_messages').insertOne({
-      id: uuidv4(), subscriberId: subId, activationId: activation.id, phone: 'MANAGER',
-      type: 'manager_alert', message: managerMsg, status: 'queued', retries: 0,
-      createdAt: new Date().toISOString(),
-    });
+    // If settings.whatsapp.sendToManager + managerPhone are set, actually send via service
+    const _waSettings = settingsDoc?.whatsapp || SETTINGS_DEFAULTS.whatsapp;
+    if (_waSettings?.sendToManager && _waSettings?.managerPhone && waIsConfigured()) {
+      try {
+        await dispatchWhatsApp(db, {
+          subscriberId: subId,
+          subscriberName: subscriber.name,
+          phone: _waSettings.managerPhone,
+          type: 'manager_alert',
+          message: managerMsg,
+          activationId: activation.id,
+        });
+      } catch (e) { console.warn('[activation] manager WA error:', e?.message); }
+    } else {
+      // Fallback: persist as queued only (legacy behavior)
+      await db.collection('whatsapp_messages').insertOne({
+        id: uuidv4(), subscriberId: subId, activationId: activation.id, phone: 'MANAGER',
+        type: 'manager_alert', message: managerMsg, status: 'queued', retries: 0,
+        createdAt: new Date().toISOString(),
+      });
+    }
 
     // Activity log
     await db.collection('activity_logs').insertOne({
