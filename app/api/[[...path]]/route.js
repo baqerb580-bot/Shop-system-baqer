@@ -1319,6 +1319,111 @@ async function handle(request, params) {
 
   // ============ END BALANCE ACCOUNTS ============
 
+  // ============ SEPARATED PROFIT REPORTS ============
+  // Returns full P&L breakdown per category with date filtering
+  // GET /api/reports/separated?from=2026-01-01&to=2026-12-31
+  if (path === 'reports/separated' && method === 'GET') {
+    const url = new URL(request.url);
+    const from = url.searchParams.get('from') || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const to = url.searchParams.get('to') || new Date().toISOString().slice(0, 10);
+    const fromISO = `${from}T00:00:00.000Z`;
+    const toISO = `${to}T23:59:59.999Z`;
+
+    const dateRange = { $gte: fromISO, $lte: toISO };
+
+    // Helper: sum a field from array of records
+    const sumField = (arr, field) => (Array.isArray(arr) ? arr : []).reduce((s, x) => s + (Number(x?.[field]) || 0), 0);
+
+    // ===== Sales (POS) =====
+    const sales = await db.collection('sales').find({ createdAt: dateRange }).toArray().catch(() => []);
+    const salesTotal = sumField(sales, 'total');
+    const salesProfit = sumField(sales, 'profit');
+    const salesCost = sumField(sales, 'cost');
+
+    // ===== Subscriptions (Activations) =====
+    const activations = await db.collection('activations').find({ createdAt: dateRange }).toArray().catch(() => []);
+    const subsTotal = sumField(activations, 'amount');
+    const subsPaid = sumField(activations, 'paid');
+    const subsCount = activations.length;
+
+    // ===== Repairs =====
+    const repairs = await db.collection('repairs').find({ createdAt: dateRange }).toArray().catch(() => []);
+    const repairsRevenue = sumField(repairs, 'totalAmount') + sumField(repairs, 'price');
+    const repairsCost = sumField(repairs, 'partsCost') + sumField(repairs, 'cost');
+    const repairsCount = repairs.length;
+    const repairsCompleted = repairs.filter(r => r?.status === 'completed').length;
+
+    // ===== Debts =====
+    const subscribers = await db.collection('subscribers').find({}).toArray().catch(() => []);
+    const totalOutstandingDebt = (Array.isArray(subscribers) ? subscribers : []).reduce((s, x) => s + (Number(x?.debt) || 0), 0);
+    const debtPaymentsInRange = await db.collection('debt_payments').find({ createdAt: dateRange }).toArray().catch(() => []);
+    const debtsPaidInRange = sumField(debtPaymentsInRange, 'amount');
+
+    // ===== Expenses (balance withdrawals, manual only - not auto-deduct which is already counted as activation cost) =====
+    const expenses = await db.collection('balance_transactions').find({
+      type: 'withdraw',
+      createdAt: dateRange,
+    }).toArray().catch(() => []);
+    const expensesTotal = sumField(expenses, 'amount');
+    const expensesByCategory = {};
+    for (const e of expenses) {
+      const cat = e.linkedEntity || 'general';
+      expensesByCategory[cat] = (expensesByCategory[cat] || 0) + (Number(e.amount) || 0);
+    }
+
+    // ===== Agents (commissions/fees from activations) =====
+    const agents = await db.collection('agents').find({}).toArray().catch(() => []);
+    const agentStats = (Array.isArray(agents) ? agents : []).map(a => {
+      const myActivations = activations.filter(ac => ac?.agentId === a.id);
+      return {
+        id: a.id, name: a.name,
+        activationsCount: myActivations.length,
+        revenue: myActivations.reduce((s, x) => s + (Number(x?.amount) || 0), 0),
+        profit: myActivations.reduce((s, x) => s + (Number(x?.agentProfit) || 0), 0),
+        balance: Number(a.balance) || 0,
+        subscribersCount: subscribers.filter(s => s.agentId === a.id).length,
+      };
+    });
+
+    // ===== Net profit =====
+    // Net = sales_profit + subscriptions_revenue + repairs_revenue + debts_paid - expenses - repairs_cost
+    const netProfit = salesProfit + subsTotal + repairsRevenue + debtsPaidInRange - expensesTotal - repairsCost;
+
+    // ===== Daily time-series for charts =====
+    const daySeries = [];
+    const start = new Date(fromISO);
+    const end = new Date(toISO);
+    const days = Math.min(90, Math.ceil((end.getTime() - start.getTime()) / 86400000) + 1);
+    for (let i = 0; i < days; i++) {
+      const dayStart = new Date(start.getTime() + i * 86400000); dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart.getTime() + 86400000);
+      const dayStartISO = dayStart.toISOString();
+      const dayEndISO = dayEnd.toISOString();
+      const inRange = (x) => x?.createdAt >= dayStartISO && x?.createdAt < dayEndISO;
+      daySeries.push({
+        date: dayStart.toISOString().slice(0, 10),
+        label: dayStart.toLocaleDateString('ar-IQ', { month: 'short', day: 'numeric' }),
+        sales: sumField(sales.filter(inRange), 'total'),
+        subscriptions: sumField(activations.filter(inRange), 'amount'),
+        repairs: sumField(repairs.filter(inRange), 'totalAmount'),
+        expenses: sumField(expenses.filter(inRange), 'amount'),
+      });
+    }
+
+    return ok({
+      period: { from, to, days },
+      sales:        { total: salesTotal, profit: salesProfit, cost: salesCost, count: sales.length },
+      subscriptions:{ total: subsTotal, paid: subsPaid, count: subsCount, debt: subsTotal - subsPaid },
+      repairs:      { revenue: repairsRevenue, cost: repairsCost, profit: repairsRevenue - repairsCost, count: repairsCount, completed: repairsCompleted },
+      debts:        { outstanding: totalOutstandingDebt, paidInRange: debtsPaidInRange },
+      expenses:     { total: expensesTotal, byCategory: expensesByCategory, count: expenses.length },
+      agents:       agentStats.sort((a, b) => b.revenue - a.revenue),
+      net:          { profit: netProfit, totalRevenue: salesTotal + subsTotal + repairsRevenue + debtsPaidInRange, totalCost: expensesTotal + repairsCost + salesCost },
+      chart:        daySeries,
+    });
+  }
+  // ============ END REPORTS ============
+
   // ============ ISP SUBSCRIBER SYNC CENTER ============
   // Get sync config (URL, credentials, source type, field mappings, auto-sync settings)
   if (path === 'isp-sync/config' && method === 'GET') {
