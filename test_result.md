@@ -4922,12 +4922,29 @@ agent_communication:
             Backward compatibility maintained. Ready for production use.
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Frontend UI Testing - 6 New Modules (A-F)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      🎯 FRONTEND COMPREHENSIVE TESTING - 6 NEW MODULES (A-F) - IN PROGRESS
+      
+      Testing all 22 test cases for the new Arabic ERP frontend modules:
+      - Module A: Smart Clickable Notifications (3 tests)
+      - Module B: Agent System (5 tests)
+      - Module C: Balance Auto-Deduct Preview (3 tests)
+      - Module D: Recurring Tasks (4 tests)
+      - Module E: Excel Backup System (3 tests)
+      - Module F: Settings Panel Enhancements (4 tests)
+      
+      URL: https://isp-noc-hub.preview.emergentagent.com
+      Language: Arabic (RTL layout)
+      Admin portal: Open access (no auth)
+
   - agent: "testing"
     message: |
       🎉 AGENT SYSTEM REVAMP (MODULE B) TESTING COMPLETE - ALL TESTS PASSED (9/9)
