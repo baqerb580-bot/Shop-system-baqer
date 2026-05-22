@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,7 +9,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { toast, Toaster } from 'sonner';
-import { ShoppingCart, Plus, Minus, X, Search, Package, Phone, MapPin, CreditCard, CheckCircle2 } from 'lucide-react';
+import { ShoppingCart, Plus, Minus, X, Search, Package, Phone, MapPin, CreditCard, CheckCircle2, Camera, Filter, SlidersHorizontal, Sparkles } from 'lucide-react';
+import BarcodeScanner from '@/components/barcode-scanner';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
 const api = async (path, opts = {}) => {
@@ -17,18 +18,37 @@ const api = async (path, opts = {}) => {
   return r.json();
 };
 
+const ORIGIN_BADGE = {
+  original: { label: '✨ أصلي', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
+  oem: { label: '🔧 OEM', cls: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' },
+  commercial: { label: '🛒 تجاري', cls: 'bg-zinc-500/20 text-zinc-300 border-zinc-500/40' },
+  used: { label: '♻️ مستعمل', cls: 'bg-violet-500/20 text-violet-300 border-violet-500/40' },
+};
+const PRODUCT_TYPE_LABEL = {
+  screen: '📱 شاشة', cover: '🛡️ كفر', sticker: '🎨 ستيكر', battery: '🔋 بطارية',
+  cable: '🔌 كيبل', charger: '⚡ شاحن', accessory: '🎧 إكسسوار', spare: '⚙️ قطعة غيار', general: '📦 عام',
+};
+
 function Store() {
   const [products, setProducts] = useState([]);
+  const [allDevices, setAllDevices] = useState([]);
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState('');
-  const [category, setCategory] = useState('all');
+  const [filters, setFilters] = useState({
+    category: 'all', device: '', origin: '', productType: '', brand: '', color: '',
+    inStockOnly: false, minPrice: '', maxPrice: '', sort: 'newest',
+  });
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [productDetail, setProductDetail] = useState(null);
   const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAddress: '', paymentMethod: 'cod', notes: '' });
 
   useEffect(() => {
     api('products').then(p => { if (Array.isArray(p)) setProducts(p); });
+    api('products/devices').then(d => { if (Array.isArray(d)) setAllDevices(d); });
     try {
       const saved = localStorage.getItem('store_cart');
       if (saved) setCart(JSON.parse(saved));
@@ -36,17 +56,50 @@ function Store() {
   }, []);
   useEffect(() => { try { localStorage.setItem('store_cart', JSON.stringify(cart)); } catch {} }, [cart]);
 
-  const categories = Array.from(new Set(products.map(p => p.category).filter(Boolean)));
-  const filtered = products.filter(p => 
-    (category === 'all' || p.category === category) &&
-    (!search || p.name?.toLowerCase().includes(search.toLowerCase()))
-  );
+  const categories = useMemo(() => Array.from(new Set(products.map(p => p.category).filter(Boolean))), [products]);
+  const brands = useMemo(() => Array.from(new Set(products.map(p => p.brand).filter(Boolean))).sort(), [products]);
+  const colors = useMemo(() => Array.from(new Set(products.map(p => p.color).filter(Boolean))).sort(), [products]);
+
+  const norm = (s) => String(s || '').toLowerCase();
+  const filtered = useMemo(() => {
+    let list = products.filter(p => {
+      if (filters.category !== 'all' && p.category !== filters.category) return false;
+      if (filters.origin && p.origin !== filters.origin) return false;
+      if (filters.productType && p.productType !== filters.productType) return false;
+      if (filters.brand && norm(p.brand) !== norm(filters.brand)) return false;
+      if (filters.color && norm(p.color) !== norm(filters.color)) return false;
+      if (filters.inStockOnly && Number(p.stock || 0) <= 0) return false;
+      if (filters.minPrice && Number(p.price || 0) < Number(filters.minPrice)) return false;
+      if (filters.maxPrice && Number(p.price || 0) > Number(filters.maxPrice)) return false;
+      if (filters.device) {
+        const d = norm(filters.device);
+        const compat = (p.compatibleDevices || []).map(norm);
+        const matches = compat.some(c => c.includes(d) || d.includes(c)) || norm(p.model).includes(d) || norm(p.name).includes(d);
+        if (!matches) return false;
+      }
+      if (search) {
+        const s = norm(search);
+        const inText = norm(p.name).includes(s) || norm(p.brand).includes(s) || norm(p.model).includes(s) ||
+                       norm(p.sku).includes(s) || norm(p.barcode).includes(s) ||
+                       (p.compatibleDevices || []).some(d => norm(d).includes(s));
+        if (!inText) return false;
+      }
+      return true;
+    });
+    // Sort
+    if (filters.sort === 'price_asc') list = [...list].sort((a, b) => Number(a.price || 0) - Number(b.price || 0));
+    else if (filters.sort === 'price_desc') list = [...list].sort((a, b) => Number(b.price || 0) - Number(a.price || 0));
+    else if (filters.sort === 'name') list = [...list].sort((a, b) => norm(a.name).localeCompare(norm(b.name)));
+    return list;
+  }, [products, filters, search]);
+
+  const activeFiltersCount = Object.entries(filters).filter(([k, v]) => v && v !== 'all' && v !== 'newest' && v !== true).length;
 
   const addToCart = (p) => {
     setCart(prev => {
       const ex = prev.find(x => x.id === p.id);
       if (ex) return prev.map(x => x.id === p.id ? { ...x, quantity: x.quantity + 1 } : x);
-      return [...prev, { id: p.id, name: p.name, price: p.price, quantity: 1 }];
+      return [...prev, { id: p.id, name: p.name, price: p.price, quantity: 1, image: p.image }];
     });
     toast.success(`✅ تمت إضافة ${p.name}`);
   };
@@ -72,75 +125,266 @@ function Store() {
     }
   };
 
+  const handleScannerDetect = async (code) => {
+    setScannerOpen(false);
+    const p = await api(`products/barcode/${encodeURIComponent(code)}`);
+    if (p?.error || !p?.id) {
+      toast.error(`المنتج بالباركود ${code} غير موجود في المتجر`);
+      return;
+    }
+    addToCart(p);
+  };
+
+  const resetFilters = () => setFilters({ category: 'all', device: '', origin: '', productType: '', brand: '', color: '', inStockOnly: true, minPrice: '', maxPrice: '', sort: 'newest' });
+
   return (
-    <div className="min-h-screen bg-background grid-pattern">
+    <div className="min-h-screen bg-background grid-pattern" dir="rtl">
       {/* Header */}
-      <header className="glass-strong border-b border-gold-soft sticky top-0 z-30 px-4 py-3 flex items-center justify-between">
+      <header className="glass-strong border-b border-gold-soft sticky top-0 z-30 px-4 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gold-gradient flex items-center justify-center text-xl font-black">غ</div>
+          <img src="/logo-icon.png" alt="مركز الغزلان" className="w-12 h-12 object-contain" />
           <div>
             <h1 className="text-lg font-black gold-text leading-tight">متجر الغزلان</h1>
-            <p className="text-[10px] text-muted-foreground">إلكترونيات · إكسسوارات · صيانة</p>
+            <p className="text-[10px] text-muted-foreground">إلكترونيات · إكسسوارات · قطع غيار · صيانة</p>
           </div>
         </div>
-        <Button onClick={() => setCartOpen(true)} className="btn-gold relative">
-          <ShoppingCart className="w-4 h-4 ml-1" /> السلة
-          {cart.length > 0 && <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] rounded-full w-5 h-5 flex items-center justify-center font-bold">{cart.reduce((s, x) => s + x.quantity, 0)}</span>}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setScannerOpen(true)} variant="outline" size="icon" className="border-emerald-500/40 hover:bg-emerald-500/10 text-emerald-400" title="مسح باركود">
+            <Camera className="w-4 h-4" />
+          </Button>
+          <Button onClick={() => setCartOpen(true)} className="btn-gold relative">
+            <ShoppingCart className="w-4 h-4 ml-1" /> السلة
+            {cart.length > 0 && <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] rounded-full w-5 h-5 flex items-center justify-center font-bold">{cart.reduce((s, x) => s + x.quantity, 0)}</span>}
+          </Button>
+        </div>
       </header>
 
       <main className="p-4 max-w-7xl mx-auto space-y-4">
         {/* Hero */}
-        <div className="rounded-2xl bg-gold-gradient/20 border border-gold/40 p-6 text-center">
-          <h2 className="text-2xl font-black gold-text">🛒 تسوّق بسهولة - توصيل سريع</h2>
-          <p className="text-sm text-muted-foreground mt-2">شحن مجاني للطلبات فوق 50,000 د.ع · دفع عند الاستلام</p>
+        <div className="rounded-2xl bg-gradient-to-br from-gold/10 via-transparent to-cyan-500/10 border border-gold/40 p-6 text-center">
+          <h2 className="text-2xl md:text-3xl font-black gold-text">🛒 تسوّق بسهولة - توصيل سريع</h2>
+          <p className="text-sm text-muted-foreground mt-2">شحن مجاني للطلبات فوق 50,000 د.ع · دفع عند الاستلام · ضمان الأصلية</p>
+          <div className="flex flex-wrap gap-2 justify-center mt-3 text-[10px]">
+            <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">✨ أصلي مضمون</Badge>
+            <Badge className="bg-cyan-500/15 text-cyan-300 border-cyan-500/30">🔗 توافقية متعددة</Badge>
+            <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">📷 ابحث بالكاميرا</Badge>
+            <Badge className="bg-violet-500/15 text-violet-300 border-violet-500/30">🚚 توصيل خلال 24 ساعة</Badge>
+          </div>
         </div>
 
-        {/* Filters */}
-        <div className="flex gap-2 flex-wrap">
-          <div className="relative flex-1 min-w-[200px]">
+        {/* Search + Quick Filters */}
+        <div className="flex gap-2 flex-wrap items-center">
+          <div className="relative flex-1 min-w-[240px]">
             <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="ابحث عن منتج..." className="pr-10 bg-input/30 border-gold/20" />
+            <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="ابحث: اسم، باركود، موديل..." className="pr-10 bg-input/30 border-gold/20" />
           </div>
-          <Select value={category} onValueChange={setCategory}>
-            <SelectTrigger className="w-48 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+          <div className="relative w-48">
+            <Sparkles className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-cyan-400" />
+            <Input list="device-list" value={filters.device} onChange={e => setFilters(f => ({ ...f, device: e.target.value }))} placeholder="🔗 الجهاز المتوافق" className="pr-10 bg-input/30 border-cyan-500/30" />
+            <datalist id="device-list">{allDevices.map(d => <option key={d} value={d} />)}</datalist>
+          </div>
+          <Select value={filters.sort} onValueChange={v => setFilters(f => ({ ...f, sort: v }))}>
+            <SelectTrigger className="w-44 bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">كل الأقسام</SelectItem>
-              {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+              <SelectItem value="newest">⏰ الأحدث</SelectItem>
+              <SelectItem value="price_asc">💰 السعر تصاعدياً</SelectItem>
+              <SelectItem value="price_desc">💎 السعر تنازلياً</SelectItem>
+              <SelectItem value="name">🔠 الاسم</SelectItem>
             </SelectContent>
           </Select>
+          <Button onClick={() => setFiltersOpen(v => !v)} variant="outline" className="border-violet-500/40 hover:bg-violet-500/10 text-violet-400 relative">
+            <SlidersHorizontal className="w-4 h-4 ml-1" /> فلاتر
+            {activeFiltersCount > 0 && <Badge className="absolute -top-2 -right-2 bg-violet-500 text-white text-[9px] h-5 min-w-[20px] px-1">{activeFiltersCount}</Badge>}
+          </Button>
         </div>
 
-        {/* Products */}
+        {/* Advanced Filters Panel */}
+        {filtersOpen && (
+          <div className="p-4 rounded-xl border border-violet-500/30 bg-violet-500/5 space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <Label className="text-[10px] text-violet-300">القسم</Label>
+                <Select value={filters.category} onValueChange={v => setFilters(f => ({ ...f, category: v }))}>
+                  <SelectTrigger className="bg-input/30 border-violet-500/30 h-9 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">كل الأقسام</SelectItem>
+                    {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-[10px] text-violet-300">النوع التفصيلي</Label>
+                <Select value={filters.productType || 'all'} onValueChange={v => setFilters(f => ({ ...f, productType: v === 'all' ? '' : v }))}>
+                  <SelectTrigger className="bg-input/30 border-violet-500/30 h-9 text-xs"><SelectValue placeholder="الكل" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">الكل</SelectItem>
+                    {Object.entries(PRODUCT_TYPE_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-[10px] text-violet-300">الأصل</Label>
+                <Select value={filters.origin || 'all'} onValueChange={v => setFilters(f => ({ ...f, origin: v === 'all' ? '' : v }))}>
+                  <SelectTrigger className="bg-input/30 border-violet-500/30 h-9 text-xs"><SelectValue placeholder="الكل" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">الكل</SelectItem>
+                    {Object.entries(ORIGIN_BADGE).map(([k, v]) => <SelectItem key={k} value={k}>{v.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-[10px] text-violet-300">الشركة</Label>
+                <Select value={filters.brand || 'all'} onValueChange={v => setFilters(f => ({ ...f, brand: v === 'all' ? '' : v }))}>
+                  <SelectTrigger className="bg-input/30 border-violet-500/30 h-9 text-xs"><SelectValue placeholder="الكل" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">الكل</SelectItem>
+                    {brands.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-[10px] text-violet-300">اللون</Label>
+                <Select value={filters.color || 'all'} onValueChange={v => setFilters(f => ({ ...f, color: v === 'all' ? '' : v }))}>
+                  <SelectTrigger className="bg-input/30 border-violet-500/30 h-9 text-xs"><SelectValue placeholder="الكل" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">الكل</SelectItem>
+                    {colors.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-[10px] text-violet-300">السعر من</Label>
+                <Input type="number" value={filters.minPrice} onChange={e => setFilters(f => ({ ...f, minPrice: e.target.value }))} className="bg-input/30 border-violet-500/30 h-9 text-xs" placeholder="0" />
+              </div>
+              <div>
+                <Label className="text-[10px] text-violet-300">السعر إلى</Label>
+                <Input type="number" value={filters.maxPrice} onChange={e => setFilters(f => ({ ...f, maxPrice: e.target.value }))} className="bg-input/30 border-violet-500/30 h-9 text-xs" placeholder="∞" />
+              </div>
+              <div className="flex items-end">
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input type="checkbox" checked={filters.inStockOnly} onChange={e => setFilters(f => ({ ...f, inStockOnly: e.target.checked }))} className="w-4 h-4 accent-violet-500" />
+                  ✅ المتوفر فقط
+                </label>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={resetFilters} variant="ghost" size="sm" className="text-violet-400">🔄 إعادة تعيين</Button>
+              <span className="text-[10px] text-muted-foreground self-center">عدد النتائج: <strong className="text-violet-300">{filtered.length}</strong></span>
+            </div>
+          </div>
+        )}
+
+        {/* Products grid */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-          {filtered.map(p => (
-            <Card key={p.id} className="glass-card border-gold-soft hover:border-gold/50 transition-all hover:shadow-gold-glow group">
-              <CardContent className="p-3 space-y-2">
-                <div className="aspect-square bg-input/30 rounded-lg flex items-center justify-center overflow-hidden">
-                  {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" /> : <Package className="w-12 h-12 text-gold/40" />}
-                </div>
-                <div>
-                  <h3 className="text-xs font-bold line-clamp-2 min-h-[2.5rem]">{p.name}</h3>
-                  <p className="text-[10px] text-muted-foreground">{p.category || '-'}</p>
-                </div>
-                <div className="flex justify-between items-center">
-                  <p className="text-base font-black gold-text">{fmt(p.price)}</p>
-                  <span className="text-[10px] text-muted-foreground">د.ع</span>
-                </div>
-                <p className={`text-[10px] ${p.stock > 5 ? 'text-emerald-400' : p.stock > 0 ? 'text-amber-400' : 'text-red-400'}`}>
-                  {p.stock > 0 ? `🟢 متوفر (${p.stock})` : '🔴 غير متوفر'}
-                </p>
-                <Button onClick={() => addToCart(p)} disabled={!p.stock || p.stock < 1} className="btn-gold w-full h-8 text-xs">
-                  <ShoppingCart className="w-3 h-3 ml-1" /> أضف للسلة
-                </Button>
-              </CardContent>
-            </Card>
-          ))}
+          {filtered.map(p => {
+            const ob = ORIGIN_BADGE[p.origin] || ORIGIN_BADGE.commercial;
+            return (
+              <Card key={p.id} className="glass-card border-gold-soft hover:border-gold/50 transition-all hover:shadow-gold-glow group cursor-pointer" onClick={() => setProductDetail(p)}>
+                <CardContent className="p-3 space-y-2">
+                  <div className="aspect-square bg-input/30 rounded-lg flex items-center justify-center overflow-hidden relative">
+                    {p.image && p.image.length > 4 ? (
+                      <img src={p.image} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                    ) : (
+                      <span className="text-5xl">{p.image || '📦'}</span>
+                    )}
+                    {p.origin && (
+                      <Badge className={`absolute top-1 right-1 text-[8px] ${ob.cls}`}>{ob.label}</Badge>
+                    )}
+                    {Number(p.stock) <= 0 && (
+                      <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                        <Badge className="bg-red-500/30 text-red-300 border-red-500/50">نفد المخزون</Badge>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold line-clamp-2 min-h-[2.5rem]">{p.name}</h3>
+                    <p className="text-[10px] text-muted-foreground line-clamp-1">
+                      {[p.brand, p.model, p.color].filter(Boolean).join(' · ') || p.category || '-'}
+                    </p>
+                  </div>
+                  {p.compatibleDevices?.length > 0 && (
+                    <Badge className="text-[9px] bg-cyan-500/15 text-cyan-300 border-cyan-500/30 w-full justify-center truncate">
+                      🔗 متوافق مع {p.compatibleDevices.length} جهاز
+                    </Badge>
+                  )}
+                  <div className="flex justify-between items-center">
+                    <p className="text-base font-black gold-text">{fmt(p.price)} <span className="text-[9px]">د.ع</span></p>
+                    <span className={`text-[9px] ${Number(p.stock || 0) > 5 ? 'text-emerald-400' : Number(p.stock || 0) > 0 ? 'text-amber-400' : 'text-red-400'}`}>
+                      {Number(p.stock || 0) > 0 ? `🟢 ${p.stock}` : '🔴 0'}
+                    </span>
+                  </div>
+                  <Button onClick={(e) => { e.stopPropagation(); addToCart(p); }} disabled={!p.stock || p.stock < 1} className="btn-gold w-full h-8 text-xs">
+                    <ShoppingCart className="w-3 h-3 ml-1" /> أضف للسلة
+                  </Button>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
-        {filtered.length === 0 && <p className="text-center text-muted-foreground py-12 text-sm">لا توجد منتجات</p>}
+        {filtered.length === 0 && (
+          <div className="text-center py-12 space-y-2">
+            <Package className="w-16 h-16 mx-auto text-gold/30" />
+            <p className="text-sm text-muted-foreground">لا توجد منتجات تطابق الفلاتر الحالية</p>
+            <Button variant="ghost" onClick={resetFilters} className="text-violet-400">🔄 مسح الفلاتر</Button>
+          </div>
+        )}
       </main>
 
-      {/* Cart Sheet */}
+      {/* Product Detail Dialog (compatibility view) */}
+      <Dialog open={!!productDetail} onOpenChange={() => setProductDetail(null)}>
+        <DialogContent className="glass-strong border-gold/40 max-w-lg">
+          {productDetail && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="gold-text">{productDetail.name}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div className="aspect-video bg-input/30 rounded-lg flex items-center justify-center overflow-hidden">
+                  {productDetail.image && productDetail.image.length > 4 ? (
+                    <img src={productDetail.image} alt={productDetail.name} className="w-full h-full object-contain" />
+                  ) : (
+                    <span className="text-7xl">{productDetail.image || '📦'}</span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {productDetail.brand && <div className="p-2 rounded bg-input/30 border border-gold-soft"><span className="text-muted-foreground">الشركة:</span> <strong>{productDetail.brand}</strong></div>}
+                  {productDetail.model && <div className="p-2 rounded bg-input/30 border border-gold-soft"><span className="text-muted-foreground">الموديل:</span> <strong>{productDetail.model}</strong></div>}
+                  {productDetail.color && <div className="p-2 rounded bg-input/30 border border-gold-soft"><span className="text-muted-foreground">اللون:</span> <strong>{productDetail.color}</strong></div>}
+                  {productDetail.productType && <div className="p-2 rounded bg-input/30 border border-gold-soft"><span className="text-muted-foreground">النوع:</span> <strong>{PRODUCT_TYPE_LABEL[productDetail.productType] || productDetail.productType}</strong></div>}
+                  {productDetail.origin && <div className="p-2 rounded bg-input/30 border border-gold-soft col-span-2 flex items-center justify-between"><span className="text-muted-foreground">الأصل:</span> <Badge className={`text-[10px] ${(ORIGIN_BADGE[productDetail.origin] || ORIGIN_BADGE.commercial).cls}`}>{(ORIGIN_BADGE[productDetail.origin] || ORIGIN_BADGE.commercial).label}</Badge></div>}
+                </div>
+                {productDetail.compatibleDevices?.length > 0 && (
+                  <div className="p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/30">
+                    <p className="font-bold text-cyan-400 text-xs mb-2">🔗 متوافق مع {productDetail.compatibleDevices.length} جهاز:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {productDetail.compatibleDevices.map(d => <Badge key={d} className="bg-cyan-500/15 text-cyan-300 border-cyan-500/30 text-[10px]">{d}</Badge>)}
+                    </div>
+                  </div>
+                )}
+                {productDetail.description && (
+                  <div className="p-3 rounded bg-input/30 border border-gold-soft text-xs">
+                    <p className="text-muted-foreground mb-1">الوصف:</p>
+                    <p>{productDetail.description}</p>
+                  </div>
+                )}
+                <div className="flex items-center justify-between p-3 rounded-lg bg-gold/10 border border-gold/30">
+                  <p className="text-xl font-black gold-text">{fmt(productDetail.price)} د.ع</p>
+                  <span className={`text-xs ${Number(productDetail.stock || 0) > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {Number(productDetail.stock || 0) > 0 ? `🟢 متوفر (${productDetail.stock} قطعة)` : '🔴 نفد المخزون'}
+                  </span>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button onClick={() => { addToCart(productDetail); setProductDetail(null); }} disabled={!productDetail.stock || productDetail.stock < 1} className="btn-gold w-full">
+                  <ShoppingCart className="w-4 h-4 ml-1" /> أضف للسلة
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Cart */}
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>
         <DialogContent className="glass-strong border-gold/40 max-w-md">
           <DialogHeader><DialogTitle className="gold-text">🛒 سلة التسوق</DialogTitle></DialogHeader>
@@ -246,6 +490,14 @@ function Store() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Camera Scanner */}
+      <BarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={handleScannerDetect}
+        title="📷 امسح باركود المنتج"
+      />
 
       <Toaster position="top-center" theme="dark" richColors />
     </div>
