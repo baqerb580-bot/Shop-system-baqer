@@ -4270,7 +4270,7 @@ agent_communication:
 
 test_plan:
   current_focus:
-    - "Agent System Revamp (Module B) - DONE (TESTED)"
+    - "Module C - Balance Auto-Deduct UX (NEW FEATURE)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"

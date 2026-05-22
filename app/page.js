@@ -1953,6 +1953,7 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
   const [editableMessage, setEditableMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [balanceAccounts, setBalanceAccounts] = useState([]);
 
   useEffect(() => {
     if (subscriber) {
@@ -1960,6 +1961,8 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
       setPaymentMethod('cash'); setDurationMonths(1);
       setAgentId(subscriber.agentId || (agents[0]?.id) || '');
       setNotes(''); setResult(null); setSendChannel('whatsapp'); setEditableMessage('');
+      // Load balance accounts to show live balance preview
+      api('balance/accounts').then(d => setBalanceAccounts(safeArr(d)));
     }
   }, [subscriber, agents]);
 
@@ -1979,6 +1982,18 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
 
   const endDate = new Date(Date.now() + durationMonths * 30 * 86400000).toLocaleDateString('ar-IQ');
 
+  // ============ BALANCE PREVIEW ============
+  // Map payment method → balance account key (matches backend)
+  const balanceKeyMap = { fastpay: 'fast', master: 'master', transfer: 'management', cash: 'cash' };
+  const balanceMethodLabel = { fastpay: '⚡ فاست باي', master: '💳 ماستر كارد', transfer: '🏦 تحويل (الإدارة)', cash: '💵 كاش' };
+  const targetKey = balanceKeyMap[paymentMethod];
+  const targetAccount = balanceAccounts.find(a => a.key === targetKey && a.enabled !== false);
+  const currentBalance = Number(targetAccount?.balance || 0);
+  const amountNum = Number(amount || 0);
+  const newBalance = currentBalance - amountNum;
+  const willGoNegative = newBalance < 0;
+  const balanceWarning = targetAccount && targetAccount.alertThreshold != null && newBalance < Number(targetAccount.alertThreshold);
+
   const submit = async () => {
     setLoading(true);
     const r = await api(`subscribers/${subscriber.id}/activate`, {
@@ -1987,6 +2002,14 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
     });
     setLoading(false);
     if (r.error) { toast.error(r.error); sounds.error(); return; }
+    // Pending approval flow (agent has requireAdminApproval=true)
+    if (r.pending) {
+      sounds.notification();
+      toast.info('⏳ تم إرسال طلب التفعيل للمدير للموافقة', { description: r.message || 'الطلب في قائمة الانتظار' });
+      onClose();
+      onDone?.();
+      return;
+    }
     sounds.activation();
     toast.success('✅ تم التفعيل بنجاح');
     setResult(r);
@@ -2071,6 +2094,39 @@ function ActivationDialog({ subscriber, packages, agents, onClose, onDone }) {
               <div className="col-span-2 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs text-emerald-400">
                 ✅ تاريخ الانتهاء التلقائي: <strong className="text-emerald-300">{endDate}</strong>
               </div>
+
+              {/* ============ BALANCE PREVIEW (Fast/Master/Management) ============ */}
+              {paymentMethod !== 'cash' && targetAccount && (
+                <div className={`col-span-2 p-3 rounded-lg border text-xs space-y-1 ${willGoNegative ? 'bg-red-500/10 border-red-500/40' : balanceWarning ? 'bg-amber-500/10 border-amber-500/40' : 'bg-cyan-500/5 border-cyan-500/20'}`}>
+                  <div className="flex items-center justify-between">
+                    <p className="font-bold flex items-center gap-1">
+                      <Wallet className="w-3 h-3" />
+                      حساب: {balanceMethodLabel[paymentMethod]} ({targetAccount.name})
+                    </p>
+                    {willGoNegative && <Badge className="bg-red-500/20 text-red-400 border-red-500/40 text-[9px]">⚠️ سيدخل في السالب!</Badge>}
+                    {!willGoNegative && balanceWarning && <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/40 text-[9px]">⚠️ تحت الحد الأدنى</Badge>}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center pt-1 border-t border-current/20">
+                    <div>
+                      <p className="text-[10px] opacity-60">الرصيد الحالي</p>
+                      <p className={`text-sm font-bold ${currentBalance < 0 ? 'text-red-400' : 'text-cyan-300'}`}>{fmt(currentBalance)} د.ع</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] opacity-60">سيُخصم</p>
+                      <p className="text-sm font-bold text-amber-400">- {fmt(amountNum)} د.ع</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] opacity-60">الرصيد بعد الخصم</p>
+                      <p className={`text-sm font-bold ${willGoNegative ? 'text-red-400' : 'text-emerald-400'}`}>{fmt(newBalance)} د.ع</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {paymentMethod !== 'cash' && !targetAccount && (
+                <div className="col-span-2 p-2 rounded-lg bg-zinc-500/10 border border-zinc-500/30 text-[10px] text-zinc-400">
+                  ℹ️ لا يوجد حساب رصيد مرتبط بطريقة الدفع هذه — لن يتم خصم تلقائي
+                </div>
+              )}
 
               {/* Send channel selector */}
               <div className="col-span-2">
