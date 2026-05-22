@@ -536,17 +536,34 @@ async function sendTelegram(db, text) {
   }
 }
 
-async function notifyManager(db, { title, message, type, taskId, employeeId }) {
+async function notifyManager(db, { title, message, type, taskId, employeeId, entityType, entityId, priority, icon }) {
   // 1) In-app notification for all managers (employees with 'all' or 'employees' permission)
   const managers = await db.collection('employees').find({
     $or: [{ permissions: 'all' }, { role: { $regex: 'مدير' } }]
   }).toArray();
   const now = new Date().toISOString();
-  for (const m of managers) {
+  // Resolve entity routing
+  const _entityType = entityType
+    || (type === 'leave_request' ? 'leave'
+    : type === 'advance_request' ? 'advance'
+    : type === 'task_submitted' || type?.startsWith('task_') ? 'task'
+    : type === 'location_request_new' ? 'location_request'
+    : 'generic');
+  const _entityId = entityId || (type?.startsWith('task_') ? taskId : null);
+  const _icon = icon || (type === 'leave_request' ? '📅' : type === 'advance_request' ? '💰' : type?.startsWith('task') ? '📋' : '🔔');
+  const _priority = priority || (type === 'leave_request' || type === 'advance_request' ? 'high' : 'normal');
+  // Fallback: if no managers exist, create a broadcast notification (userId=null)
+  const recipients = managers.length > 0 ? managers : [{ id: null }];
+  for (const m of recipients) {
     await db.collection('notifications').insertOne({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      userId: m.id, type, title, message, taskId: taskId || null,
-      employeeId: employeeId || null, read: false, createdAt: now,
+      userId: m.id || null, type, title, message,
+      icon: _icon, priority: _priority,
+      entityType: _entityType, entityId: _entityId,
+      taskId: taskId || null,
+      employeeId: employeeId || null,
+      read: false, resolved: false, resolvedAt: null, resolvedBy: null,
+      createdAt: now,
     });
   }
   // 2) Telegram to manager
@@ -2901,7 +2918,10 @@ async function handle(request, params) {
       await db.collection('notifications').insertOne({
         id: uuidv4(), userId: task.createdById, type: 'task_submitted', title: 'تقرير مهمة جاهز للمراجعة',
         message: `أنهى ${task.assignedToName} المهمة "${task.title}" وأرسل التقرير`,
-        taskId, read: false, createdAt: now,
+        taskId, entityType: 'task', entityId: taskId,
+        icon: '📋', priority: 'high',
+        read: false, resolved: false, resolvedAt: null, resolvedBy: null,
+        createdAt: now,
       });
     }
     return ok({ success: true });
@@ -3029,7 +3049,7 @@ async function handle(request, params) {
     await notifyManager(db, {
       type: 'leave_request', title: `📅 طلب إجازة: ${emp.name}`,
       message: `النوع: ${type}\nالمدة: ${days} يوم\nمن: ${startDate} إلى: ${endDate || startDate}\nالسبب: ${reason || '-'}`,
-      employeeId,
+      employeeId, entityType: 'leave', entityId: doc.id,
     });
     return ok(doc, 201);
   }
@@ -3101,7 +3121,7 @@ async function handle(request, params) {
     await notifyManager(db, {
       type: 'advance_request', title: `💰 طلب سلفة: ${emp.name}`,
       message: `المبلغ: ${Number(amount).toLocaleString('en-US')} د.ع\nالأقساط: ${installments || 1}\nالسبب: ${reason || '-'}`,
-      employeeId,
+      employeeId, entityType: 'advance', entityId: doc.id,
     });
     return ok(doc, 201);
   }
@@ -3164,7 +3184,28 @@ async function handle(request, params) {
       // If no managers configured yet, return any unscoped/admin notifications gracefully
       const query = ids.length > 0 ? { userId: { $in: ids } } : {};
       const items = await db.collection('notifications').find(query).sort({ createdAt: -1 }).limit(100).toArray();
-      return ok((Array.isArray(items) ? items : []).map(n => { try { delete n._id; } catch {} return n; }));
+      // Enrich legacy notifications: derive entityType/entityId from existing fields so inline actions work
+      const enriched = (Array.isArray(items) ? items : []).map(n => {
+        try { delete n._id; } catch {}
+        if (!n.entityType || n.entityType === 'generic' || !n.entityId) {
+          let eType = n.entityType, eId = n.entityId;
+          if (n.taskId && (!eType || eType === 'generic')) { eType = 'task'; eId = n.taskId; }
+          else if (n.subscriberId && (!eType || eType === 'generic')) { eType = 'subscriber'; eId = n.subscriberId; }
+          else if (n.type === 'leave_request' && n.employeeId) { eType = 'leave'; }
+          else if (n.type === 'advance_request' && n.employeeId) { eType = 'advance'; }
+          else if (n.type === 'attendance_late' || n.type === 'attendance_checkin' || n.type === 'attendance_checkout') {
+            eType = 'employee'; eId = n.employeeId;
+          }
+          n.entityType = eType || 'generic';
+          n.entityId = eId || null;
+        }
+        if (!n.icon) {
+          const ICONS = { leave_request: '📅', advance_request: '💰', task_submitted: '📋', task_new: '📋', task_completed: '✅', task_transferred: '🔄', task_rejected: '❌', attendance_late: '⏰', attendance_checkin: '📍', attendance_checkout: '🚪', subscriber_expiry: '⚠️', subscriber_activated: '✅' };
+          n.icon = ICONS[n.type] || '🔔';
+        }
+        return n;
+      });
+      return ok(enriched);
     } catch (e) {
       console.error('[notifications/admin] error:', e?.message);
       return ok([]); // Safe fallback — UI expects an array

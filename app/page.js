@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { GPSMap, Barcode } from '@/components/maps-barcode';
 import { CustomFieldsGrid, CustomFieldsDisplay } from '@/components/custom-fields';
 import WhatsAppManager from '@/components/whatsapp-manager';
@@ -482,6 +483,8 @@ function AdminNotificationsBell({ setActive }) {
           employee: 'employees',
           whatsapp: 'whatsapp-manager',
           location_request: 'location-requests',
+          leave: 'employees',
+          advance: 'employees',
         };
         const route = routeMap[r.entityType];
         if (route && setActive) {
@@ -512,6 +515,60 @@ function AdminNotificationsBell({ setActive }) {
     if (!confirm('حذف هذا الإشعار؟')) return;
     await api(`notifications/${n.id}`, { method: 'DELETE' });
     load();
+  };
+
+  // ============ Quick action buttons (type-specific) ============
+  const quickAction = async (e, n, action) => {
+    e.stopPropagation();
+    let endpoint, body = {}, successMsg = '✅ تم';
+    try {
+      if (action === 'approve_leave') {
+        endpoint = `leaves/${n.entityId}/approve`;
+        body = { approvedBy: 'المدير' };
+        successMsg = '✅ تمت الموافقة على الإجازة';
+      } else if (action === 'reject_leave') {
+        const reason = prompt('سبب الرفض (اختياري):') || '';
+        endpoint = `leaves/${n.entityId}/reject`;
+        body = { reason };
+        successMsg = '❌ تم رفض الإجازة';
+      } else if (action === 'approve_advance') {
+        endpoint = `advances/${n.entityId}/approve`;
+        body = { approvedBy: 'المدير' };
+        successMsg = '✅ تمت الموافقة على السلفة';
+      } else if (action === 'reject_advance') {
+        const reason = prompt('سبب الرفض (اختياري):') || '';
+        endpoint = `advances/${n.entityId}/reject`;
+        body = { reason };
+        successMsg = '❌ تم رفض السلفة';
+      } else if (action === 'approve_task') {
+        endpoint = `tasks/${n.entityId}/review`;
+        body = { action: 'approve', reviewerName: 'المدير' };
+        successMsg = '✅ تم قبول المهمة';
+      } else if (action === 'revise_task') {
+        const notes = prompt('ملاحظات للتعديل:') || '';
+        if (!notes) return;
+        endpoint = `tasks/${n.entityId}/review`;
+        body = { action: 'revise', notes, reviewerName: 'المدير' };
+        successMsg = '↻ طُلِب التعديل';
+      } else if (action === 'reject_task') {
+        const notes = prompt('سبب الرفض:') || '';
+        if (!notes) return;
+        endpoint = `tasks/${n.entityId}/review`;
+        body = { action: 'reject', notes, reviewerName: 'المدير' };
+        successMsg = '❌ تم رفض المهمة';
+      } else return;
+
+      const r = await api(endpoint, { method: 'POST', body: JSON.stringify(body) });
+      if (r?.success || (!r?._failed && !r?.error)) {
+        toast.success(successMsg);
+        // Auto-resolve the notification
+        await api(`notifications/${n.id}/resolve`, { method: 'POST', body: JSON.stringify({ note: action, resolvedBy: 'المدير' }) });
+      } else {
+        toast.error('فشل: ' + (r?.error || 'خطأ غير معروف'));
+      }
+    } catch (err) {
+      toast.error('خطأ: ' + (err?.message || ''));
+    } finally { load(); }
   };
 
   const NOTIF_COLOR = {
@@ -547,11 +604,11 @@ function AdminNotificationsBell({ setActive }) {
           <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-bold animate-bounce">{unread}</span>
         )}
       </Button>
-      {open && (
+      {open && typeof document !== 'undefined' && createPortal(
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-12 w-[420px] max-h-[560px] overflow-y-auto glass-strong border border-gold/30 rounded-xl shadow-2xl z-50">
-            <div className="p-3 border-b border-gold-soft sticky top-0 bg-background z-10">
+          <div className="fixed inset-0 z-[150]" onClick={() => setOpen(false)} />
+          <div className="fixed left-4 top-16 w-[440px] max-h-[80vh] overflow-y-auto border border-gold/40 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.85)] z-[200]" style={{ backgroundColor: 'rgb(15, 15, 25)' }}>
+            <div className="p-3 border-b border-gold-soft sticky top-0 z-10" style={{ backgroundColor: 'rgb(15, 15, 25)' }}>
               <div className="flex justify-between items-center mb-2">
                 <p className="text-sm font-bold gold-text flex items-center gap-2"><Bell className="w-4 h-4" /> الإشعارات ({unread} غير مقروء)</p>
                 {unread > 0 && <button onClick={markAllRead} className="text-[10px] text-cyan-400 hover:underline">قراءة الكل</button>}
@@ -590,15 +647,38 @@ function AdminNotificationsBell({ setActive }) {
                           </Badge>
                         )}
                       </div>
-                      {canClick && !n.resolved && (
-                        <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={(e) => { e.stopPropagation(); handleClick(n); }} className="text-[9px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/40 hover:bg-cyan-500/25">↗ فتح</button>
-                          <button onClick={(e) => resolveNotif(e, n)} className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/25">✅ معالجة</button>
-                          <button onClick={(e) => deleteNotif(e, n)} className="text-[9px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/40 hover:bg-red-500/25">🗑️</button>
+                      {!n.resolved && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {/* Type-specific quick actions */}
+                          {n.type === 'leave_request' && n.entityId && (
+                            <>
+                              <button onClick={(e) => quickAction(e, n, 'approve_leave')} className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/25 font-bold">✅ موافقة إجازة</button>
+                              <button onClick={(e) => quickAction(e, n, 'reject_leave')} className="text-[9px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/40 hover:bg-red-500/25 font-bold">❌ رفض</button>
+                            </>
+                          )}
+                          {n.type === 'advance_request' && n.entityId && (
+                            <>
+                              <button onClick={(e) => quickAction(e, n, 'approve_advance')} className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/25 font-bold">✅ موافقة سلفة</button>
+                              <button onClick={(e) => quickAction(e, n, 'reject_advance')} className="text-[9px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/40 hover:bg-red-500/25 font-bold">❌ رفض</button>
+                            </>
+                          )}
+                          {n.type === 'task_submitted' && n.entityId && (
+                            <>
+                              <button onClick={(e) => quickAction(e, n, 'approve_task')} className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/25 font-bold">✅ قبول التقرير</button>
+                              <button onClick={(e) => quickAction(e, n, 'revise_task')} className="text-[9px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/40 hover:bg-amber-500/25 font-bold">↻ تعديل</button>
+                              <button onClick={(e) => quickAction(e, n, 'reject_task')} className="text-[9px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/40 hover:bg-red-500/25 font-bold">❌ رفض</button>
+                            </>
+                          )}
+                          {/* Universal actions */}
+                          {canClick && (
+                            <button onClick={(e) => { e.stopPropagation(); handleClick(n); }} className="text-[9px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/40 hover:bg-cyan-500/25">↗ فتح</button>
+                          )}
+                          <button onClick={(e) => resolveNotif(e, n)} className="text-[9px] px-2 py-0.5 rounded bg-zinc-500/15 text-zinc-300 border border-zinc-500/40 hover:bg-zinc-500/25">✓ معالجة</button>
+                          <button onClick={(e) => deleteNotif(e, n)} className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">🗑️</button>
                         </div>
                       )}
                       {n.resolved && (
-                        <button onClick={(e) => reopenNotif(e, n)} className="mt-2 text-[9px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/40 hover:bg-amber-500/25 opacity-0 group-hover:opacity-100 transition-opacity">🔁 إعادة فتح</button>
+                        <button onClick={(e) => reopenNotif(e, n)} className="mt-2 text-[9px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/40 hover:bg-amber-500/25">🔁 إعادة فتح</button>
                       )}
                       {n.resolutionNote && (
                         <p className="text-[9px] text-emerald-400 mt-1 italic">📝 {n.resolutionNote}</p>
@@ -609,7 +689,8 @@ function AdminNotificationsBell({ setActive }) {
               );
             })}
           </div>
-        </>
+        </>,
+        document.body
       )}
     </div>
   );

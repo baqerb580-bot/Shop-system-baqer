@@ -4270,10 +4270,89 @@ agent_communication:
 
 test_plan:
   current_focus:
-    - "Balance Management System (NEW FEATURE)"
+    - "Smart Clickable Notifications with Inline Actions (NEW FEATURE)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      🆕 NEW FEATURE: Smart Clickable Notifications with Inline Action Buttons (Module A)
+      
+      Please test the enhanced notification system. The goal: managers can approve/reject leave requests, advance requests, and task review submissions DIRECTLY from the notification bell, without opening separate pages.
+      
+      ## What Changed (Backend)
+      
+      1. notifyManager() helper enhanced (file: /app/app/api/[[...path]]/route.js around line 539):
+         - Now accepts: entityType, entityId, priority, icon
+         - Auto-derives entityType from notification type if not provided:
+           * 'leave_request' → 'leave'
+           * 'advance_request' → 'advance'
+           * 'task_*' → 'task'
+           * 'location_request_new' → 'location_request'
+         - FALLBACK: when no managers exist (employees with permissions='all' or role='مدير'), creates broadcast notification (userId=null) so notifications still appear in admin bell
+      
+      2. Leave request notification (POST /api/leaves) now sets:
+         entityType='leave', entityId=<leave id>, priority='high', icon='📅'
+      
+      3. Advance request notification (POST /api/advances) now sets:
+         entityType='advance', entityId=<advance id>, priority='high', icon='💰'
+      
+      4. Task submitted notification (POST /api/tasks/:id/submit) now sets:
+         entityType='task', entityId=<task id>, priority='high', icon='📋'
+      
+      5. GET /api/notifications/admin enriches LEGACY notifications on-the-fly:
+         - Derives entityType from taskId/subscriberId/employeeId fallbacks
+         - Adds default icon per type
+         - Older records still work without DB migration
+      
+      ## Test Cases - PLEASE VERIFY:
+      
+      **Test 1: Leave Request notification has correct shape**
+      - POST /api/leaves with {employeeId, type:'اعتيادية', reason, startDate, endDate, days}
+      - Then GET /api/notifications/admin
+      - Expected: notification has entityType='leave', entityId=<leaveId>, priority='high', icon='📅'
+      
+      **Test 2: Advance Request notification has correct shape**
+      - POST /api/advances with {employeeId, amount, reason, installments}
+      - GET /api/notifications/admin
+      - Expected: notification has entityType='advance', entityId=<advanceId>, priority='high', icon='💰'
+      
+      **Test 3: Approve via notification flow (CRITICAL)**
+      - Create leave request → get the notification's entityId (which IS the leave id)
+      - POST /api/leaves/{entityId}/approve with {approvedBy:'المدير'}
+      - Expected: leave status='approved', a new notification 'leave_approve' for employee
+      - Verify the original leave_request notification can be marked as resolved via POST /api/notifications/{id}/resolve
+      
+      **Test 4: Reject via notification flow**
+      - Create advance request → get entityId
+      - POST /api/advances/{entityId}/reject with {reason:'سبب اختبار'}
+      - Expected: advance status='rejected', rejectionReason saved
+      
+      **Test 5: Approve task review via notification**
+      - Find a task with status='pending_review' (or simulate by submitting one)
+      - POST /api/tasks/{taskId}/review with {action:'approve', reviewerName:'المدير'}
+      - Expected: task status='completed', review object saved
+      
+      **Test 6: Legacy notification enrichment**
+      - GET /api/notifications/admin
+      - Existing balance_deposit/balance_overdraft notifications should still work
+      - Notifications with taskId but no entityType should now have entityType='task' in response
+      - Notifications with no entityId/entityType should still return as 'generic'
+      
+      **Test 7: Broadcast fallback when no managers**
+      - If there are 0 employees with permissions='all' or role='مدير', verify notifications STILL get created (with userId=null)
+      - GET /api/notifications/admin should return them when no managers exist
+      
+      ## Test 8: Regression checks
+      - Verify existing GET /api/notifications/admin still works
+      - Verify POST /api/notifications/{id}/click still returns entityType/entityId
+      - Verify POST /api/notifications/{id}/resolve still works
+      - Verify POST /api/notifications/{id}/reopen still works
+      - Verify POST /api/notifications/admin/read-all still works
+      
+      Please run all 8 test cases and report results.
 
 agent_communication:
   - agent: "main"
@@ -4367,4 +4446,223 @@ agent_communication:
       All 10 endpoints tested successfully. Auto-deduct on activation working perfectly.
       Transaction logging, balance tracking, and notification system all working correctly.
       Ready for production use.
+
+
+  - task: "Smart Clickable Notifications with Inline Actions (NEW FEATURE)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW: Enhanced notification system with inline action support. Changes:
+            1. notifyManager() helper enhanced (line 539) - accepts entityType, entityId, priority, icon
+            2. Auto-derives entityType from notification type (leave_request→leave, advance_request→advance, task_*→task)
+            3. Leave request notification (POST /api/leaves) sets: entityType='leave', entityId=<leaveId>, priority='high', icon='📅'
+            4. Advance request notification (POST /api/advances) sets: entityType='advance', entityId=<advanceId>, priority='high', icon='💰'
+            5. Task submitted notification sets: entityType='task', entityId=<taskId>, priority='high', icon='📋'
+            6. GET /api/notifications/admin enriches LEGACY notifications on-the-fly (derives entityType from taskId/subscriberId/employeeId)
+            7. Broadcast fallback: when no managers exist (permissions='all' or role='مدير'), creates notification with userId=null
+            8. Notification endpoints: POST /api/notifications/:id/click, POST /api/notifications/:id/resolve, POST /api/notifications/:id/reopen
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All Smart Clickable Notifications endpoints fully functional (8/8 tests passed).
+            
+            Test Results Summary:
+            
+            ✅ TEST 1: Leave Request Notification Shape (4/4 checks passed):
+               - POST /api/leaves creates leave request successfully (status: 201)
+               - Notification created with correct structure:
+                 * entityType='leave' ✅
+                 * entityId=<leaveId> (matches created leave ID) ✅
+                 * priority='high' ✅
+                 * icon='📅' ✅
+               - Notification appears in GET /api/notifications/admin
+               - All required fields present and correct
+            
+            ✅ TEST 2: Advance Request Notification Shape (4/4 checks passed):
+               - POST /api/advances creates advance request successfully (status: 201)
+               - Notification created with correct structure:
+                 * entityType='advance' ✅
+                 * entityId=<advanceId> (matches created advance ID) ✅
+                 * priority='high' ✅
+                 * icon='💰' ✅
+               - Notification appears in GET /api/notifications/admin
+               - All required fields present and correct
+            
+            ✅ TEST 3: End-to-End Approval Flow (5/5 steps passed):
+               - Created leave request (status: 201, ID: 55312fd3-b404-44bb-a9fe-87c2a78b5703)
+               - Found notification with matching entityId
+               - Approved leave using entityId from notification: POST /api/leaves/{entityId}/approve
+               - Leave status changed to 'approved' ✅
+               - Resolved original notification: POST /api/notifications/{id}/resolve (status: 200) ✅
+               - Complete workflow verified: create → notify → approve → resolve
+            
+            ✅ TEST 4: End-to-End Rejection Flow (4/4 steps passed):
+               - Created advance request (status: 201, ID: 06be3c7a-3c1b-42ee-91bf-fe87bae28c18)
+               - Found notification with matching entityId
+               - Rejected advance using entityId: POST /api/advances/{entityId}/reject
+               - Advance status changed to 'rejected' ✅
+               - Rejection reason saved correctly: "سبب اختبار - لا يوجد رصيد كافٍ" ✅
+               - Complete workflow verified: create → notify → reject → verify
+            
+            ✅ TEST 5: Task Review Approval (4/4 steps passed):
+               - Created task with status='pending_review' (ID: afc9d3d5-aaae-43f4-944c-1e275b0800f2)
+               - Approved task review: POST /api/tasks/{taskId}/review with action='approve'
+               - Task status changed to 'completed' ✅
+               - Review object saved with all details (action, reviewerName, rating, reviewedAt) ✅
+               - Review workflow verified: create → review → complete
+            
+            ✅ TEST 6: Legacy Notification Enrichment (3/3 checks passed):
+               - GET /api/notifications/admin returns 83 notifications
+               - ALL notifications have entityType (0 missing) ✅
+               - ALL notifications have icon (0 missing) ✅
+               - Specific type enrichment verified:
+                 * leave_request → entityType='leave', icon='📅' ✅
+                 * advance_request → entityType='advance', icon='💰' ✅
+                 * task_submitted → entityType='task', icon='📋' ✅
+               - Legacy notifications enriched on-the-fly without DB migration
+            
+            ✅ TEST 7: Broadcast Fallback When No Managers (2/2 checks passed):
+               - System has 0 managers (employees with permissions='all' or role='مدير')
+               - GET /api/notifications/admin returns 83 notifications
+               - Found 18 broadcast notifications with userId=null ✅
+               - Broadcast fallback working correctly when no managers exist ✅
+               - Notifications still accessible via admin endpoint
+            
+            ✅ TEST 8: Regression Checks (5/5 endpoints passed):
+               - GET /api/notifications/admin: 200 ✅
+               - POST /api/notifications/:id/click: 200, returns entityType and entityId ✅
+               - POST /api/notifications/:id/resolve: 200 ✅
+               - POST /api/notifications/:id/reopen: 200 ✅
+               - POST /api/notifications/admin/read-all: 200 ✅
+               - All existing notification endpoints working correctly
+            
+            CRITICAL VERIFICATIONS:
+            ✅ All endpoints return HTTP 200 (or 201 for creates)
+            ✅ Response shapes are correct (all required fields present)
+            ✅ entityType and entityId correctly set for all notification types
+            ✅ Priority and icon correctly set based on notification type
+            ✅ End-to-end approval flow working (create → notify → approve → resolve)
+            ✅ End-to-end rejection flow working (create → notify → reject → verify)
+            ✅ Task review approval working (create → review → complete)
+            ✅ Legacy notification enrichment working (derives entityType from existing fields)
+            ✅ Broadcast fallback working when no managers exist (userId=null)
+            ✅ All notification action endpoints working (click, resolve, reopen, read-all)
+            ✅ No regression from new features
+            
+            DATA INTEGRITY VERIFIED:
+            - All endpoints use UUIDs (not MongoDB ObjectIds)
+            - All timestamps are ISO format
+            - All Arabic text rendering correctly
+            - All boolean fields are booleans
+            - All notification fields correctly populated (entityType, entityId, priority, icon)
+            - Notification routing metadata working correctly
+            - Status transitions working (pending → approved/rejected/completed)
+            - Resolve/reopen workflow working correctly
+            
+            NOTIFICATION STRUCTURE VERIFIED:
+            - entityType: Correctly set for all types (leave, advance, task, generic)
+            - entityId: Matches the ID of the related entity (leave ID, advance ID, task ID)
+            - priority: Correctly set ('high' for leave/advance requests, 'normal' for others)
+            - icon: Correctly set based on type (📅 for leave, 💰 for advance, 📋 for task)
+            - userId: null for broadcast notifications when no managers exist
+            - read, resolved, resolvedAt, resolvedBy: All working correctly
+            
+            WORKFLOW VERIFICATION:
+            1. Leave Request Flow: Create leave → Notification created → Approve via entityId → Status updated → Resolve notification ✅
+            2. Advance Request Flow: Create advance → Notification created → Reject via entityId → Status updated → Reason saved ✅
+            3. Task Review Flow: Create task → Set pending_review → Approve review → Status completed → Review saved ✅
+            
+            BROADCAST FALLBACK VERIFIED:
+            - When no managers exist (0 employees with permissions='all' or role='مدير')
+            - Notifications still created with userId=null
+            - Accessible via GET /api/notifications/admin
+            - 18 broadcast notifications found in test database
+            
+            NO CRITICAL ISSUES FOUND. Smart Clickable Notifications feature is production-ready.
+            All 8 test scenarios passed successfully. Notification routing metadata working correctly.
+            End-to-end workflows verified (approval, rejection, task review). Legacy notification enrichment working.
+            Broadcast fallback working when no managers exist. All regression checks passed.
+            Ready for production use.
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      🎉 SMART CLICKABLE NOTIFICATIONS TESTING COMPLETE - ALL TESTS PASSED (8/8)
+      
+      Tested all NEW Smart Clickable Notifications endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ TEST 1: Leave Request Notification Shape (4/4 checks passed)
+         - POST /api/leaves: Creates leave with notification
+         - Notification has entityType='leave', entityId=<leaveId>, priority='high', icon='📅'
+         - All required fields present and correct
+      
+      ✅ TEST 2: Advance Request Notification Shape (4/4 checks passed)
+         - POST /api/advances: Creates advance with notification
+         - Notification has entityType='advance', entityId=<advanceId>, priority='high', icon='💰'
+         - All required fields present and correct
+      
+      ✅ TEST 3: End-to-End Approval Flow (5/5 steps passed)
+         - Create leave → Find notification → Approve via entityId → Verify status → Resolve notification
+         - Leave status changed to 'approved'
+         - Notification resolved successfully
+      
+      ✅ TEST 4: End-to-End Rejection Flow (4/4 steps passed)
+         - Create advance → Find notification → Reject via entityId → Verify status and reason
+         - Advance status changed to 'rejected'
+         - Rejection reason saved correctly
+      
+      ✅ TEST 5: Task Review Approval (4/4 steps passed)
+         - Create task with pending_review → Approve review → Verify status and review object
+         - Task status changed to 'completed'
+         - Review object saved with all details
+      
+      ✅ TEST 6: Legacy Notification Enrichment (3/3 checks passed)
+         - All 83 notifications have entityType and icon
+         - Specific types enriched correctly (leave_request, advance_request, task_submitted)
+         - Legacy notifications work without DB migration
+      
+      ✅ TEST 7: Broadcast Fallback (2/2 checks passed)
+         - System has 0 managers
+         - Found 18 broadcast notifications with userId=null
+         - Notifications accessible via admin endpoint
+      
+      ✅ TEST 8: Regression Checks (5/5 endpoints passed)
+         - GET /api/notifications/admin: 200
+         - POST /api/notifications/:id/click: 200, returns entityType/entityId
+         - POST /api/notifications/:id/resolve: 200
+         - POST /api/notifications/:id/reopen: 200
+         - POST /api/notifications/admin/read-all: 200
+      
+      CRITICAL VERIFICATIONS:
+      ✅ All endpoints return correct status codes
+      ✅ entityType and entityId correctly set for all notification types
+      ✅ Priority and icon correctly set based on notification type
+      ✅ End-to-end workflows verified (approval, rejection, task review)
+      ✅ Legacy notification enrichment working
+      ✅ Broadcast fallback working when no managers exist
+      ✅ All notification action endpoints working
+      ✅ No regression from new features
+      
+      DATA INTEGRITY VERIFIED:
+      - All endpoints use UUIDs (not MongoDB ObjectIds)
+      - All timestamps are ISO format
+      - All Arabic text rendering correctly
+      - Notification routing metadata working correctly
+      - Status transitions working correctly
+      
+      NO CRITICAL ISSUES FOUND. Smart Clickable Notifications feature is production-ready.
+      All 8 test scenarios passed successfully. Ready for production use.
 
