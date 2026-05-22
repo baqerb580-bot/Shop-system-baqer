@@ -20,7 +20,8 @@ import {
   User, Lock, LogIn, LogOut, Activity, Calendar, Clock,
   CheckCircle2, AlertCircle, X, Bell, Star, Upload, Image as ImageIcon,
   Check, XCircle, FileText, Send, ListTodo, Wallet, Home, Award,
-  Wrench, ShoppingCart, BadgeCheck, Users, Camera, CalendarDays, Printer
+  Wrench, ShoppingCart, BadgeCheck, Users, Camera, CalendarDays, Printer,
+  Plus
 } from 'lucide-react';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
@@ -490,6 +491,7 @@ function TasksSection({ employeeId }) {
   const [rejectTask, setRejectTask] = useState(null);
   const [completeTask, setCompleteTask] = useState(null);
   const [editLocTask, setEditLocTask] = useState(null);
+  const [addTaskOpen, setAddTaskOpen] = useState(false);
   const liveLocRef = useRef({ taskId: null, watchId: null });
 
   const load = async () => {
@@ -576,20 +578,25 @@ function TasksSection({ employeeId }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
-        {[
-          { k: 'all', l: 'الكل', c: counts.all },
-          { k: 'pending', l: '🟡 بانتظار القبول', c: counts.pending },
-          { k: 'in_progress', l: '🔵 جاري العمل', c: counts.in_progress },
-          { k: 'pending_review', l: '🟣 بانتظار المراجعة', c: counts.pending_review },
-          { k: 'completed', l: '✅ مكتملة', c: counts.completed },
-          { k: 'rejected', l: '❌ مرفوضة', c: counts.rejected },
-        ].map(b => (
-          <button key={b.k} onClick={() => setFilter(b.k)}
-            className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${filter === b.k ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground hover:text-gold'}`}>
-            {b.l} ({b.c})
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-2 items-center justify-between">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { k: 'all', l: 'الكل', c: counts.all },
+            { k: 'pending', l: '🟡 بانتظار القبول', c: counts.pending },
+            { k: 'in_progress', l: '🔵 جاري العمل', c: counts.in_progress },
+            { k: 'pending_review', l: '🟣 بانتظار المراجعة', c: counts.pending_review },
+            { k: 'completed', l: '✅ مكتملة', c: counts.completed },
+            { k: 'rejected', l: '❌ مرفوضة', c: counts.rejected },
+          ].map(b => (
+            <button key={b.k} onClick={() => setFilter(b.k)}
+              className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${filter === b.k ? 'bg-gold/20 border-gold text-gold' : 'bg-input/30 border-gold-soft text-muted-foreground hover:text-gold'}`}>
+              {b.l} ({b.c})
+            </button>
+          ))}
+        </div>
+        <Button onClick={() => setAddTaskOpen(true)} className="btn-gold h-8 px-3 text-xs">
+          <Plus className="w-3.5 h-3.5 ml-1" /> مهمة شخصية
+        </Button>
       </div>
 
       {filtered.length === 0 ? (
@@ -615,7 +622,107 @@ function TasksSection({ employeeId }) {
       <RejectDialog task={rejectTask} open={!!rejectTask} onClose={() => setRejectTask(null)} onSubmit={submitReject} />
       <CompleteDialog task={completeTask} open={!!completeTask} onClose={() => setCompleteTask(null)} onSubmit={submitComplete} />
       <EditSubscriberLocationDialog task={editLocTask} employeeId={employeeId} open={!!editLocTask} onClose={() => setEditLocTask(null)} />
+      <AddSelfTaskDialog
+        open={addTaskOpen}
+        employeeId={employeeId}
+        onClose={() => setAddTaskOpen(false)}
+        onCreated={() => { setAddTaskOpen(false); load(); }}
+      />
     </div>
+  );
+}
+
+// ============================== ADD SELF-TASK DIALOG ==============================
+function AddSelfTaskDialog({ open, employeeId, onClose, onCreated }) {
+  const [form, setForm] = useState({
+    title: '', description: '', priority: 'medium',
+    dueDate: new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10),
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) setForm({
+      title: '', description: '', priority: 'medium',
+      dueDate: new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10),
+    });
+  }, [open]);
+
+  const submit = async () => {
+    if (!form.title.trim()) { toast.error('يرجى إدخال عنوان المهمة'); return; }
+    setSaving(true);
+    const r = await api(`employees/${employeeId}/tasks/create`, {
+      method: 'POST',
+      body: JSON.stringify(form),
+    });
+    setSaving(false);
+    if (r?.error) { toast.error(r.error); return; }
+    sounds.success();
+    toast.success('✅ تم إنشاء المهمة الشخصية وإشعار المدير');
+    onCreated && onCreated();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="glass-strong border-gold/40 max-w-md">
+        <DialogHeader>
+          <DialogTitle className="gold-text flex items-center gap-2">
+            <Plus className="w-4 h-4" /> مهمة شخصية جديدة
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs">عنوان المهمة *</Label>
+            <Input
+              value={form.title}
+              onChange={e => setForm({ ...form, title: e.target.value })}
+              placeholder="مثال: صيانة جهاز موزّع 4G"
+              className="bg-input/30 border-gold/20"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">الوصف</Label>
+            <Textarea
+              value={form.description}
+              onChange={e => setForm({ ...form, description: e.target.value })}
+              placeholder="تفاصيل العمل المطلوب..."
+              className="bg-input/30 border-gold/20 min-h-20"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">الأولوية</Label>
+              <Select value={form.priority} onValueChange={v => setForm({ ...form, priority: v })}>
+                <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">🟢 منخفضة</SelectItem>
+                  <SelectItem value="medium">🟡 متوسطة</SelectItem>
+                  <SelectItem value="high">🟠 عالية</SelectItem>
+                  <SelectItem value="urgent">🔴 عاجلة</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">تاريخ الإنجاز</Label>
+              <Input
+                type="date"
+                value={form.dueDate}
+                onChange={e => setForm({ ...form, dueDate: e.target.value })}
+                className="bg-input/30 border-gold/20"
+              />
+            </div>
+          </div>
+          <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px] text-cyan-300">
+            💡 سيتم إشعار المدير بهذه المهمة فور الإنشاء، وستُضاف مباشرة إلى قائمة "جاري العمل".
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>إلغاء</Button>
+          <Button onClick={submit} disabled={saving} className="btn-gold">
+            {saving ? 'جاري الحفظ...' : <><Send className="w-4 h-4 ml-1" /> إنشاء المهمة</>}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

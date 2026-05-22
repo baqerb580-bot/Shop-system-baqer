@@ -2988,6 +2988,57 @@ async function handle(request, params) {
     return ok(tasks.map(t => { delete t._id; return t; }));
   }
 
+  // Self-task creation by employee (notifies manager, not self)
+  if (path.match(/^employees\/[^/]+\/tasks\/create$/) && method === 'POST') {
+    const empId = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const emp = await db.collection('employees').findOne({ id: empId });
+    if (!emp) return err('الموظف غير موجود', 404);
+    const title = String(body.title || '').trim();
+    if (!title) return err('عنوان المهمة مطلوب', 400);
+    const now = new Date().toISOString();
+    const doc = {
+      id: uuidv4(),
+      title,
+      description: body.description || '',
+      priority: body.priority || 'medium',
+      dueDate: body.dueDate || null,
+      taskType: 'self_created',
+      assignedTo: empId,
+      assignedToName: emp.name,
+      createdBy: emp.name,
+      createdByEmp: true,
+      createdByEmpId: empId,
+      status: 'in_progress', // auto-accepted (employee created it)
+      progress: 0,
+      attachments: Array.isArray(body.attachments) ? body.attachments : [],
+      notes: body.notes || '',
+      acceptedAt: now,
+      startTime: now,
+      createdAt: now,
+    };
+    await db.collection('tasks').insertOne(doc);
+    delete doc._id;
+    await logActivity(db, {
+      action: 'self_task_created', entity: 'tasks', entityId: doc.id,
+      user: emp.name, details: `الموظف ${emp.name} أنشأ مهمة شخصية: "${doc.title}"`, ip: clientIp,
+    });
+    // Notify manager (in-app + telegram)
+    await notifyManager(db, {
+      type: 'task_self_created',
+      title: `📝 مهمة شخصية جديدة من ${emp.name}`,
+      message: `العنوان: ${doc.title}\nالأولوية: ${doc.priority}\nالتاريخ: ${doc.dueDate || 'غير محدد'}\nالوصف: ${doc.description || '-'}`,
+      entityType: 'task', entityId: doc.id,
+    });
+    // Real-time event
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: 'task_self_created',
+      taskId: doc.id, title: doc.title, employeeId: empId, employeeName: emp.name,
+      priority: doc.priority, ts: now,
+    });
+    return ok(doc, 201);
+  }
+
   // Task update by employee
   if (path.match(/^tasks\/[^/]+\/update$/) && method === 'POST') {
     const taskId = path.split('/')[1];

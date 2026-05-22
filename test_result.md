@@ -5866,3 +5866,129 @@ agent_communication:
     message: |
       Advanced Store frontend completed at /store. Visual verification done via screenshot.
       Backend endpoints all previously tested and working. Awaiting user decision on frontend automated testing.
+
+
+  - task: "Employee self-task creation (Add Task)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW endpoint: POST /api/employees/:id/tasks/create
+            Body: { title, description?, priority?, dueDate?, attachments?, notes? }
+            Validates employee exists. Creates task with:
+            - taskType: 'self_created'
+            - assignedTo/assignedToName: the employee
+            - createdBy: emp.name, createdByEmp: true, createdByEmpId: empId
+            - status: 'in_progress' (auto-accepted, no manager approval needed)
+            - acceptedAt + startTime: now
+            Side effects:
+            - logs activity_log entry (action: 'self_task_created')
+            - notifies manager via notifyManager (in-app + telegram) with type 'task_self_created'
+            - creates real-time event in 'events' collection
+            Returns 400 if no title, 404 if employee not found, 201 with task on success.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All 8 test cases passed (8/8). Employee self-task creation endpoint fully functional.
+            
+            Test Results:
+            1. ✅ Get existing employee: Found employee امير بهاء الدين علي (ID: 80b475dc-bfb3-435e-b98f-4618f796fb74)
+            
+            2. ✅ Success case: POST with valid body returns 201 with correct task structure:
+               - id: UUID generated
+               - title: "صيانة جهاز اختبار" ✓
+               - taskType: "self_created" ✓
+               - assignedTo: employee ID ✓
+               - assignedToName: employee name ✓
+               - createdByEmp: true ✓
+               - createdByEmpId: employee ID ✓
+               - status: "in_progress" (auto-accepted, NOT pending) ✓
+               - acceptedAt: ISO date string set ✓
+               - startTime: ISO date string set ✓
+               - priority: "high" ✓
+               - dueDate: "2026-12-31" ✓
+            
+            3. ✅ Validation (missing title): Returns 400 with Arabic error "عنوان المهمة مطلوب"
+            
+            4. ✅ Validation (invalid employee): Returns 404 with Arabic error "الموظف غير موجود"
+            
+            5. ✅ Side effect - Task in employee list: Task appears in GET /api/employees/:id/tasks (found in list of 9 tasks)
+            
+            6. ✅ Side effect - Activity log: Entry created with action='self_task_created', entity='tasks', 
+               user=employee name, details contains task title
+            
+            7. ✅ Side effect - Manager notification: Notification created with type='task_self_created',
+               title contains employee name "📝 مهمة شخصية جديدة من امير بهاء الدين علي",
+               message contains task title "صيانة جهاز اختبار", priority, dueDate, and description
+            
+            8. ✅ Default values: POST with only title correctly defaults:
+               - priority: "medium" ✓
+               - description: "" (empty string) ✓
+               - attachments: [] (empty array) ✓
+               - status: "in_progress" ✓
+            
+            All validations working correctly. All side effects verified (activity log, manager notification, task list).
+            Arabic error messages displaying properly. Default values applied correctly.
+            NO CRITICAL ISSUES FOUND. Endpoint is production-ready.
+
+frontend:
+  - task: "Employee 'Add Task' UI button + dialog"
+    implemented: true
+    working: "NA"
+    file: "app/employee/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Added "+ مهمة شخصية" button at the top-right of TasksSection (does NOT duplicate existing buttons - new functionality).
+            New AddSelfTaskDialog component with fields: title*, description, priority (low/medium/high/urgent), dueDate (default tomorrow).
+            On submit, calls POST /api/employees/:id/tasks/create.
+            Cyan info banner explains that manager is notified and task goes directly to in_progress.
+            Imports new lucide icon `Plus`. Dialog clears form on each open.
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Added "Add Task" feature for employees. Need backend testing of:
+      - POST /api/employees/:id/tasks/create
+      - Verify validation (missing title → 400, invalid empId → 404)
+      - Verify task created with correct fields (taskType='self_created', assignedTo=empId, status='in_progress', createdByEmp=true)
+      - Verify activity_log entry created
+      - Verify manager notification created
+      - Verify task appears in GET /api/employees/:id/tasks
+  - agent: "testing"
+    message: |
+      🎉 EMPLOYEE SELF-TASK CREATION TESTING COMPLETE - ALL TESTS PASSED (8/8)
+      
+      Tested POST /api/employees/:id/tasks/create endpoint at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ Test 1: Get existing employee - Found امير بهاء الدين علي (ID: 80b475dc-bfb3-435e-b98f-4618f796fb74)
+      ✅ Test 2: Success case - Task created with all correct fields (taskType='self_created', status='in_progress', auto-accepted)
+      ✅ Test 3: Validation (missing title) - Returns 400 with Arabic error "عنوان المهمة مطلوب"
+      ✅ Test 4: Validation (invalid employee) - Returns 404 with Arabic error "الموظف غير موجود"
+      ✅ Test 5: Side effect - Task appears in GET /api/employees/:id/tasks (verified in list of 9 tasks)
+      ✅ Test 6: Side effect - Activity log entry created (action='self_task_created', entity='tasks')
+      ✅ Test 7: Side effect - Manager notification created (type='task_self_created', contains employee name and task title)
+      ✅ Test 8: Default values - Priority defaults to 'medium', description='', attachments=[], status='in_progress'
+      
+      CRITICAL FEATURES VERIFIED:
+      - Task auto-accepted (status='in_progress', NOT 'pending')
+      - acceptedAt and startTime automatically set
+      - createdByEmp=true, createdByEmpId set correctly
+      - Manager notified via in-app notification (type='task_self_created')
+      - Activity log entry created with correct action
+      - Task immediately appears in employee's task list
+      - All Arabic error messages working correctly
+      - All default values applied correctly
+      
+      NO CRITICAL ISSUES FOUND. Employee self-task creation endpoint is production-ready.
+
