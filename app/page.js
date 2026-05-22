@@ -6,6 +6,7 @@ import { CustomFieldsGrid, CustomFieldsDisplay } from '@/components/custom-field
 import WhatsAppManager from '@/components/whatsapp-manager';
 import IspSyncCenter from '@/components/isp-sync-center';
 import BalanceManagement from '@/components/balance-management';
+import SeparatedReports from '@/components/separated-reports';
 import { sounds, getSoundSettings, setSoundSettings, browserNotify, requestNotificationPermission } from '@/lib/sounds';
 import { useRealtimeEvents } from '@/lib/useRealtime';
 import { whatsappLink, telegramLink, defaultWhatsAppTemplates, fillTemplate } from '@/lib/messaging';
@@ -211,6 +212,7 @@ function App() {
           {active === 'cameras' && <Cameras />}
           {active === 'employees' && <Employees />}
           {active === 'reports' && <Reports />}
+          {active === 'tasks' && <TasksManager />}
           {active === 'ai' && <AIAssistant />}
           {active === 'tg-bot' && <TelegramBotPage />}
           {active === 'orders' && <OrdersAdminPage />}
@@ -3858,6 +3860,27 @@ function HRReports() {
 
 // ============ REPORTS ============
 function Reports() {
+  const [tab, setTab] = useState('overview');
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4">
+      <h1 className="text-2xl font-bold gold-text">التقارير والتحليلات</h1>
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="bg-input/30 border border-gold-soft">
+          <TabsTrigger value="overview">📊 نظرة عامة</TabsTrigger>
+          <TabsTrigger value="separated">💹 التقارير المنفصلة (مبيعات/صيانة/اشتراكات/ديون/وكلاء)</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview" className="mt-4">
+          <ReportsOverview />
+        </TabsContent>
+        <TabsContent value="separated" className="mt-4">
+          <SeparatedReports api={api} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function ReportsOverview() {
   const [data, setData] = useState(null);
   useEffect(() => { api('reports/summary').then(setData); }, []);
   if (!data) return <LoadingScreen />;
@@ -3865,9 +3888,7 @@ function Reports() {
   const COLORS = ['#FFD700', '#00D4FF', '#B061FF', '#39FF14', '#FF10F0'];
 
   return (
-    <div className="max-w-[1600px] mx-auto space-y-4">
-      <h1 className="text-2xl font-bold gold-text">التقارير والتحليلات</h1>
-
+    <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي الإيرادات</p><p className="text-xl font-bold gold-text">{fmtCurrency(data.totalRevenue)}</p></div>
         <div className="stat-card"><p className="text-xs text-muted-foreground">مبيعات POS</p><p className="text-xl font-bold neon-text">{fmtCurrency(data.totalSales)}</p></div>
