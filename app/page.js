@@ -265,8 +265,8 @@ function Sidebar({ active, setActive, open, setOpen }) {
       </button>
       {/* Logo */}
       <div className="p-5 border-b border-gold-soft flex items-center gap-3">
-        <div className="w-12 h-12 rounded-xl bg-gold-gradient flex items-center justify-center flex-shrink-0 shadow-gold-glow animate-pulse-glow">
-          <span className="text-2xl font-black text-background">غ</span>
+        <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 shadow-gold-glow overflow-hidden bg-background">
+          <img src="/logo-icon.png" alt="مركز الغزلان" className="w-full h-full object-contain" />
         </div>
         {open && (
           <div>
@@ -905,19 +905,22 @@ function Dashboard({ setActive }) {
       <div className="glass-strong rounded-2xl p-8 relative overflow-hidden">
         <div className="absolute -top-20 -left-20 w-64 h-64 bg-gold/20 rounded-full blur-3xl"></div>
         <div className="absolute -bottom-20 -right-20 w-64 h-64 bg-cyan-500/20 rounded-full blur-3xl"></div>
-        <div className="relative">
-          <h1 className="text-4xl font-black gold-text mb-2">أهلاً بك في مركز الغزلان</h1>
-          <p className="text-muted-foreground">منصة ERP متكاملة - مبيعات، شبكات، صيانة، وذكاء اصطناعي في مكان واحد</p>
-          <div className="flex flex-wrap gap-2 mt-4">
-            <Button onClick={() => setActive('pos')} className="btn-gold">
-              <ShoppingCart className="w-4 h-4 ml-2" /> فتح نقطة البيع
-            </Button>
-            <Button onClick={() => setActive('ai')} className="btn-neon">
-              <Sparkles className="w-4 h-4 ml-2" /> اسأل المساعد الذكي
-            </Button>
-            <Button onClick={() => setActive('noc')} variant="outline" className="border-gold/30 hover:border-gold">
-              <Activity className="w-4 h-4 ml-2" /> مراقبة الشبكة
-            </Button>
+        <div className="relative flex items-center gap-5">
+          <img src="/logo-shield.png" alt="شعار مركز الغزلان" className="w-24 h-32 object-contain flex-shrink-0 drop-shadow-2xl hidden md:block" />
+          <div>
+            <h1 className="text-4xl font-black gold-text mb-2">أهلاً بك في مركز الغزلان</h1>
+            <p className="text-muted-foreground">منصة ERP متكاملة - مبيعات، شبكات، صيانة، وذكاء اصطناعي في مكان واحد</p>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <Button onClick={() => setActive('pos')} className="btn-gold">
+                <ShoppingCart className="w-4 h-4 ml-2" /> فتح نقطة البيع
+              </Button>
+              <Button onClick={() => setActive('ai')} className="btn-neon">
+                <Sparkles className="w-4 h-4 ml-2" /> اسأل المساعد الذكي
+              </Button>
+              <Button onClick={() => setActive('noc')} variant="outline" className="border-gold/30 hover:border-gold">
+                <Activity className="w-4 h-4 ml-2" /> مراقبة الشبكة
+              </Button>
+            </div>
           </div>
         </div>
       </div>
