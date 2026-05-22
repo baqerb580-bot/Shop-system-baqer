@@ -3106,7 +3106,7 @@ function TasksManager() {
   const [open, setOpen] = useState(false);
   const [reviewTask, setReviewTask] = useState(null);
   const [mapTask, setMapTask] = useState(null);
-  const blank = { title: '', description: '', priority: 'medium', dueDate: new Date().toISOString().slice(0, 10), assignedTo: '', notes: '', status: 'pending', progress: 0, attachments: [], taskType: 'general', subscriberId: '', subscriberName: '', subscriberPhone: '', subscriberAddress: '', subscriberLat: null, subscriberLng: null, faultDescription: '' };
+  const blank = { title: '', description: '', priority: 'medium', dueDate: new Date().toISOString().slice(0, 10), assignedTo: '', notes: '', status: 'pending', progress: 0, attachments: [], taskType: 'general', subscriberId: '', subscriberName: '', subscriberPhone: '', subscriberAddress: '', subscriberLat: null, subscriberLng: null, faultDescription: '', recurrence: { enabled: false, type: 'weekly', interval: 1, endDate: '' } };
   const [form, setForm] = useState(blank);
   const [subSearch, setSubSearch] = useState('');
   const [subResults, setSubResults] = useState([]);
@@ -3233,6 +3233,37 @@ function TasksManager() {
                 <span className="text-cyan-400">👤 {t.assignedToName}</span>
                 <span className="text-muted-foreground">📅 {t.dueDate}</span>
               </div>
+
+              {/* ============ TIME TRACKING (وقت البدء/الانتهاء/المدة) ============ */}
+              {(t.startedAt || t.completedAt) && (
+                <div className="grid grid-cols-3 gap-1 text-[9px] p-1.5 rounded bg-input/30 border border-gold-soft/30">
+                  <div className="text-center">
+                    <p className="text-muted-foreground">▶️ بدء</p>
+                    <p className="font-mono text-cyan-400">{t.startedAt ? new Date(t.startedAt).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }) : '—'}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-muted-foreground">✅ انتهاء</p>
+                    <p className="font-mono text-emerald-400">{t.completedAt ? new Date(t.completedAt).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }) : '—'}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-muted-foreground">⏱️ المدة</p>
+                    <p className="font-bold gold-text">
+                      {t.durationMin != null ? (
+                        t.durationMin < 60 ? `${t.durationMin}د` : `${Math.floor(t.durationMin / 60)}س ${t.durationMin % 60}د`
+                      ) : '—'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Recurrence badge */}
+              {t.recurrence?.enabled && (
+                <div className="text-[10px] p-1.5 rounded bg-violet-500/10 border border-violet-500/30 text-violet-400 flex items-center justify-between">
+                  <span>🔁 مهمة دورية: {t.recurrence.type === 'daily' ? 'يومية' : t.recurrence.type === 'weekly' ? 'أسبوعية' : 'شهرية'} (كل {t.recurrence.interval || 1})</span>
+                  {t.spawnedFromTaskId && <Badge className="bg-violet-500/20 text-violet-400 border-violet-500/30 text-[8px]">نسخة جديدة</Badge>}
+                </div>
+              )}
+
               <div className="space-y-1">
                 <div className="flex justify-between text-[10px]"><span className="text-muted-foreground">التقدم</span><span className="font-bold">{t.progress || 0}%</span></div>
                 <Progress value={t.progress || 0} className="h-1.5" />
@@ -3415,6 +3446,50 @@ function TasksManager() {
                 </Select>
               </div>
               <div className="col-span-2"><Label>تاريخ التسليم</Label><Input type="date" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} className="bg-input/30 border-gold/20" /></div>
+
+              {/* ============ RECURRENCE (مهمة دورية / متكررة) ============ */}
+              <div className="col-span-2 p-3 rounded-lg border border-violet-500/30 bg-violet-500/5 space-y-2">
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-sm font-bold text-violet-400 flex items-center gap-2">🔁 مهمة متكررة (دورية)</span>
+                  <input
+                    type="checkbox"
+                    checked={!!form.recurrence?.enabled}
+                    onChange={e => setForm({ ...form, recurrence: { ...(form.recurrence || { type: 'weekly', interval: 1 }), enabled: e.target.checked } })}
+                    className="w-4 h-4 accent-violet-500"
+                  />
+                </label>
+                {form.recurrence?.enabled && (
+                  <>
+                    <p className="text-[10px] text-violet-300/80">عند إكمال المهمة، سيتم إنشاء نسخة جديدة تلقائياً للموظف نفسه بتاريخ تسليم محسوب.</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <Label className="text-[10px]">التكرار</Label>
+                        <Select value={form.recurrence?.type || 'weekly'} onValueChange={v => setForm({ ...form, recurrence: { ...form.recurrence, type: v } })}>
+                          <SelectTrigger className="bg-input/30 border-violet-500/30 h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="daily">يومياً</SelectItem>
+                            <SelectItem value="weekly">أسبوعياً</SelectItem>
+                            <SelectItem value="monthly">شهرياً</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-[10px]">كل (مرات)</Label>
+                        <Input type="number" min="1" value={form.recurrence?.interval ?? 1} onChange={e => setForm({ ...form, recurrence: { ...form.recurrence, interval: Number(e.target.value) || 1 } })} className="bg-input/30 border-violet-500/30 h-8 text-xs" />
+                      </div>
+                      <div>
+                        <Label className="text-[10px]">تاريخ الإيقاف (اختياري)</Label>
+                        <Input type="date" value={form.recurrence?.endDate || ''} onChange={e => setForm({ ...form, recurrence: { ...form.recurrence, endDate: e.target.value } })} className="bg-input/30 border-violet-500/30 h-8 text-xs" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-amber-400">
+                      💡 مثال: {form.recurrence?.type === 'daily' ? `كل ${form.recurrence?.interval || 1} يوم` :
+                                form.recurrence?.type === 'weekly' ? `كل ${form.recurrence?.interval || 1} أسبوع` :
+                                `كل ${form.recurrence?.interval || 1} شهر`}
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
           </div>
           <DialogFooter><Button onClick={save} className="btn-gold w-full">{form.taskType === 'subscriber_repair' ? '🚀 إنشاء مهمة الصيانة وإرسالها للفني' : '✅ إنشاء المهمة وإرسال للموظف'}</Button></DialogFooter>

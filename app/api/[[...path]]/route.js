@@ -536,6 +536,94 @@ async function sendTelegram(db, text) {
   }
 }
 
+// ============ RECURRING TASKS HELPER ============
+// Compute the next due date based on a recurrence rule.
+// rec: { enabled, type: 'daily'|'weekly'|'monthly', interval: number }
+function computeNextDueDate(prevDueDate, rec) {
+  const baseStr = prevDueDate || new Date().toISOString().slice(0, 10);
+  const base = new Date(baseStr + 'T00:00:00');
+  const interval = Math.max(1, Number(rec.interval || 1));
+  let next = new Date(base);
+  if (rec.type === 'daily') {
+    next.setDate(base.getDate() + interval);
+  } else if (rec.type === 'weekly') {
+    next.setDate(base.getDate() + 7 * interval);
+  } else if (rec.type === 'monthly') {
+    next.setMonth(base.getMonth() + interval);
+  } else {
+    next.setDate(base.getDate() + interval); // default: daily
+  }
+  return next.toISOString().slice(0, 10);
+}
+
+// Spawn the next instance of a recurring task when it's completed.
+// Returns the new task doc, or null if not recurring or has reached endDate.
+async function spawnRecurringIfNeeded(db, completedTask) {
+  try {
+    const rec = completedTask?.recurrence;
+    if (!rec || !rec.enabled) return null;
+    const nextDate = computeNextDueDate(completedTask.dueDate, rec);
+    // Optional: respect endDate cutoff
+    if (rec.endDate && nextDate > rec.endDate) return null;
+    const now = new Date().toISOString();
+    const newTask = {
+      id: uuidv4(),
+      // Carry forward all task content, but reset state
+      title: completedTask.title,
+      description: completedTask.description || '',
+      priority: completedTask.priority || 'medium',
+      taskType: completedTask.taskType || 'general',
+      assignedTo: completedTask.assignedTo,
+      assignedToName: completedTask.assignedToName,
+      subscriberId: completedTask.subscriberId || null,
+      subscriberName: completedTask.subscriberName || null,
+      subscriberPhone: completedTask.subscriberPhone || null,
+      subscriberAddress: completedTask.subscriberAddress || null,
+      subscriberLat: completedTask.subscriberLat || null,
+      subscriberLng: completedTask.subscriberLng || null,
+      faultDescription: completedTask.faultDescription || null,
+      attachments: [],
+      notes: '',
+      status: 'pending',
+      progress: 0,
+      dueDate: nextDate,
+      // recurrence rules carried forward
+      recurrence: rec,
+      // link back to source
+      spawnedFromTaskId: completedTask.id,
+      spawnedAt: now,
+      createdAt: now,
+      createdBy: completedTask.createdBy || 'recurrence',
+      createdById: completedTask.createdById || null,
+    };
+    await db.collection('tasks').insertOne({ ...newTask });
+    delete newTask._id;
+    // Notify the assignee
+    if (newTask.assignedTo) {
+      await createNotification(db, {
+        userId: newTask.assignedTo, type: 'task_new', icon: '🔁',
+        title: '🔁 مهمة متكررة جديدة',
+        message: `تم إنشاء "${newTask.title}" تلقائياً (مهمة دورية) - تاريخ التسليم: ${nextDate}`,
+        entityType: 'task', entityId: newTask.id,
+        priority: (newTask.priority === 'urgent' || newTask.priority === 'high') ? 'high' : 'normal',
+      });
+    }
+    // Real-time event
+    await db.collection('events').insertOne({
+      id: uuidv4(), type: 'task_new',
+      taskId: newTask.id, title: newTask.title,
+      assignedTo: newTask.assignedTo, assignedToName: newTask.assignedToName,
+      priority: newTask.priority, taskType: newTask.taskType,
+      ts: now, isRecurringSpawn: true,
+    });
+    return newTask;
+  } catch (e) {
+    console.warn('[spawnRecurringIfNeeded] error:', e?.message);
+    return null;
+  }
+}
+
+
 async function notifyManager(db, { title, message, type, taskId, employeeId, entityType, entityId, priority, icon }) {
   // 1) In-app notification for all managers (employees with 'all' or 'employees' permission)
   const managers = await db.collection('employees').find({
@@ -3033,7 +3121,14 @@ async function handle(request, params) {
       await db.collection('tasks').updateOne({ id: taskId }, { $set: { status: 'in_progress' } });
     }
 
-    return ok({ success: true });
+    // ============ AUTO-SPAWN NEXT RECURRING TASK (only on approve) ============
+    let spawnedTaskId = null;
+    if (action === 'approve') {
+      const spawned = await spawnRecurringIfNeeded(db, task);
+      if (spawned) spawnedTaskId = spawned.id;
+    }
+
+    return ok({ success: true, spawnedTaskId });
   }
 
   // ============ NOTIFICATIONS ============
@@ -3378,7 +3473,9 @@ async function handle(request, params) {
       message: `${body?.userName || t.assignedToName} أنجز "${t.title}" خلال ${durationMin} دقيقة`,
       entityType: 'task', entityId: id,
     });
-    return ok({ success: true, completedAt: now, durationMin });
+    // ============ AUTO-SPAWN NEXT RECURRING TASK ============
+    const spawned = await spawnRecurringIfNeeded(db, t);
+    return ok({ success: true, completedAt: now, durationMin, spawnedTaskId: spawned?.id || null });
   }
 
   // Transfer a task to another employee

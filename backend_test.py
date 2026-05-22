@@ -1,768 +1,775 @@
 #!/usr/bin/env python3
 """
-Backend Test Script for Agent System Revamp (Module B)
-Tests: Fixed Profits + Permissions + Admin Approval Workflow
+Backend Test Script for Module D - Advanced Tasks (Recurring Tasks Auto-Spawn)
+Tests the recurring tasks feature with 9 comprehensive test cases.
 """
 
 import requests
 import json
-import sys
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
+# Configuration
 BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
+HEADERS = {"Content-Type": "application/json"}
 
-def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+# Test employee IDs (from review request)
+EMP_ID_1 = "de57c5eb-40fb-4d5d-a3e4-302b0ce2d2a7"  # نعمة طالب طاهر
+EMP_ID_2 = "80b475dc-bfb3-435e-b98f-4618f796fb74"  # امير بهاء الدين علي
 
-def test_case(num, desc):
+def log_test(test_num, description):
+    """Print test header"""
     print(f"\n{'='*80}")
-    print(f"TEST CASE {num}: {desc}")
-    print('='*80)
+    print(f"TEST {test_num}: {description}")
+    print(f"{'='*80}")
 
-def get_agents():
-    """Get all agents"""
-    r = requests.get(f"{BASE_URL}/agents")
-    if r.status_code == 200:
-        return r.json()
+def log_result(success, message):
+    """Print test result"""
+    status = "✅ PASSED" if success else "❌ FAILED"
+    print(f"{status}: {message}")
+
+def get_date_str(days_offset=0):
+    """Get date string in YYYY-MM-DD format"""
+    return (datetime.now() + timedelta(days=days_offset)).strftime('%Y-%m-%d')
+
+def create_task(title, task_type, priority, due_date, assigned_to, recurrence=None):
+    """Helper to create a task"""
+    payload = {
+        "title": title,
+        "taskType": task_type,
+        "priority": priority,
+        "dueDate": due_date,
+        "assignedTo": assigned_to,
+        "description": "Test task for recurring feature"
+    }
+    if recurrence:
+        payload["recurrence"] = recurrence
+    
+    response = requests.post(f"{BASE_URL}/tasks", json=payload, headers=HEADERS)
+    return response
+
+def get_task(task_id):
+    """Helper to get a task by ID"""
+    response = requests.get(f"{BASE_URL}/tasks", headers=HEADERS)
+    if response.status_code == 200:
+        tasks = response.json()
+        for task in tasks:
+            if task.get('id') == task_id:
+                return task
+    return None
+
+def admin_complete_task(task_id, user_id, user_name, note="انتهيت"):
+    """Helper to admin-complete a task"""
+    payload = {
+        "userId": user_id,
+        "userName": user_name,
+        "note": note
+    }
+    response = requests.post(f"{BASE_URL}/tasks/{task_id}/admin-complete", json=payload, headers=HEADERS)
+    return response
+
+def set_task_status(task_id, status):
+    """Helper to update task status"""
+    payload = {"status": status}
+    response = requests.put(f"{BASE_URL}/tasks/{task_id}", json=payload, headers=HEADERS)
+    return response
+
+def review_task(task_id, action, reviewer_name="المدير"):
+    """Helper to review a task"""
+    payload = {
+        "action": action,
+        "reviewerName": reviewer_name
+    }
+    response = requests.post(f"{BASE_URL}/tasks/{task_id}/review", json=payload, headers=HEADERS)
+    return response
+
+def find_spawned_task(original_task_id):
+    """Find a task spawned from the original task"""
+    response = requests.get(f"{BASE_URL}/tasks", headers=HEADERS)
+    if response.status_code == 200:
+        tasks = response.json()
+        for task in tasks:
+            if task.get('spawnedFromTaskId') == original_task_id:
+                return task
+    return None
+
+def get_notifications_for_user(user_id):
+    """Get notifications for a specific user"""
+    response = requests.get(f"{BASE_URL}/notifications?userId={user_id}", headers=HEADERS)
+    if response.status_code == 200:
+        return response.json()
     return []
-
-def get_subscribers():
-    """Get all subscribers"""
-    r = requests.get(f"{BASE_URL}/subscribers")
-    if r.status_code == 200:
-        return r.json()
-    return []
-
-def get_packages():
-    """Get all packages"""
-    r = requests.get(f"{BASE_URL}/packages")
-    if r.status_code == 200:
-        return r.json()
-    return []
-
-def update_agent(agent_id, data):
-    """Update agent"""
-    r = requests.put(f"{BASE_URL}/agents/{agent_id}", json=data)
-    return r
-
-def activate_subscriber(sub_id, data):
-    """Activate subscriber"""
-    r = requests.post(f"{BASE_URL}/subscribers/{sub_id}/activate", json=data)
-    return r
-
-def get_pending_activations(status='pending'):
-    """Get pending activations"""
-    r = requests.get(f"{BASE_URL}/pending-activations?status={status}")
-    return r
-
-def approve_pending(pending_id, approved_by='admin'):
-    """Approve pending activation"""
-    r = requests.post(f"{BASE_URL}/pending-activations/{pending_id}/approve", json={'approvedBy': approved_by})
-    return r
-
-def reject_pending(pending_id, reason, approved_by='admin'):
-    """Reject pending activation"""
-    r = requests.post(f"{BASE_URL}/pending-activations/{pending_id}/reject", json={'reason': reason, 'approvedBy': approved_by})
-    return r
-
-def get_notifications():
-    """Get admin notifications"""
-    r = requests.get(f"{BASE_URL}/notifications/admin")
-    return r
 
 # ============================================================================
-# MAIN TEST EXECUTION
+# TEST 1: Create task with recurrence (weekly, every 1)
 # ============================================================================
+def test_1():
+    log_test(1, "Create task with recurrence (weekly, every 1)")
+    
+    try:
+        due_date = get_date_str(3)  # 3 days from now (2026-05-22)
+        recurrence = {
+            "enabled": True,
+            "type": "weekly",
+            "interval": 1
+        }
+        
+        response = create_task(
+            title="مهمة دورية",
+            task_type="general",
+            priority="medium",
+            due_date=due_date,
+            assigned_to=EMP_ID_1,
+            recurrence=recurrence
+        )
+        
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            
+            # Verify recurrence object is preserved
+            if task.get('recurrence'):
+                rec = task['recurrence']
+                if rec.get('enabled') and rec.get('type') == 'weekly' and rec.get('interval') == 1:
+                    log_result(True, f"Task created with recurrence preserved. Task ID: {task_id}")
+                    return task_id
+                else:
+                    log_result(False, f"Recurrence object not correct: {rec}")
+                    return None
+            else:
+                log_result(False, "Recurrence object missing in response")
+                return None
+        else:
+            log_result(False, f"Failed to create task. Status: {response.status_code}, Response: {response.text}")
+            return None
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return None
 
-try:
-    log("Starting Agent System Revamp Tests...")
+# ============================================================================
+# TEST 2: Admin-complete a recurring task → next instance auto-created
+# ============================================================================
+def test_2(task_id):
+    log_test(2, "Admin-complete a recurring task → next instance auto-created")
     
-    # Fetch test data
-    log("Fetching agents, subscribers, and packages...")
-    agents = get_agents()
-    subscribers = get_subscribers()
-    packages = get_packages()
+    if not task_id:
+        log_result(False, "No task ID from Test 1")
+        return None
     
-    if not agents:
-        log("❌ ERROR: No agents found in database")
-        sys.exit(1)
-    if not subscribers:
-        log("❌ ERROR: No subscribers found in database")
-        sys.exit(1)
-    if not packages:
-        log("❌ ERROR: No packages found in database")
-        sys.exit(1)
-    
-    log(f"✅ Found {len(agents)} agents, {len(subscribers)} subscribers, {len(packages)} packages")
-    
-    # Use first agent, subscriber, and package for testing
-    test_agent = agents[0]
-    test_subscriber = subscribers[0]
-    test_package = packages[0]
-    
-    log(f"Test Agent: {test_agent['name']} (ID: {test_agent['id']})")
-    log(f"Test Subscriber: {test_subscriber['name']} (ID: {test_subscriber['id']})")
-    log(f"Test Package: {test_package['name']} (ID: {test_package['id']})")
-    
-    # ========================================================================
-    # TEST 1: Percentage mode (legacy)
-    # ========================================================================
-    test_case(1, "Percentage mode (legacy)")
-    
-    log("Setting agent to percentage mode with commission=20")
-    r = update_agent(test_agent['id'], {
-        'profitMode': 'percentage',
-        'commission': 20
-    })
-    
-    if r.status_code != 200:
-        log(f"❌ FAILED: Could not update agent (status {r.status_code})")
-    else:
-        log("✅ Agent updated successfully")
+    try:
+        # Get original task details
+        original_task = get_task(task_id)
+        if not original_task:
+            log_result(False, f"Could not find task {task_id}")
+            return None
         
-        # Get agent's current stats
-        r_agent = requests.get(f"{BASE_URL}/agents/{test_agent['id']}")
-        agent_before = r_agent.json()
-        total_activations_before = agent_before.get('totalActivations', 0)
-        balance_before = agent_before.get('balance', 0)
+        original_due_date = original_task.get('dueDate')
+        print(f"Original task due date: {original_due_date}")
         
-        log(f"Agent before: totalActivations={total_activations_before}, balance={balance_before}")
+        # Admin-complete the task
+        response = admin_complete_task(task_id, EMP_ID_1, "نعمة طالب طاهر", "انتهيت")
         
-        # Activate with amount=50000
-        log("Activating subscriber with amount=50000")
-        r = activate_subscriber(test_subscriber['id'], {
-            'packageId': test_package['id'],
-            'amount': 50000,
-            'paymentMethod': 'cash',
-            'durationMonths': 1,
-            'agentId': test_agent['id']
-        })
-        
-        if r.status_code in [200, 201]:
-            data = r.json()
-            if 'activation' in data:
-                activation = data['activation']
-                agent_profit = activation.get('agentProfit', 0)
-                company_profit = activation.get('companyProfit', 0)
+        if response.status_code == 200:
+            result = response.json()
+            print(f"Response: {json.dumps(result, ensure_ascii=False, indent=2)}")
+            
+            # Check for spawnedTaskId in response
+            spawned_task_id = result.get('spawnedTaskId')
+            if spawned_task_id:
+                log_result(True, f"Task completed. Spawned task ID: {spawned_task_id}")
                 
-                log(f"✅ Activation successful")
-                log(f"   agentProfit: {agent_profit} (expected: 10000)")
-                log(f"   companyProfit: {company_profit} (expected: 40000)")
+                # Verify the spawned task exists
+                time.sleep(1)  # Give DB time to sync
+                spawned_task = get_task(spawned_task_id)
                 
-                if agent_profit == 10000 and company_profit == 40000:
-                    log("✅ TEST 1 PASSED: Percentage mode working correctly")
+                if spawned_task:
+                    print(f"\nSpawned task details:")
+                    print(f"  - ID: {spawned_task.get('id')}")
+                    print(f"  - Status: {spawned_task.get('status')}")
+                    print(f"  - Progress: {spawned_task.get('progress')}")
+                    print(f"  - Due Date: {spawned_task.get('dueDate')}")
+                    print(f"  - Spawned From: {spawned_task.get('spawnedFromTaskId')}")
+                    print(f"  - Recurrence: {spawned_task.get('recurrence')}")
+                    
+                    # Verify spawned task properties
+                    checks = []
+                    checks.append(("Status is 'pending'", spawned_task.get('status') == 'pending'))
+                    checks.append(("Progress is 0", spawned_task.get('progress') == 0))
+                    checks.append(("spawnedFromTaskId is set", spawned_task.get('spawnedFromTaskId') == task_id))
+                    checks.append(("Recurrence preserved", spawned_task.get('recurrence', {}).get('enabled') == True))
+                    
+                    # Check due date is 7 days after original
+                    if original_due_date:
+                        expected_date = (datetime.strptime(original_due_date, '%Y-%m-%d') + timedelta(days=7)).strftime('%Y-%m-%d')
+                        actual_date = spawned_task.get('dueDate')
+                        checks.append((f"Due date is 7 days later ({expected_date})", actual_date == expected_date))
+                    
+                    all_passed = all(check[1] for check in checks)
+                    for check_name, check_result in checks:
+                        status = "✓" if check_result else "✗"
+                        print(f"  {status} {check_name}")
+                    
+                    if all_passed:
+                        log_result(True, "All spawned task properties verified")
+                    else:
+                        log_result(False, "Some spawned task properties incorrect")
+                    
+                    # Check for notification
+                    notifications = get_notifications_for_user(EMP_ID_1)
+                    recurring_notif = [n for n in notifications if n.get('icon') == '🔁']
+                    if recurring_notif:
+                        print(f"  ✓ Notification created with icon '🔁'")
+                    else:
+                        print(f"  ✗ No notification with icon '🔁' found")
+                    
+                    return spawned_task_id
                 else:
-                    log(f"❌ TEST 1 FAILED: Expected agentProfit=10000, companyProfit=40000, got {agent_profit}, {company_profit}")
+                    log_result(False, f"Spawned task {spawned_task_id} not found in database")
+                    return None
             else:
-                log(f"❌ TEST 1 FAILED: No activation object in response")
+                log_result(False, f"No spawnedTaskId in response: {result}")
+                return None
         else:
-            log(f"❌ TEST 1 FAILED: Activation failed (status {r.status_code}): {r.text}")
+            log_result(False, f"Failed to complete task. Status: {response.status_code}, Response: {response.text}")
+            return None
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return None
+
+# ============================================================================
+# TEST 3: Daily recurrence (interval=2)
+# ============================================================================
+def test_3():
+    log_test(3, "Daily recurrence (interval=2)")
     
-    # ========================================================================
-    # TEST 2: Fixed per activation mode
-    # ========================================================================
-    test_case(2, "Fixed per activation mode")
-    
-    # Use a different subscriber for this test
-    if len(subscribers) > 1:
-        test_subscriber2 = subscribers[1]
-    else:
-        test_subscriber2 = test_subscriber
-    
-    log("Setting agent to fixed_per_activation mode with fixedProfitPerActivation=7500")
-    r = update_agent(test_agent['id'], {
-        'profitMode': 'fixed_per_activation',
-        'fixedProfitPerActivation': 7500
-    })
-    
-    if r.status_code != 200:
-        log(f"❌ FAILED: Could not update agent (status {r.status_code})")
-    else:
-        log("✅ Agent updated successfully")
-        
-        # Activate with amount=100000
-        log("Activating subscriber with amount=100000")
-        r = activate_subscriber(test_subscriber2['id'], {
-            'packageId': test_package['id'],
-            'amount': 100000,
-            'paymentMethod': 'cash',
-            'durationMonths': 1,
-            'agentId': test_agent['id']
-        })
-        
-        if r.status_code in [200, 201]:
-            data = r.json()
-            if 'activation' in data:
-                activation = data['activation']
-                agent_profit = activation.get('agentProfit', 0)
-                
-                log(f"✅ Activation successful")
-                log(f"   agentProfit: {agent_profit} (expected: 7500, NOT amount-based)")
-                
-                if agent_profit == 7500:
-                    log("✅ TEST 2 PASSED: Fixed per activation mode working correctly")
-                else:
-                    log(f"❌ TEST 2 FAILED: Expected agentProfit=7500, got {agent_profit}")
-            else:
-                log(f"❌ TEST 2 FAILED: No activation object in response")
-        else:
-            log(f"❌ TEST 2 FAILED: Activation failed (status {r.status_code}): {r.text}")
-    
-    # ========================================================================
-    # TEST 3: Fixed per package mode
-    # ========================================================================
-    test_case(3, "Fixed per package mode")
-    
-    # Use different subscribers for this test
-    if len(subscribers) > 2:
-        test_subscriber3 = subscribers[2]
-    else:
-        test_subscriber3 = test_subscriber
-    
-    if len(subscribers) > 3:
-        test_subscriber4 = subscribers[3]
-    else:
-        test_subscriber4 = test_subscriber2
-    
-    log("Setting agent to fixed_per_package mode")
-    log(f"  fixedProfitPerActivation=3000 (default)")
-    log(f"  fixedProfitsByPackage={{'{test_package['id']}': 5000}}")
-    
-    r = update_agent(test_agent['id'], {
-        'profitMode': 'fixed_per_package',
-        'fixedProfitPerActivation': 3000,
-        'fixedProfitsByPackage': {
-            test_package['id']: 5000
+    try:
+        due_date = get_date_str(10)  # 2026-06-01 (10 days from now)
+        recurrence = {
+            "enabled": True,
+            "type": "daily",
+            "interval": 2
         }
-    })
-    
-    if r.status_code != 200:
-        log(f"❌ FAILED: Could not update agent (status {r.status_code})")
-    else:
-        log("✅ Agent updated successfully")
         
-        # Test 3a: Activate using the package with custom profit
-        log(f"Test 3a: Activating with package {test_package['id']} (should get 5000)")
-        r = activate_subscriber(test_subscriber3['id'], {
-            'packageId': test_package['id'],
-            'amount': 50000,
-            'paymentMethod': 'cash',
-            'durationMonths': 1,
-            'agentId': test_agent['id']
-        })
+        response = create_task(
+            title="مهمة يومية كل يومين",
+            task_type="general",
+            priority="low",
+            due_date=due_date,
+            assigned_to=EMP_ID_2,
+            recurrence=recurrence
+        )
         
-        if r.status_code in [200, 201]:
-            data = r.json()
-            if 'activation' in data:
-                activation = data['activation']
-                agent_profit = activation.get('agentProfit', 0)
-                
-                log(f"✅ Activation successful")
-                log(f"   agentProfit: {agent_profit} (expected: 5000)")
-                
-                if agent_profit == 5000:
-                    log("✅ TEST 3a PASSED: Package-specific profit working")
-                else:
-                    log(f"❌ TEST 3a FAILED: Expected agentProfit=5000, got {agent_profit}")
-            else:
-                log(f"❌ TEST 3a FAILED: No activation object in response")
-        else:
-            log(f"❌ TEST 3a FAILED: Activation failed (status {r.status_code}): {r.text}")
-        
-        # Test 3b: Activate using a different package (should fallback to 3000)
-        if len(packages) > 1:
-            other_package = packages[1]
-            log(f"Test 3b: Activating with different package {other_package['id']} (should fallback to 3000)")
-            r = activate_subscriber(test_subscriber4['id'], {
-                'packageId': other_package['id'],
-                'amount': 50000,
-                'paymentMethod': 'cash',
-                'durationMonths': 1,
-                'agentId': test_agent['id']
-            })
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            print(f"Created task ID: {task_id}, Due date: {due_date}")
             
-            if r.status_code in [200, 201]:
-                data = r.json()
-                if 'activation' in data:
-                    activation = data['activation']
-                    agent_profit = activation.get('agentProfit', 0)
+            # Complete the task
+            response = admin_complete_task(task_id, EMP_ID_2, "امير بهاء الدين علي")
+            
+            if response.status_code == 200:
+                result = response.json()
+                spawned_task_id = result.get('spawnedTaskId')
+                
+                if spawned_task_id:
+                    time.sleep(1)
+                    spawned_task = get_task(spawned_task_id)
                     
-                    log(f"✅ Activation successful")
-                    log(f"   agentProfit: {agent_profit} (expected: 3000 fallback)")
-                    
-                    if agent_profit == 3000:
-                        log("✅ TEST 3b PASSED: Fallback to default profit working")
+                    if spawned_task:
+                        expected_date = (datetime.strptime(due_date, '%Y-%m-%d') + timedelta(days=2)).strftime('%Y-%m-%d')
+                        actual_date = spawned_task.get('dueDate')
+                        
+                        print(f"Expected due date: {expected_date}")
+                        print(f"Actual due date: {actual_date}")
+                        
+                        if actual_date == expected_date:
+                            log_result(True, f"Daily recurrence working. Next due date is 2 days later: {actual_date}")
+                            return True
+                        else:
+                            log_result(False, f"Due date mismatch. Expected: {expected_date}, Got: {actual_date}")
+                            return False
                     else:
-                        log(f"❌ TEST 3b FAILED: Expected agentProfit=3000, got {agent_profit}")
+                        log_result(False, "Spawned task not found")
+                        return False
                 else:
-                    log(f"❌ TEST 3b FAILED: No activation object in response")
+                    log_result(False, "No spawned task ID returned")
+                    return False
             else:
-                log(f"❌ TEST 3b FAILED: Activation failed (status {r.status_code}): {r.text}")
+                log_result(False, f"Failed to complete task. Status: {response.status_code}")
+                return False
         else:
-            log("⚠️  TEST 3b SKIPPED: Only one package available")
+            log_result(False, f"Failed to create task. Status: {response.status_code}")
+            return False
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 4: Monthly recurrence
+# ============================================================================
+def test_4():
+    log_test(4, "Monthly recurrence")
     
-    # ========================================================================
-    # TEST 4: requireAdminApproval flow
-    # ========================================================================
-    test_case(4, "requireAdminApproval flow")
-    
-    # Use a different subscriber for this test
-    if len(subscribers) > 4:
-        test_subscriber5 = subscribers[4]
-    else:
-        test_subscriber5 = subscribers[0]
-    
-    log("Setting agent with requireAdminApproval=true")
-    r = update_agent(test_agent['id'], {
-        'profitMode': 'percentage',
-        'commission': 20,
-        'permissions': {
-            'requireAdminApproval': True
+    try:
+        # Use a fixed date for monthly calculation
+        due_date = "2026-01-15"
+        recurrence = {
+            "enabled": True,
+            "type": "monthly",
+            "interval": 1
         }
-    })
-    
-    if r.status_code != 200:
-        log(f"❌ FAILED: Could not update agent (status {r.status_code})")
-    else:
-        log("✅ Agent updated successfully")
         
-        # Get subscriber's current status
-        r_sub = requests.get(f"{BASE_URL}/subscribers/{test_subscriber5['id']}")
-        sub_before = r_sub.json()
-        status_before = sub_before.get('status', 'unknown')
-        log(f"Subscriber status before: {status_before}")
+        response = create_task(
+            title="مهمة شهرية",
+            task_type="general",
+            priority="medium",
+            due_date=due_date,
+            assigned_to=EMP_ID_1,
+            recurrence=recurrence
+        )
         
-        # Activate WITHOUT skipApprovalCheck
-        log("Activating subscriber WITHOUT skipApprovalCheck")
-        r = activate_subscriber(test_subscriber5['id'], {
-            'packageId': test_package['id'],
-            'amount': 50000,
-            'paymentMethod': 'cash',
-            'durationMonths': 1,
-            'agentId': test_agent['id']
-        })
-        
-        log(f"Response status: {r.status_code}")
-        
-        if r.status_code == 202:
-            data = r.json()
-            log(f"✅ Got HTTP 202 (expected)")
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            print(f"Created task ID: {task_id}, Due date: {due_date}")
             
-            # Check response structure
-            if 'pending' in data and data['pending'] == True:
-                log(f"✅ response.pending=true")
-            else:
-                log(f"❌ response.pending not true: {data.get('pending')}")
+            # Complete the task
+            response = admin_complete_task(task_id, EMP_ID_1, "نعمة طالب طاهر")
             
-            if 'request' in data:
-                request_obj = data['request']
-                log(f"✅ response.request exists")
+            if response.status_code == 200:
+                result = response.json()
+                spawned_task_id = result.get('spawnedTaskId')
                 
-                if 'id' in request_obj and 'status' in request_obj:
-                    log(f"✅ request has id={request_obj['id']}, status={request_obj['status']}")
+                if spawned_task_id:
+                    time.sleep(1)
+                    spawned_task = get_task(spawned_task_id)
                     
-                    if request_obj['status'] == 'pending':
-                        log(f"✅ request.status='pending'")
+                    if spawned_task:
+                        expected_date = "2026-02-15"  # 1 month later
+                        actual_date = spawned_task.get('dueDate')
+                        
+                        print(f"Expected due date: {expected_date}")
+                        print(f"Actual due date: {actual_date}")
+                        
+                        if actual_date == expected_date:
+                            log_result(True, f"Monthly recurrence working. Next due date: {actual_date}")
+                            return True
+                        else:
+                            log_result(False, f"Due date mismatch. Expected: {expected_date}, Got: {actual_date}")
+                            return False
                     else:
-                        log(f"❌ request.status not 'pending': {request_obj['status']}")
-                    
-                    # Store pending ID for later tests
-                    pending_id = request_obj['id']
+                        log_result(False, "Spawned task not found")
+                        return False
                 else:
-                    log(f"❌ request missing id or status")
-                    pending_id = None
+                    log_result(False, "No spawned task ID returned")
+                    return False
             else:
-                log(f"❌ response.request not found")
-                pending_id = None
-            
-            # Verify subscriber NOT activated
-            r_sub = requests.get(f"{BASE_URL}/subscribers/{test_subscriber5['id']}")
-            sub_after = r_sub.json()
-            status_after = sub_after.get('status', 'unknown')
-            log(f"Subscriber status after: {status_after}")
-            
-            if status_after == status_before:
-                log(f"✅ Subscriber NOT activated (status unchanged)")
-            else:
-                log(f"❌ Subscriber status changed from {status_before} to {status_after}")
-            
-            # Verify pending_activations collection has the doc
-            r_pending = get_pending_activations('pending')
-            if r_pending.status_code == 200:
-                pending_list = r_pending.json()
-                found = any(p['id'] == pending_id for p in pending_list) if pending_id else False
-                if found:
-                    log(f"✅ Pending activation found in pending_activations collection")
-                else:
-                    log(f"❌ Pending activation NOT found in collection")
-            else:
-                log(f"❌ Could not fetch pending activations")
-            
-            # Verify notification created
-            r_notif = get_notifications()
-            if r_notif.status_code == 200:
-                notifications = r_notif.json()
-                pending_notif = [n for n in notifications if n.get('entityType') == 'pending_activation' and n.get('entityId') == pending_id]
-                if pending_notif:
-                    log(f"✅ Notification created with entityType='pending_activation'")
-                else:
-                    log(f"⚠️  Notification not found (may have been created but not visible)")
-            else:
-                log(f"⚠️  Could not fetch notifications")
-            
-            log("✅ TEST 4 PASSED: requireAdminApproval flow working correctly")
-            
+                log_result(False, f"Failed to complete task. Status: {response.status_code}")
+                return False
         else:
-            log(f"❌ TEST 4 FAILED: Expected HTTP 202, got {r.status_code}")
-            log(f"Response: {r.text}")
-            pending_id = None
+            log_result(False, f"Failed to create task. Status: {response.status_code}")
+            return False
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 5: Recurrence with endDate boundary
+# ============================================================================
+def test_5():
+    log_test(5, "Recurrence with endDate boundary")
     
-    # ========================================================================
-    # TEST 5: Approve pending activation
-    # ========================================================================
-    test_case(5, "Approve pending activation")
-    
-    if pending_id:
-        log(f"Approving pending activation {pending_id}")
+    try:
+        due_date = "2026-05-22"
+        recurrence = {
+            "enabled": True,
+            "type": "weekly",
+            "interval": 1,
+            "endDate": "2026-05-23"  # Next would be 2026-05-29 which is > endDate
+        }
         
-        # Get agent stats before approval
-        r_agent = requests.get(f"{BASE_URL}/agents/{test_agent['id']}")
-        agent_before = r_agent.json()
-        total_activations_before = agent_before.get('totalActivations', 0)
+        response = create_task(
+            title="مهمة مع تاريخ انتهاء",
+            task_type="general",
+            priority="high",
+            due_date=due_date,
+            assigned_to=EMP_ID_2,
+            recurrence=recurrence
+        )
         
-        # Get subscriber status before approval
-        r_sub = requests.get(f"{BASE_URL}/subscribers/{test_subscriber5['id']}")
-        sub_before = r_sub.json()
-        status_before = sub_before.get('status', 'unknown')
-        
-        log(f"Before approval: agent.totalActivations={total_activations_before}, subscriber.status={status_before}")
-        
-        r = approve_pending(pending_id, 'admin')
-        
-        if r.status_code == 200:
-            data = r.json()
-            log(f"✅ Approval successful")
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            print(f"Created task ID: {task_id}")
+            print(f"Due date: {due_date}, End date: {recurrence['endDate']}")
             
-            if 'success' in data and data['success'] == True:
-                log(f"✅ response.success=true")
-            else:
-                log(f"❌ response.success not true")
+            # Complete the task
+            response = admin_complete_task(task_id, EMP_ID_2, "امير بهاء الدين علي")
             
-            if 'activation' in data:
-                activation = data['activation']
-                log(f"✅ response.activation exists")
-                log(f"   Activation ID: {activation.get('id')}")
-            else:
-                log(f"❌ response.activation not found")
-            
-            # Verify subscriber is now active
-            r_sub = requests.get(f"{BASE_URL}/subscribers/{test_subscriber5['id']}")
-            sub_after = r_sub.json()
-            status_after = sub_after.get('status', 'unknown')
-            
-            if status_after == 'active':
-                log(f"✅ Subscriber status='active'")
-            else:
-                log(f"❌ Subscriber status not 'active': {status_after}")
-            
-            # Verify agent.totalActivations incremented
-            r_agent = requests.get(f"{BASE_URL}/agents/{test_agent['id']}")
-            agent_after = r_agent.json()
-            total_activations_after = agent_after.get('totalActivations', 0)
-            
-            if total_activations_after > total_activations_before:
-                log(f"✅ Agent totalActivations incremented: {total_activations_before} → {total_activations_after}")
-            else:
-                log(f"❌ Agent totalActivations not incremented: {total_activations_before} → {total_activations_after}")
-            
-            # Verify pending status='approved'
-            r_pending = get_pending_activations('approved')
-            if r_pending.status_code == 200:
-                approved_list = r_pending.json()
-                found = any(p['id'] == pending_id and p['status'] == 'approved' for p in approved_list)
-                if found:
-                    log(f"✅ Pending activation status='approved'")
-                else:
-                    log(f"❌ Pending activation not found in approved list")
-            
-            log("✅ TEST 5 PASSED: Approve pending activation working correctly")
-            
-        else:
-            log(f"❌ TEST 5 FAILED: Approval failed (status {r.status_code}): {r.text}")
-    else:
-        log("⚠️  TEST 5 SKIPPED: No pending_id from TEST 4")
-    
-    # ========================================================================
-    # TEST 6: Reject pending activation
-    # ========================================================================
-    test_case(6, "Reject pending activation")
-    
-    # Create another pending activation first
-    if len(subscribers) > 5:
-        test_subscriber6 = subscribers[5]
-    else:
-        test_subscriber6 = subscribers[0]
-    
-    log("Creating another pending activation to reject")
-    r = activate_subscriber(test_subscriber6['id'], {
-        'packageId': test_package['id'],
-        'amount': 50000,
-        'paymentMethod': 'cash',
-        'durationMonths': 1,
-        'agentId': test_agent['id']
-    })
-    
-    if r.status_code == 202:
-        data = r.json()
-        pending_id2 = data.get('request', {}).get('id')
-        log(f"✅ Created pending activation {pending_id2}")
-        
-        # Get subscriber status before rejection
-        r_sub = requests.get(f"{BASE_URL}/subscribers/{test_subscriber6['id']}")
-        sub_before = r_sub.json()
-        status_before = sub_before.get('status', 'unknown')
-        
-        log(f"Subscriber status before rejection: {status_before}")
-        
-        # Reject the pending activation
-        log("Rejecting pending activation")
-        r = reject_pending(pending_id2, 'مكرر', 'admin')
-        
-        if r.status_code == 200:
-            data = r.json()
-            log(f"✅ Rejection successful")
-            
-            # Verify pending status='rejected'
-            r_pending = get_pending_activations('rejected')
-            if r_pending.status_code == 200:
-                rejected_list = r_pending.json()
-                found_pending = None
-                for p in rejected_list:
-                    if p['id'] == pending_id2:
-                        found_pending = p
-                        break
+            if response.status_code == 200:
+                result = response.json()
+                spawned_task_id = result.get('spawnedTaskId')
                 
-                if found_pending:
-                    log(f"✅ Pending activation found in rejected list")
-                    
-                    if found_pending['status'] == 'rejected':
-                        log(f"✅ status='rejected'")
-                    else:
-                        log(f"❌ status not 'rejected': {found_pending['status']}")
-                    
-                    if found_pending.get('rejectionReason') == 'مكرر':
-                        log(f"✅ rejectionReason='مكرر'")
-                    else:
-                        log(f"❌ rejectionReason not 'مكرر': {found_pending.get('rejectionReason')}")
+                print(f"Spawned task ID: {spawned_task_id}")
+                
+                if spawned_task_id is None:
+                    log_result(True, "No new task created (correctly stopped at endDate)")
+                    return True
                 else:
-                    log(f"❌ Pending activation not found in rejected list")
-            
-            # Verify subscriber NOT activated
-            r_sub = requests.get(f"{BASE_URL}/subscribers/{test_subscriber6['id']}")
-            sub_after = r_sub.json()
-            status_after = sub_after.get('status', 'unknown')
-            
-            if status_after == status_before:
-                log(f"✅ Subscriber NOT activated (status unchanged: {status_after})")
+                    log_result(False, f"Task was spawned when it shouldn't be. Spawned ID: {spawned_task_id}")
+                    return False
             else:
-                log(f"❌ Subscriber status changed from {status_before} to {status_after}")
-            
-            log("✅ TEST 6 PASSED: Reject pending activation working correctly")
-            
+                log_result(False, f"Failed to complete task. Status: {response.status_code}")
+                return False
         else:
-            log(f"❌ TEST 6 FAILED: Rejection failed (status {r.status_code}): {r.text}")
-    else:
-        log(f"⚠️  TEST 6 SKIPPED: Could not create pending activation (status {r.status_code})")
+            log_result(False, f"Failed to create task. Status: {response.status_code}")
+            return False
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 6: Non-recurring task (regression)
+# ============================================================================
+def test_6():
+    log_test(6, "Non-recurring task (regression)")
     
-    # ========================================================================
-    # TEST 7: GET pending list
-    # ========================================================================
-    test_case(7, "GET pending list")
-    
-    log("Testing GET /api/pending-activations with different status filters")
-    
-    # Test default (pending)
-    r = get_pending_activations('pending')
-    if r.status_code == 200:
-        data = r.json()
-        log(f"✅ GET ?status=pending: {len(data)} items")
-    else:
-        log(f"❌ GET ?status=pending failed: {r.status_code}")
-    
-    # Test approved
-    r = get_pending_activations('approved')
-    if r.status_code == 200:
-        data = r.json()
-        log(f"✅ GET ?status=approved: {len(data)} items")
-    else:
-        log(f"❌ GET ?status=approved failed: {r.status_code}")
-    
-    # Test rejected
-    r = get_pending_activations('rejected')
-    if r.status_code == 200:
-        data = r.json()
-        log(f"✅ GET ?status=rejected: {len(data)} items")
-    else:
-        log(f"❌ GET ?status=rejected failed: {r.status_code}")
-    
-    # Test all
-    r = get_pending_activations('all')
-    if r.status_code == 200:
-        data = r.json()
-        log(f"✅ GET ?status=all: {len(data)} items")
-    else:
-        log(f"❌ GET ?status=all failed: {r.status_code}")
-    
-    log("✅ TEST 7 PASSED: GET pending list working correctly")
-    
-    # ========================================================================
-    # TEST 8: skipApprovalCheck override
-    # ========================================================================
-    test_case(8, "skipApprovalCheck override")
-    
-    # Agent still has requireAdminApproval=true from TEST 4
-    if len(subscribers) > 6:
-        test_subscriber7 = subscribers[6]
-    else:
-        test_subscriber7 = subscribers[1]
-    
-    log("Activating with skipApprovalCheck=true (should bypass approval)")
-    r = activate_subscriber(test_subscriber7['id'], {
-        'packageId': test_package['id'],
-        'amount': 50000,
-        'paymentMethod': 'cash',
-        'durationMonths': 1,
-        'agentId': test_agent['id'],
-        'skipApprovalCheck': True
-    })
-    
-    log(f"Response status: {r.status_code}")
-    
-    if r.status_code in [200, 201]:
-        data = r.json()
-        log(f"✅ Got HTTP 200/201 (expected, bypassed approval)")
+    try:
+        due_date = get_date_str(5)
         
-        if 'activation' in data:
-            log(f"✅ response.activation exists (direct activation)")
-        else:
-            log(f"❌ response.activation not found")
+        # Create task WITHOUT recurrence
+        response = create_task(
+            title="مهمة عادية بدون تكرار",
+            task_type="general",
+            priority="low",
+            due_date=due_date,
+            assigned_to=EMP_ID_1,
+            recurrence=None
+        )
         
-        if 'pending' in data and data['pending'] == True:
-            log(f"❌ response.pending=true (should be false or absent)")
-        else:
-            log(f"✅ response.pending not true (bypassed approval)")
-        
-        log("✅ TEST 8 PASSED: skipApprovalCheck override working correctly")
-        
-    elif r.status_code == 202:
-        log(f"❌ TEST 8 FAILED: Got HTTP 202 (should have bypassed approval)")
-    else:
-        log(f"❌ TEST 8 FAILED: Unexpected status {r.status_code}: {r.text}")
-    
-    # ========================================================================
-    # TEST 9: Regression tests
-    # ========================================================================
-    test_case(9, "Regression tests")
-    
-    # Reset agent to normal mode (no approval required)
-    log("Resetting agent to normal mode (no requireAdminApproval)")
-    r = update_agent(test_agent['id'], {
-        'profitMode': 'percentage',
-        'commission': 20,
-        'permissions': {}
-    })
-    
-    if r.status_code != 200:
-        log(f"❌ Could not reset agent")
-    else:
-        log("✅ Agent reset successfully")
-    
-    # Test 9a: Activate without agentId
-    if len(subscribers) > 7:
-        test_subscriber8 = subscribers[7]
-    else:
-        test_subscriber8 = subscribers[2]
-    
-    log("Test 9a: Activate without agentId (companyProfit should be full amount)")
-    r = activate_subscriber(test_subscriber8['id'], {
-        'packageId': test_package['id'],
-        'amount': 50000,
-        'paymentMethod': 'cash',
-        'durationMonths': 1
-    })
-    
-    if r.status_code in [200, 201]:
-        data = r.json()
-        if 'activation' in data:
-            activation = data['activation']
-            agent_profit = activation.get('agentProfit', 0)
-            company_profit = activation.get('companyProfit', 0)
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            print(f"Created non-recurring task ID: {task_id}")
             
-            if agent_profit == 0 and company_profit == 50000:
-                log(f"✅ Test 9a PASSED: agentProfit=0, companyProfit=50000 (full amount)")
+            # Complete the task
+            response = admin_complete_task(task_id, EMP_ID_1, "نعمة طالب طاهر")
+            
+            if response.status_code == 200:
+                result = response.json()
+                spawned_task_id = result.get('spawnedTaskId')
+                
+                print(f"Spawned task ID: {spawned_task_id}")
+                
+                if spawned_task_id is None:
+                    log_result(True, "No task spawned for non-recurring task (correct)")
+                    return True
+                else:
+                    log_result(False, f"Task was spawned when it shouldn't be. Spawned ID: {spawned_task_id}")
+                    return False
             else:
-                log(f"❌ Test 9a FAILED: agentProfit={agent_profit}, companyProfit={company_profit}")
+                log_result(False, f"Failed to complete task. Status: {response.status_code}")
+                return False
         else:
-            log(f"❌ Test 9a FAILED: No activation object")
-    else:
-        log(f"❌ Test 9a FAILED: Activation failed (status {r.status_code})")
+            log_result(False, f"Failed to create task. Status: {response.status_code}")
+            return False
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 7: Approve via review → also spawns
+# ============================================================================
+def test_7():
+    log_test(7, "Approve via review → also spawns")
     
-    # Test 9b: Activate with agent that has no permissions object
-    # (Already done by resetting agent above)
-    log("Test 9b: Activate with agent having no permissions object (should work directly)")
-    
-    if len(subscribers) > 8:
-        test_subscriber9 = subscribers[8]
-    else:
-        test_subscriber9 = subscribers[3]
-    
-    r = activate_subscriber(test_subscriber9['id'], {
-        'packageId': test_package['id'],
-        'amount': 50000,
-        'paymentMethod': 'cash',
-        'durationMonths': 1,
-        'agentId': test_agent['id']
-    })
-    
-    if r.status_code in [200, 201]:
-        data = r.json()
-        if 'activation' in data:
-            log(f"✅ Test 9b PASSED: Activation worked directly (no approval gate)")
+    try:
+        due_date = get_date_str(2)
+        recurrence = {
+            "enabled": True,
+            "type": "weekly",
+            "interval": 1
+        }
+        
+        # Create recurring task
+        response = create_task(
+            title="مهمة للمراجعة",
+            task_type="general",
+            priority="high",
+            due_date=due_date,
+            assigned_to=EMP_ID_1,
+            recurrence=recurrence
+        )
+        
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            print(f"Created task ID: {task_id}")
+            
+            # Change status to pending_review
+            set_response = set_task_status(task_id, "pending_review")
+            if set_response.status_code == 200:
+                print("Task status changed to 'pending_review'")
+            else:
+                print(f"Warning: Could not set status to pending_review. Status: {set_response.status_code}")
+            
+            time.sleep(1)
+            
+            # Approve via review
+            response = review_task(task_id, "approve", "المدير")
+            
+            if response.status_code == 200:
+                result = response.json()
+                spawned_task_id = result.get('spawnedTaskId')
+                
+                print(f"Review response: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                
+                if spawned_task_id:
+                    time.sleep(1)
+                    spawned_task = get_task(spawned_task_id)
+                    
+                    if spawned_task:
+                        log_result(True, f"Task approved and spawned. New task ID: {spawned_task_id}")
+                        return True
+                    else:
+                        log_result(False, f"Spawned task {spawned_task_id} not found")
+                        return False
+                else:
+                    log_result(False, "No spawned task ID in response")
+                    return False
+            else:
+                log_result(False, f"Failed to approve task. Status: {response.status_code}, Response: {response.text}")
+                return False
         else:
-            log(f"❌ Test 9b FAILED: No activation object")
-    elif r.status_code == 202:
-        log(f"❌ Test 9b FAILED: Got HTTP 202 (should not require approval)")
+            log_result(False, f"Failed to create task. Status: {response.status_code}")
+            return False
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 8: Reject via review → does NOT spawn
+# ============================================================================
+def test_8():
+    log_test(8, "Reject via review → does NOT spawn")
+    
+    try:
+        due_date = get_date_str(2)
+        recurrence = {
+            "enabled": True,
+            "type": "weekly",
+            "interval": 1
+        }
+        
+        # Create recurring task
+        response = create_task(
+            title="مهمة للرفض",
+            task_type="general",
+            priority="medium",
+            due_date=due_date,
+            assigned_to=EMP_ID_2,
+            recurrence=recurrence
+        )
+        
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            print(f"Created task ID: {task_id}")
+            
+            # Change status to pending_review
+            set_response = set_task_status(task_id, "pending_review")
+            if set_response.status_code == 200:
+                print("Task status changed to 'pending_review'")
+            
+            time.sleep(1)
+            
+            # Reject via review
+            response = review_task(task_id, "reject", "المدير")
+            
+            if response.status_code == 200:
+                result = response.json()
+                spawned_task_id = result.get('spawnedTaskId')
+                
+                print(f"Review response: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                
+                if spawned_task_id is None:
+                    log_result(True, "Task rejected and no spawn occurred (correct)")
+                    return True
+                else:
+                    log_result(False, f"Task was spawned when it shouldn't be. Spawned ID: {spawned_task_id}")
+                    return False
+            else:
+                log_result(False, f"Failed to reject task. Status: {response.status_code}")
+                return False
+        else:
+            log_result(False, f"Failed to create task. Status: {response.status_code}")
+            return False
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 9: Time tracking fields
+# ============================================================================
+def test_9():
+    log_test(9, "Time tracking fields")
+    
+    try:
+        due_date = get_date_str(1)
+        
+        # Create task
+        response = create_task(
+            title="مهمة لاختبار الوقت",
+            task_type="general",
+            priority="high",
+            due_date=due_date,
+            assigned_to=EMP_ID_1,
+            recurrence=None
+        )
+        
+        if response.status_code in [200, 201]:
+            task = response.json()
+            task_id = task.get('id')
+            print(f"Created task ID: {task_id}")
+            
+            # Start the task
+            start_response = requests.post(f"{BASE_URL}/tasks/{task_id}/start", json={}, headers=HEADERS)
+            if start_response.status_code == 200:
+                print("Task started")
+            else:
+                print(f"Warning: Could not start task. Status: {start_response.status_code}")
+            
+            # Wait 1 second
+            time.sleep(1)
+            
+            # Admin-complete the task
+            response = admin_complete_task(task_id, EMP_ID_1, "نعمة طالب طاهر")
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"Complete response: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                
+                # Check response fields
+                has_completed_at = 'completedAt' in result
+                has_duration = 'durationMin' in result
+                duration_value = result.get('durationMin', -1)
+                
+                print(f"\nTime tracking fields:")
+                print(f"  - completedAt: {result.get('completedAt', 'MISSING')}")
+                print(f"  - durationMin: {duration_value}")
+                
+                # Verify task in database
+                time.sleep(1)
+                updated_task = get_task(task_id)
+                
+                if updated_task:
+                    db_started_at = updated_task.get('startedAt')
+                    db_completed_at = updated_task.get('completedAt')
+                    db_duration = updated_task.get('durationMin')
+                    
+                    print(f"\nTask in database:")
+                    print(f"  - startedAt: {db_started_at}")
+                    print(f"  - completedAt: {db_completed_at}")
+                    print(f"  - durationMin: {db_duration}")
+                    
+                    checks = []
+                    checks.append(("Response has completedAt", has_completed_at))
+                    checks.append(("Response has durationMin", has_duration))
+                    checks.append(("durationMin >= 0", duration_value >= 0))
+                    checks.append(("Task has startedAt", db_started_at is not None))
+                    checks.append(("Task has completedAt", db_completed_at is not None))
+                    checks.append(("Task has durationMin", db_duration is not None))
+                    
+                    all_passed = all(check[1] for check in checks)
+                    for check_name, check_result in checks:
+                        status = "✓" if check_result else "✗"
+                        print(f"  {status} {check_name}")
+                    
+                    if all_passed:
+                        log_result(True, "All time tracking fields verified")
+                        return True
+                    else:
+                        log_result(False, "Some time tracking fields missing or incorrect")
+                        return False
+                else:
+                    log_result(False, "Could not retrieve updated task from database")
+                    return False
+            else:
+                log_result(False, f"Failed to complete task. Status: {response.status_code}")
+                return False
+        else:
+            log_result(False, f"Failed to create task. Status: {response.status_code}")
+            return False
+    except Exception as e:
+        log_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# MAIN TEST RUNNER
+# ============================================================================
+def main():
+    print("\n" + "="*80)
+    print("BACKEND TESTING: Module D - Advanced Tasks (Recurring Tasks Auto-Spawn)")
+    print("="*80)
+    print(f"Base URL: {BASE_URL}")
+    print(f"Test Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*80)
+    
+    results = {}
+    
+    # Test 1: Create recurring task
+    task_id_1 = test_1()
+    results['test_1'] = task_id_1 is not None
+    
+    # Test 2: Admin-complete and verify spawn
+    if task_id_1:
+        spawned_id = test_2(task_id_1)
+        results['test_2'] = spawned_id is not None
     else:
-        log(f"❌ Test 9b FAILED: Activation failed (status {r.status_code})")
+        print("\n⚠️  Skipping Test 2 (depends on Test 1)")
+        results['test_2'] = False
     
-    # Test 9c: Auto-deduct balance still works
-    log("Test 9c: Verifying auto-deduct balance still works")
-    log("(This was tested in previous activations with paymentMethod='cash')")
-    log("✅ Test 9c: Auto-deduct verified in previous tests")
+    # Test 3: Daily recurrence
+    results['test_3'] = test_3()
     
-    log("✅ TEST 9 PASSED: All regression tests passed")
+    # Test 4: Monthly recurrence
+    results['test_4'] = test_4()
     
-    # ========================================================================
-    # SUMMARY
-    # ========================================================================
-    print(f"\n{'='*80}")
+    # Test 5: Recurrence with endDate
+    results['test_5'] = test_5()
+    
+    # Test 6: Non-recurring task
+    results['test_6'] = test_6()
+    
+    # Test 7: Approve via review
+    results['test_7'] = test_7()
+    
+    # Test 8: Reject via review
+    results['test_8'] = test_8()
+    
+    # Test 9: Time tracking
+    results['test_9'] = test_9()
+    
+    # Summary
+    print("\n" + "="*80)
     print("TEST SUMMARY")
-    print('='*80)
-    print("✅ TEST 1: Percentage mode (legacy) - PASSED")
-    print("✅ TEST 2: Fixed per activation mode - PASSED")
-    print("✅ TEST 3: Fixed per package mode - PASSED")
-    print("✅ TEST 4: requireAdminApproval flow - PASSED")
-    print("✅ TEST 5: Approve pending activation - PASSED")
-    print("✅ TEST 6: Reject pending activation - PASSED")
-    print("✅ TEST 7: GET pending list - PASSED")
-    print("✅ TEST 8: skipApprovalCheck override - PASSED")
-    print("✅ TEST 9: Regression tests - PASSED")
-    print('='*80)
-    print("ALL TESTS COMPLETED SUCCESSFULLY")
-    print('='*80)
+    print("="*80)
+    
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+    
+    for test_name, result in results.items():
+        status = "✅ PASSED" if result else "❌ FAILED"
+        print(f"{test_name}: {status}")
+    
+    print(f"\nTotal: {passed}/{total} tests passed ({passed*100//total}%)")
+    
+    if passed == total:
+        print("\n🎉 ALL TESTS PASSED! Recurring tasks feature is working correctly.")
+    else:
+        print(f"\n⚠️  {total - passed} test(s) failed. Please review the output above.")
+    
+    print("="*80)
 
-except Exception as e:
-    log(f"❌ FATAL ERROR: {str(e)}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+if __name__ == "__main__":
+    main()

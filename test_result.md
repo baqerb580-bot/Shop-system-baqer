@@ -4270,7 +4270,7 @@ agent_communication:
 
 test_plan:
   current_focus:
-    - "Module C - Balance Auto-Deduct UX (NEW FEATURE)"
+    - "Module D - Advanced Tasks (Recurrence + Time Tracking)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -5024,3 +5024,238 @@ agent_communication:
       NO CRITICAL ISSUES FOUND. Agent System Revamp (Module B) is production-ready.
       All 9 test scenarios passed. Ready for production use.
 
+
+backend:
+  - task: "Advanced Tasks - Recurring Tasks Auto-Spawn (Module D)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW: Complete Recurring Tasks Auto-Spawn feature with time tracking.
+            
+            HELPER FUNCTIONS (lines 540-624):
+            1. computeNextDueDate(prevDueDate, rec) - calculates next due date based on recurrence type
+               - type 'daily': adds rec.interval days
+               - type 'weekly': adds rec.interval * 7 days
+               - type 'monthly': adds rec.interval months
+            
+            2. spawnRecurringIfNeeded(db, completedTask) - spawns next task instance
+               - Returns null if task has no recurrence or recurrence.enabled=false
+               - Returns null if next date > recurrence.endDate (stop date)
+               - Inserts new task with: status='pending', progress=0, fresh notes/attachments
+               - Carries forward: title, description, priority, taskType, assignedTo, subscriber*, recurrence rule
+               - Sets spawnedFromTaskId = original.id
+               - Creates notification for assignee with type='task_new', icon='🔁'
+               - Inserts event with isRecurringSpawn: true
+            
+            INTEGRATION POINTS:
+            - POST /api/tasks/:id/admin-complete (line 3477): calls spawnRecurringIfNeeded after marking complete
+            - POST /api/tasks/:id/review with action='approve' (line 3127): also calls spawnRecurringIfNeeded
+            
+            Both endpoints return spawnedTaskId in response (null if no spawn occurred).
+            
+            TIME TRACKING:
+            - admin-complete calculates durationMin from startedAt (or createdAt) to completion time
+            - Fields: startedAt, completedAt, durationMin
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All Recurring Tasks Auto-Spawn endpoints fully functional (9/9 tests passed).
+            
+            Test Results Summary:
+            
+            ✅ TEST 1: Create task with recurrence (weekly, every 1) - PASSED
+               - Created task with recurrence: {enabled: true, type: 'weekly', interval: 1}
+               - Task ID: dc01f9f4-84c0-4266-949f-00ff097721af
+               - Recurrence object preserved correctly in response
+            
+            ✅ TEST 2: Admin-complete recurring task → next instance auto-created - PASSED
+               - Original task due date: 2026-05-25
+               - Completed task successfully
+               - Response includes spawnedTaskId: 0acf8986-8887-4946-a5af-742657503cc7
+               - Spawned task verified with all properties:
+                 * Status: 'pending' ✓
+                 * Progress: 0 ✓
+                 * spawnedFromTaskId: set correctly ✓
+                 * Recurrence: preserved ✓
+                 * Due date: 2026-06-01 (7 days later) ✓
+               - Notification created with icon '🔁' ✓
+            
+            ✅ TEST 3: Daily recurrence (interval=2) - PASSED
+               - Created task with due date: 2026-06-01
+               - Completed task
+               - Spawned task due date: 2026-06-03 (2 days later) ✓
+               - Daily recurrence calculation working correctly
+            
+            ✅ TEST 4: Monthly recurrence - PASSED
+               - Created task with due date: 2026-01-15
+               - Completed task
+               - Spawned task due date: 2026-02-15 (1 month later) ✓
+               - Monthly recurrence calculation working correctly
+            
+            ✅ TEST 5: Recurrence with endDate boundary - PASSED
+               - Created task with due date: 2026-05-22, endDate: 2026-05-23
+               - Next would be 2026-05-29 which is > endDate
+               - Completed task
+               - spawnedTaskId: null (correctly stopped at endDate) ✓
+               - Boundary condition working correctly
+            
+            ✅ TEST 6: Non-recurring task (regression) - PASSED
+               - Created task WITHOUT recurrence
+               - Completed task
+               - spawnedTaskId: null (no spawn occurred) ✓
+               - Regression test passed - original endpoint behavior preserved
+            
+            ✅ TEST 7: Approve via review → also spawns - PASSED
+               - Created recurring task
+               - Changed status to 'pending_review'
+               - Approved via POST /api/tasks/:id/review with action='approve'
+               - Response includes spawnedTaskId: fa4d0cf0-cfc3-4b6d-90f2-2dcf0e66d1bf ✓
+               - Spawned task exists in database ✓
+               - Review approval spawning working correctly
+            
+            ✅ TEST 8: Reject via review → does NOT spawn - PASSED
+               - Created recurring task
+               - Changed status to 'pending_review'
+               - Rejected via POST /api/tasks/:id/review with action='reject'
+               - Response spawnedTaskId: null (no spawn occurred) ✓
+               - Rejection correctly does not spawn new task
+            
+            ✅ TEST 9: Time tracking fields - PASSED
+               - Created task
+               - Started task via POST /api/tasks/:id/start
+               - Waited 1 second
+               - Completed task via admin-complete
+               - Response fields verified:
+                 * completedAt: present ✓
+                 * durationMin: 0 (fast completion) ✓
+               - Database fields verified:
+                 * startedAt: 2026-05-22T04:52:51.904Z ✓
+                 * completedAt: 2026-05-22T04:52:53.062Z ✓
+                 * durationMin: 0 ✓
+               - All time tracking fields working correctly
+            
+            CRITICAL VERIFICATIONS:
+            ✅ All endpoints return HTTP 200 (never 500)
+            ✅ Response shapes are correct (all required fields present)
+            ✅ Recurrence types working: daily, weekly, monthly
+            ✅ Interval calculations correct for all types
+            ✅ endDate boundary respected (stops spawning when next > endDate)
+            ✅ Non-recurring tasks don't spawn (regression test passed)
+            ✅ Admin-complete spawns next instance
+            ✅ Review approve spawns next instance
+            ✅ Review reject does NOT spawn
+            ✅ Time tracking fields populated correctly (startedAt, completedAt, durationMin)
+            ✅ Notification created with icon '🔁' for recurring tasks
+            ✅ Event created with isRecurringSpawn: true
+            ✅ All task properties carried forward correctly
+            ✅ spawnedFromTaskId links back to original task
+            
+            DATA INTEGRITY VERIFIED:
+            - All endpoints use UUIDs (not MongoDB ObjectIds)
+            - All timestamps are ISO format
+            - All Arabic text rendering correctly
+            - All numeric fields are numbers (not strings)
+            - All boolean fields are booleans
+            - Recurrence object structure preserved across spawns
+            - Task state reset correctly (status='pending', progress=0, notes='', attachments=[])
+            - Task content preserved (title, description, priority, taskType, assignedTo, subscriber fields)
+            - Time tracking calculations accurate (durationMin from startedAt to completedAt)
+            
+            RECURRENCE CALCULATION VERIFIED:
+            - Daily (interval=2): 2026-06-01 → 2026-06-03 ✓
+            - Weekly (interval=1): 2026-05-25 → 2026-06-01 ✓
+            - Monthly (interval=1): 2026-01-15 → 2026-02-15 ✓
+            - endDate boundary: stops when next > endDate ✓
+            
+            NOTIFICATION & EVENT SYSTEM VERIFIED:
+            - Notification created for assignee with type='task_new', icon='🔁'
+            - Event created with type='task_new', isRecurringSpawn=true
+            - Notification routing metadata correct (entityType='task', entityId=newTaskId)
+            
+            TIME TRACKING VERIFIED:
+            - startedAt: set when task is started
+            - completedAt: set when task is completed
+            - durationMin: calculated from startedAt (or createdAt if not started) to completedAt
+            - durationMin can be 0 for very fast completions (< 1 minute)
+            
+            NO CRITICAL ISSUES FOUND. Advanced Tasks - Recurring Tasks Auto-Spawn (Module D) is production-ready.
+            All 9 test scenarios passed successfully (100% pass rate). All recurrence types working correctly.
+            Time tracking integrated. Notification and event systems working. Ready for production use.
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      🎉 ADVANCED TASKS - RECURRING TASKS AUTO-SPAWN (MODULE D) TESTING COMPLETE - ALL TESTS PASSED (9/9)
+      
+      Tested all NEW Recurring Tasks Auto-Spawn endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ TEST 1: Create task with recurrence (weekly, every 1) - PASSED
+         - Task created with recurrence object preserved
+         - Task ID: dc01f9f4-84c0-4266-949f-00ff097721af
+      
+      ✅ TEST 2: Admin-complete recurring task → next instance auto-created - PASSED
+         - Original due date: 2026-05-25
+         - Spawned task ID: 0acf8986-8887-4946-a5af-742657503cc7
+         - Spawned task due date: 2026-06-01 (7 days later)
+         - All properties verified: status='pending', progress=0, recurrence preserved
+         - Notification created with icon '🔁'
+      
+      ✅ TEST 3: Daily recurrence (interval=2) - PASSED
+         - Due date: 2026-06-01 → 2026-06-03 (2 days later)
+      
+      ✅ TEST 4: Monthly recurrence - PASSED
+         - Due date: 2026-01-15 → 2026-02-15 (1 month later)
+      
+      ✅ TEST 5: Recurrence with endDate boundary - PASSED
+         - endDate: 2026-05-23, next would be 2026-05-29
+         - Correctly stopped spawning (spawnedTaskId=null)
+      
+      ✅ TEST 6: Non-recurring task (regression) - PASSED
+         - No recurrence → no spawn (spawnedTaskId=null)
+      
+      ✅ TEST 7: Approve via review → also spawns - PASSED
+         - Review approve spawned new task
+         - Spawned task ID: fa4d0cf0-cfc3-4b6d-90f2-2dcf0e66d1bf
+      
+      ✅ TEST 8: Reject via review → does NOT spawn - PASSED
+         - Review reject correctly did not spawn (spawnedTaskId=null)
+      
+      ✅ TEST 9: Time tracking fields - PASSED
+         - startedAt, completedAt, durationMin all populated correctly
+         - durationMin: 0 (fast completion < 1 minute)
+      
+      CRITICAL VERIFICATIONS:
+      ✅ All recurrence types working (daily, weekly, monthly)
+      ✅ Interval calculations correct
+      ✅ endDate boundary respected
+      ✅ Admin-complete spawns next instance
+      ✅ Review approve spawns next instance
+      ✅ Review reject does NOT spawn
+      ✅ Time tracking integrated
+      ✅ Notifications created with icon '🔁'
+      ✅ Events created with isRecurringSpawn=true
+      ✅ All task properties carried forward
+      ✅ Task state reset correctly
+      
+      DATA INTEGRITY:
+      - All endpoints use UUIDs
+      - All timestamps ISO format
+      - All Arabic text correct
+      - Recurrence object preserved
+      - Time tracking accurate
+      
+      NO CRITICAL ISSUES FOUND. Advanced Tasks - Recurring Tasks Auto-Spawn (Module D) is production-ready.
+      All 9 test scenarios passed (100% pass rate). Ready for production use.
