@@ -4218,6 +4218,123 @@ async function handle(request, params) {
     return ok(product);
   }
 
+  // ============ SMART PARTS SEARCH (نظام البحث الذكي مع التوافقية) ============
+  // GET /api/products/search?q=...&device=...&origin=...&category=...&type=...&brand=...&inStock=true
+  if (path === 'products/search' && method === 'GET') {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+    const device = (url.searchParams.get('device') || '').trim().toLowerCase();
+    const origin = url.searchParams.get('origin') || '';
+    const category = url.searchParams.get('category') || '';
+    const productType = url.searchParams.get('type') || '';
+    const brand = (url.searchParams.get('brand') || '').toLowerCase();
+    const inStockOnly = url.searchParams.get('inStock') === 'true';
+    const minPrice = Number(url.searchParams.get('minPrice') || 0);
+    const maxPrice = Number(url.searchParams.get('maxPrice') || 0);
+
+    const all = await db.collection('products').find({}).toArray();
+    const norm = (s) => String(s || '').toLowerCase();
+    const includesText = (txt) => !q || norm(txt).includes(q);
+
+    const matchesFilters = (p) => {
+      if (origin && p.origin !== origin) return false;
+      if (category && p.category !== category) return false;
+      if (productType && p.productType !== productType) return false;
+      if (brand && norm(p.brand) !== brand) return false;
+      if (inStockOnly && Number(p.stock || 0) <= 0) return false;
+      if (minPrice && Number(p.price || 0) < minPrice) return false;
+      if (maxPrice && Number(p.price || 0) > maxPrice) return false;
+      return true;
+    };
+
+    // Helper: does product match the device exactly?
+    const matchesDeviceExact = (p) => {
+      if (!device) return true;
+      const compat = (p.compatibleDevices || []).map(norm);
+      const model = norm(p.model);
+      const name = norm(p.name);
+      return compat.some(c => c === device) || model === device || name.includes(device);
+    };
+
+    // Helper: similar device (partial match)
+    const matchesDevicePartial = (p) => {
+      if (!device) return false;
+      const compat = (p.compatibleDevices || []).map(norm);
+      const model = norm(p.model);
+      const name = norm(p.name);
+      // Strip trailing words to find related models, e.g. "iphone 14 pro max" → "iphone 14 pro"
+      const tokens = device.split(/\s+/);
+      for (let i = tokens.length - 1; i >= 1; i--) {
+        const stem = tokens.slice(0, i).join(' ');
+        if (compat.some(c => c.includes(stem)) || model.includes(stem) || name.includes(stem)) return true;
+      }
+      // Fallback: any device token match
+      for (const t of tokens) {
+        if (t.length >= 3 && (compat.some(c => c.includes(t)) || model.includes(t) || name.includes(t))) return true;
+      }
+      return false;
+    };
+
+    const matchesText = (p) => {
+      if (!q) return true;
+      return includesText(p.name) || includesText(p.sku) || includesText(p.barcode) ||
+             includesText(p.brand) || includesText(p.model) || includesText(p.color) ||
+             (p.compatibleDevices || []).some(d => includesText(d));
+    };
+
+    const exact = [];
+    const compatible = [];
+    const alternatives = [];
+
+    for (const p of all) {
+      delete p._id;
+      if (!matchesFilters(p)) continue;
+      if (!matchesText(p)) continue;
+      if (matchesDeviceExact(p)) {
+        exact.push(p);
+      } else if (matchesDevicePartial(p)) {
+        compatible.push(p);
+      } else if (q && (includesText(p.productType) || includesText(p.category))) {
+        alternatives.push(p);
+      }
+    }
+
+    return ok({
+      exact: exact.slice(0, 200),
+      compatible: compatible.slice(0, 50),
+      alternatives: alternatives.slice(0, 50),
+      total: exact.length + compatible.length + alternatives.length,
+      query: { q, device, origin, category, productType, brand, inStockOnly, minPrice, maxPrice },
+    });
+  }
+
+  // GET /api/products/devices — list all unique compatible devices
+  if (path === 'products/devices' && method === 'GET') {
+    const products = await db.collection('products').find({}).toArray();
+    const set = new Set();
+    for (const p of products) {
+      (p.compatibleDevices || []).forEach(d => d && set.add(d));
+      if (p.brand && p.model) set.add(`${p.brand} ${p.model}`);
+    }
+    return ok(Array.from(set).sort());
+  }
+
+  // GET /api/products/:id/compatible — find products compatible with same devices
+  if (path.match(/^products\/[^/]+\/compatible$/) && method === 'GET') {
+    const id = path.split('/')[1];
+    const target = await db.collection('products').findOne({ id });
+    if (!target) return err('المنتج غير موجود', 404);
+    const devices = new Set((target.compatibleDevices || []).map(s => String(s).toLowerCase()));
+    if (target.model) devices.add(String(target.model).toLowerCase());
+    const all = await db.collection('products').find({ id: { $ne: id } }).toArray();
+    const result = all.filter(p => {
+      const pd = (p.compatibleDevices || []).map(s => String(s).toLowerCase());
+      if (p.model && devices.has(String(p.model).toLowerCase())) return true;
+      return pd.some(d => devices.has(d));
+    }).map(p => { delete p._id; return p; });
+    return ok({ target: (() => { delete target._id; return target; })(), compatible: result });
+  }
+
   if (path === 'noc/status' && method === 'GET') {
     const zones = await db.collection('zones').find({}).toArray();
     const subscribers = await db.collection('subscribers').countDocuments({ status: 'active' });
