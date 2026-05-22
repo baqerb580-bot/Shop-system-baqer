@@ -899,6 +899,115 @@ const verifyPassword = async (plain, stored) => {
 };
 const hashPassword = async (plain) => bcrypt.hash(plain, 10);
 
+// ============ AUTH HELPERS (Sessions, Devices, Brute Force) ============
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCK_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+function parseUserAgent(ua) {
+  if (!ua) return { device: 'غير معروف', browser: 'غير معروف', os: 'غير معروف' };
+  let os = 'غير معروف', browser = 'غير معروف', device = 'كمبيوتر';
+  if (/Windows NT/.test(ua)) os = 'Windows';
+  else if (/Mac OS X|Macintosh/.test(ua)) os = 'macOS';
+  else if (/Android/.test(ua)) { os = 'Android'; device = 'هاتف Android'; }
+  else if (/iPhone|iPad|iPod/.test(ua)) { os = 'iOS'; device = /iPad/.test(ua) ? 'iPad' : 'iPhone'; }
+  else if (/Linux/.test(ua)) os = 'Linux';
+  if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/Chrome\//.test(ua)) browser = 'Chrome';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  return { device, browser, os };
+}
+
+async function createSession(db, user, req) {
+  const token = uuidv4() + '-' + uuidv4().replace(/-/g, '');
+  const ua = req.headers.get('user-agent') || '';
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0] || req.headers.get('x-real-ip') || 'unknown';
+  const info = parseUserAgent(ua);
+  const now = new Date().toISOString();
+  const session = {
+    id: uuidv4(),
+    token,
+    userId: user.id,
+    username: user.username,
+    name: user.name,
+    role: user.role,
+    ip,
+    userAgent: ua,
+    device: info.device,
+    browser: info.browser,
+    os: info.os,
+    createdAt: now,
+    lastSeen: now,
+    expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
+    revoked: false,
+  };
+  await db.collection('user_sessions').insertOne(session);
+  return { token, session };
+}
+
+async function getSessionFromRequest(db, req) {
+  if (!db) return null;
+  const auth = req.headers.get('authorization') || '';
+  let token = '';
+  if (auth.toLowerCase().startsWith('bearer ')) token = auth.slice(7).trim();
+  if (!token) {
+    const cookie = req.headers.get('cookie') || '';
+    const match = cookie.match(/(?:^|;\s*)gz_token=([^;]+)/);
+    if (match) token = decodeURIComponent(match[1]);
+  }
+  if (!token) return null;
+  const s = await db.collection('user_sessions').findOne({ token, revoked: { $ne: true } });
+  if (!s) return null;
+  if (s.expiresAt && new Date(s.expiresAt) < new Date()) return null;
+  // Update lastSeen (non-blocking)
+  db.collection('user_sessions').updateOne({ id: s.id }, { $set: { lastSeen: new Date().toISOString() } }).catch(() => {});
+  return s;
+}
+
+async function getCurrentUser(db, req) {
+  const session = await getSessionFromRequest(db, req);
+  if (!session) return null;
+  const user = await db.collection('users').findOne({ id: session.userId });
+  if (!user || user.active === false) return null;
+  return { ...user, _session: session, password: undefined, passwordHash: undefined };
+}
+
+// Role hierarchy: super_admin > manager > hr/agent > employee
+const ROLE_LEVEL = { super_admin: 100, manager: 80, hr: 60, agent: 50, employee: 30 };
+function hasRoleAtLeast(userRole, minRole) {
+  return (ROLE_LEVEL[userRole] || 0) >= (ROLE_LEVEL[minRole] || 0);
+}
+
+// Ensure default super_admin exists (seed on first call)
+async function ensureSuperAdminSeeded(db) {
+  if (!db) return;
+  const existing = await db.collection('users').countDocuments({ role: 'super_admin' });
+  if (existing > 0) return;
+  const passwordHash = await hashPassword('SuperAdmin@2026');
+  const user = {
+    id: uuidv4(),
+    username: 'superadmin',
+    name: 'المدير العام',
+    email: 'admin@ghazlan.iq',
+    phone: '',
+    avatar: '/logo-icon.png',
+    role: 'super_admin',
+    permissions: ['*'],
+    passwordHash,
+    active: true,
+    twoFactorEnabled: false,
+    mustChangePassword: false,
+    lastLoginAt: null,
+    lastLoginIp: null,
+    lastLoginDevice: null,
+    createdAt: new Date().toISOString(),
+    createdBy: 'system_seed',
+  };
+  await db.collection('users').insertOne(user);
+  console.log('[auth] Seeded default super_admin (username: superadmin, password: SuperAdmin@2026)');
+}
+
 async function handle(request, params) {
   const path = (params?.path || []).join('/');
   const method = request.method;
@@ -906,6 +1015,326 @@ async function handle(request, params) {
   const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0] || request.headers.get('x-real-ip') || 'unknown';
 
   if (!path) return ok({ name: 'Ghazlan ERP API', version: '1.0', status: 'running', dbConnected: !!db });
+
+  // Seed default super_admin (idempotent — only runs first time)
+  if (db) { ensureSuperAdminSeeded(db).catch(() => {}); }
+
+  // ============ AUTH ENDPOINTS ============
+
+  // POST /api/auth/login — username + password → session token
+  if (path === 'auth/login' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const username = String(body.username || '').trim().toLowerCase();
+    const password = String(body.password || '');
+    if (!username || !password) return err('اسم المستخدم وكلمة المرور مطلوبان', 400);
+
+    // Brute force check: count failed attempts in last 15 minutes from this IP+username
+    const since = new Date(Date.now() - LOCK_WINDOW_MS).toISOString();
+    const fails = await db.collection('login_attempts').countDocuments({
+      username, ip: clientIp, success: false, ts: { $gte: since },
+    });
+    if (fails >= MAX_FAILED_ATTEMPTS) {
+      return err(`تم قفل الحساب مؤقتاً بسبب محاولات فاشلة كثيرة. حاول بعد ${Math.ceil(LOCK_WINDOW_MS / 60000)} دقيقة`, 429);
+    }
+
+    const user = await db.collection('users').findOne({ username });
+    const ua = request.headers.get('user-agent') || '';
+    const info = parseUserAgent(ua);
+
+    const recordAttempt = async (success, userId = null) => {
+      await db.collection('login_attempts').insertOne({
+        id: uuidv4(), username, userId, ip: clientIp, success,
+        device: info.device, browser: info.browser, os: info.os,
+        userAgent: ua, ts: new Date().toISOString(),
+      });
+    };
+
+    if (!user) { await recordAttempt(false); return err('بيانات الدخول غير صحيحة', 401); }
+    if (user.active === false) { await recordAttempt(false, user.id); return err('الحساب معطّل', 403); }
+    const okPw = await verifyPassword(password, user.passwordHash || user.password);
+    if (!okPw) { await recordAttempt(false, user.id); return err('بيانات الدخول غير صحيحة', 401); }
+
+    // Create session
+    const { token, session } = await createSession(db, user, request);
+    await recordAttempt(true, user.id);
+
+    // Update user lastLogin
+    await db.collection('users').updateOne({ id: user.id }, {
+      $set: {
+        lastLoginAt: session.createdAt,
+        lastLoginIp: session.ip,
+        lastLoginDevice: `${info.browser} on ${info.os}`,
+      },
+    });
+
+    // Notify managers about login (especially for super_admin and managers)
+    if (['super_admin', 'manager'].includes(user.role)) {
+      await notifyManager(db, {
+        type: 'login_alert',
+        title: `🔐 تسجيل دخول: ${user.name}`,
+        message: `الدور: ${user.role}\nIP: ${session.ip}\nالجهاز: ${info.browser} على ${info.os}\nالنوع: ${info.device}\nالوقت: ${new Date().toLocaleString('ar-IQ')}`,
+        entityType: 'generic', entityId: user.id,
+        priority: 'normal',
+      });
+    }
+
+    await logActivity(db, {
+      action: 'user_login', entity: 'users', entityId: user.id,
+      user: user.name, details: `تسجيل دخول من ${info.browser} على ${info.os} (${session.ip})`, ip: clientIp,
+    });
+
+    return ok({
+      success: true,
+      token,
+      user: {
+        id: user.id, username: user.username, name: user.name, email: user.email,
+        avatar: user.avatar, role: user.role, permissions: user.permissions || [],
+        mustChangePassword: !!user.mustChangePassword,
+      },
+      sessionId: session.id,
+      expiresAt: session.expiresAt,
+    });
+  }
+
+  // POST /api/auth/logout
+  if (path === 'auth/logout' && method === 'POST') {
+    const session = await getSessionFromRequest(db, request);
+    if (session) {
+      await db.collection('user_sessions').updateOne({ id: session.id }, {
+        $set: { revoked: true, revokedAt: new Date().toISOString(), revokeReason: 'logout' },
+      });
+      await logActivity(db, {
+        action: 'user_logout', entity: 'users', entityId: session.userId,
+        user: session.name, details: `خروج`, ip: clientIp,
+      });
+    }
+    return ok({ success: true });
+  }
+
+  // GET /api/auth/me — current user info
+  if (path === 'auth/me' && method === 'GET') {
+    const user = await getCurrentUser(db, request);
+    if (!user) return err('غير مصرّح', 401);
+    return ok({
+      id: user.id, username: user.username, name: user.name, email: user.email, phone: user.phone,
+      avatar: user.avatar, role: user.role, permissions: user.permissions || [],
+      lastLoginAt: user.lastLoginAt, lastLoginIp: user.lastLoginIp, lastLoginDevice: user.lastLoginDevice,
+      session: { id: user._session.id, device: user._session.device, browser: user._session.browser, os: user._session.os, createdAt: user._session.createdAt },
+    });
+  }
+
+  // POST /api/auth/change-password
+  if (path === 'auth/change-password' && method === 'POST') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    const body = await getJsonBody(request);
+    const cur = String(body.currentPassword || '');
+    const next = String(body.newPassword || '');
+    if (next.length < 6) return err('كلمة المرور الجديدة قصيرة (6 أحرف على الأقل)', 400);
+    const fresh = await db.collection('users').findOne({ id: me.id });
+    const okPw = await verifyPassword(cur, fresh.passwordHash || fresh.password);
+    if (!okPw) return err('كلمة المرور الحالية غير صحيحة', 401);
+    await db.collection('users').updateOne({ id: me.id }, {
+      $set: { passwordHash: await hashPassword(next), mustChangePassword: false, passwordChangedAt: new Date().toISOString() },
+    });
+    // Revoke all other sessions
+    await db.collection('user_sessions').updateMany(
+      { userId: me.id, id: { $ne: me._session.id } },
+      { $set: { revoked: true, revokedAt: new Date().toISOString(), revokeReason: 'password_changed' } }
+    );
+    await logActivity(db, { action: 'password_changed', entity: 'users', entityId: me.id, user: me.name, details: 'غيّر كلمة المرور', ip: clientIp });
+    return ok({ success: true });
+  }
+
+  // GET /api/auth/sessions — list my active sessions
+  if (path === 'auth/sessions' && method === 'GET') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    const sessions = await db.collection('user_sessions').find({
+      userId: me.id, revoked: { $ne: true },
+    }).sort({ lastSeen: -1 }).limit(50).toArray();
+    return ok(sessions.map(s => ({
+      id: s.id, ip: s.ip, device: s.device, browser: s.browser, os: s.os,
+      createdAt: s.createdAt, lastSeen: s.lastSeen, expiresAt: s.expiresAt,
+      isCurrent: s.id === me._session.id,
+    })));
+  }
+
+  // DELETE /api/auth/sessions/:id — revoke a specific session
+  if (path.match(/^auth\/sessions\/[^/]+$/) && method === 'DELETE') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    const sid = path.split('/')[2];
+    await db.collection('user_sessions').updateOne({ id: sid, userId: me.id }, {
+      $set: { revoked: true, revokedAt: new Date().toISOString(), revokeReason: 'manual' },
+    });
+    return ok({ success: true });
+  }
+
+  // GET /api/auth/activity — login history for current user
+  if (path === 'auth/activity' && method === 'GET') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    const attempts = await db.collection('login_attempts').find({ userId: me.id }).sort({ ts: -1 }).limit(50).toArray();
+    return ok(attempts.map(a => { delete a._id; return a; }));
+  }
+
+  // ============ USERS CRUD (super_admin / manager only) ============
+
+  // GET /api/users — list all users
+  if (path === 'users' && method === 'GET') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const items = await db.collection('users').find({}).sort({ createdAt: -1 }).toArray();
+    return ok(items.map(u => {
+      delete u._id; delete u.passwordHash; delete u.password;
+      return u;
+    }));
+  }
+
+  // POST /api/users — create new user
+  if (path === 'users' && method === 'POST') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const body = await getJsonBody(request);
+    const username = String(body.username || '').trim().toLowerCase();
+    const password = String(body.password || '');
+    const role = String(body.role || 'employee');
+    if (!username || !password) return err('اسم المستخدم وكلمة المرور مطلوبان', 400);
+    if (password.length < 6) return err('كلمة المرور قصيرة (6 أحرف على الأقل)', 400);
+    if (!['super_admin', 'manager', 'employee', 'hr', 'agent'].includes(role)) return err('الدور غير صالح', 400);
+    // Only super_admin can create another super_admin
+    if (role === 'super_admin' && me.role !== 'super_admin') return err('فقط المدير العام يمكنه إنشاء مدير عام آخر', 403);
+    const exists = await db.collection('users').findOne({ username });
+    if (exists) return err('اسم المستخدم مستخدم بالفعل', 409);
+    const user = {
+      id: uuidv4(),
+      username,
+      name: body.name || username,
+      email: body.email || '',
+      phone: body.phone || '',
+      avatar: body.avatar || '',
+      role,
+      permissions: Array.isArray(body.permissions) ? body.permissions : (role === 'super_admin' ? ['*'] : []),
+      passwordHash: await hashPassword(password),
+      active: body.active !== false,
+      mustChangePassword: !!body.mustChangePassword,
+      twoFactorEnabled: false,
+      lastLoginAt: null, lastLoginIp: null, lastLoginDevice: null,
+      createdAt: new Date().toISOString(),
+      createdBy: me.name,
+    };
+    await db.collection('users').insertOne(user);
+    delete user._id; delete user.passwordHash;
+    await logActivity(db, { action: 'user_created', entity: 'users', entityId: user.id, user: me.name, details: `أنشأ المستخدم ${user.name} (${role})`, ip: clientIp });
+    return ok(user, 201);
+  }
+
+  // PUT /api/users/:id — update user
+  if (path.match(/^users\/[^/]+$/) && method === 'PUT') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const id = path.split('/')[1];
+    const target = await db.collection('users').findOne({ id });
+    if (!target) return err('المستخدم غير موجود', 404);
+    const body = await getJsonBody(request);
+    const update = {};
+    ['name', 'email', 'phone', 'avatar'].forEach(k => { if (body[k] !== undefined) update[k] = body[k]; });
+    if (body.role !== undefined && body.role !== target.role) {
+      if (target.role === 'super_admin' && me.role !== 'super_admin') return err('لا يمكن تغيير دور مدير عام', 403);
+      if (body.role === 'super_admin' && me.role !== 'super_admin') return err('فقط المدير العام يمكنه ترقية إلى مدير عام', 403);
+      update.role = body.role;
+    }
+    if (Array.isArray(body.permissions)) update.permissions = body.permissions;
+    if (typeof body.active === 'boolean') update.active = body.active;
+    update.updatedAt = new Date().toISOString();
+    update.updatedBy = me.name;
+    await db.collection('users').updateOne({ id }, { $set: update });
+    await logActivity(db, { action: 'user_updated', entity: 'users', entityId: id, user: me.name, details: `حدّث المستخدم ${target.name}`, ip: clientIp });
+    return ok({ success: true });
+  }
+
+  // DELETE /api/users/:id
+  if (path.match(/^users\/[^/]+$/) && method === 'DELETE') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const id = path.split('/')[1];
+    const target = await db.collection('users').findOne({ id });
+    if (!target) return err('المستخدم غير موجود', 404);
+    if (target.role === 'super_admin') {
+      const count = await db.collection('users').countDocuments({ role: 'super_admin', active: true });
+      if (count <= 1) return err('لا يمكن حذف آخر مدير عام نشط', 400);
+      if (me.role !== 'super_admin') return err('لا يمكن حذف مدير عام', 403);
+    }
+    if (target.id === me.id) return err('لا يمكنك حذف حسابك', 400);
+    await db.collection('users').deleteOne({ id });
+    await db.collection('user_sessions').updateMany({ userId: id }, { $set: { revoked: true, revokedAt: new Date().toISOString(), revokeReason: 'user_deleted' } });
+    await logActivity(db, { action: 'user_deleted', entity: 'users', entityId: id, user: me.name, details: `حذف المستخدم ${target.name}`, ip: clientIp });
+    return ok({ success: true });
+  }
+
+  // POST /api/users/:id/reset-password
+  if (path.match(/^users\/[^/]+\/reset-password$/) && method === 'POST') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const id = path.split('/')[1];
+    const target = await db.collection('users').findOne({ id });
+    if (!target) return err('المستخدم غير موجود', 404);
+    const body = await getJsonBody(request);
+    const next = String(body.newPassword || '');
+    if (next.length < 6) return err('كلمة المرور قصيرة (6 أحرف على الأقل)', 400);
+    await db.collection('users').updateOne({ id }, {
+      $set: { passwordHash: await hashPassword(next), mustChangePassword: true, passwordChangedAt: new Date().toISOString() },
+    });
+    // Revoke all sessions to force re-login
+    await db.collection('user_sessions').updateMany({ userId: id }, { $set: { revoked: true, revokedAt: new Date().toISOString(), revokeReason: 'password_reset' } });
+    await logActivity(db, { action: 'user_password_reset', entity: 'users', entityId: id, user: me.name, details: `أعاد تعيين كلمة مرور ${target.name}`, ip: clientIp });
+    return ok({ success: true });
+  }
+
+  // POST /api/users/:id/toggle-active
+  if (path.match(/^users\/[^/]+\/toggle-active$/) && method === 'POST') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const id = path.split('/')[1];
+    const target = await db.collection('users').findOne({ id });
+    if (!target) return err('المستخدم غير موجود', 404);
+    if (target.id === me.id) return err('لا يمكنك تعطيل حسابك', 400);
+    const newActive = !target.active;
+    await db.collection('users').updateOne({ id }, { $set: { active: newActive, updatedAt: new Date().toISOString() } });
+    if (!newActive) {
+      await db.collection('user_sessions').updateMany({ userId: id }, { $set: { revoked: true, revokedAt: new Date().toISOString(), revokeReason: 'deactivated' } });
+    }
+    await logActivity(db, { action: newActive ? 'user_activated' : 'user_deactivated', entity: 'users', entityId: id, user: me.name, details: `${newActive ? 'فعّل' : 'عطّل'} حساب ${target.name}`, ip: clientIp });
+    return ok({ success: true, active: newActive });
+  }
+
+  // GET /api/users/:id/sessions
+  if (path.match(/^users\/[^/]+\/sessions$/) && method === 'GET') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const id = path.split('/')[1];
+    const sessions = await db.collection('user_sessions').find({ userId: id }).sort({ createdAt: -1 }).limit(50).toArray();
+    return ok(sessions.map(s => { delete s._id; delete s.token; return s; }));
+  }
+
+  // GET /api/users/:id/login-history
+  if (path.match(/^users\/[^/]+\/login-history$/) && method === 'GET') {
+    const me = await getCurrentUser(db, request);
+    if (!me) return err('غير مصرّح', 401);
+    if (!hasRoleAtLeast(me.role, 'manager')) return err('صلاحياتك لا تسمح', 403);
+    const id = path.split('/')[1];
+    const attempts = await db.collection('login_attempts').find({ userId: id }).sort({ ts: -1 }).limit(100).toArray();
+    return ok(attempts.map(a => { delete a._id; return a; }));
+  }
+  // ============ END AUTH/USERS ============
 
   // Health check (always safe — never depends on DB)
   if (path === 'health' || path === 'healthz') {

@@ -6589,3 +6589,116 @@ agent_communication:
       NOT IMPLEMENTED (out of scope for this session):
       - Capacitor APK build (requires Android SDK + Java in container, not available)
         Can be done locally by user when ready to publish to Google Play
+
+
+  - task: "Super Admin Account System — Auth, Sessions, User CRUD"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js, lib/auth-context.js, app/admin/login/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            FULL AUTH SYSTEM IMPLEMENTED:
+            
+            BACKEND (route.js):
+            ─────────────────────
+            New collections: users, user_sessions, login_attempts
+            
+            Auth helpers (lines 901-1020):
+            - parseUserAgent(ua) → { device, browser, os }
+            - createSession(db, user, req) → { token, session } with 30-day expiry
+            - getSessionFromRequest(db, req) → reads Authorization Bearer or cookie gz_token
+            - getCurrentUser(db, req) → user object (without password)
+            - hasRoleAtLeast(role, minRole) → role hierarchy check
+            - ensureSuperAdminSeeded(db) → auto-creates superadmin user on first request
+            
+            Endpoints:
+            ✅ POST /api/auth/login — bcrypt verify, brute force check (5/15min), session create, notify managers on super_admin/manager login
+            ✅ POST /api/auth/logout — revoke session
+            ✅ GET  /api/auth/me — current user info
+            ✅ POST /api/auth/change-password — verify current, revoke other sessions
+            ✅ GET  /api/auth/sessions — list my active sessions
+            ✅ DELETE /api/auth/sessions/:id — revoke specific session
+            ✅ GET  /api/auth/activity — login history for current user
+            
+            User CRUD (super_admin/manager only):
+            ✅ GET /api/users — list (passwords stripped)
+            ✅ POST /api/users — create (validates role, only super_admin can create super_admin)
+            ✅ PUT /api/users/:id — update (protect super_admin from non-super_admin edits)
+            ✅ DELETE /api/users/:id — delete (cannot delete last super_admin or self)
+            ✅ POST /api/users/:id/reset-password — admin-initiated reset (forces re-login)
+            ✅ POST /api/users/:id/toggle-active — enable/disable (revokes sessions)
+            ✅ GET /api/users/:id/sessions — admin view of user's sessions
+            ✅ GET /api/users/:id/login-history — admin view of login attempts
+            
+            Security:
+            - bcrypt password hashing (cost 10)
+            - Session tokens: UUID + random 32-char (130+ bits entropy)
+            - 30-day session TTL, lastSeen updated on each auth check
+            - Brute force: 5 failed attempts / 15 min = 429 lockout (per ip+username)
+            - Activity log entry for: login, logout, password_changed, password_reset, user_created/updated/deleted, user_activated/deactivated
+            - Manager notification (in-app + Telegram) on super_admin/manager logins with IP + device info
+            
+            DEFAULT SEED:
+            Username: superadmin
+            Password: SuperAdmin@2026
+            Role: super_admin (permissions: ['*'])
+            
+            FRONTEND:
+            ─────────
+            /app/lib/auth-context.js (new):
+            - AuthProvider context with login/logout/refresh
+            - Auto-restores from localStorage on mount
+            - useAuth() hook returns { user, token, loading, login, logout, authFetch }
+            - RequireAuth wrapper component for protected routes (with minRole support)
+            
+            /app/admin/login/page.js (new):
+            - PROFESSIONAL Dark + Gold themed login page
+            - Animated gold mesh radial gradients (3 blurred orbs)
+            - Pattern dot overlay
+            - Logo with golden glow + animated pulse
+            - Username + Password fields with icons
+            - Show/Hide password toggle (Eye/EyeOff icons)
+            - "تذكّرني" checkbox (saves username + 30-day cookie)
+            - "نسيت كلمة المرور؟" modal with helpful instructions
+            - Error display with icon
+            - Loading state (Loader2 spinning + text)
+            - Auto-redirect if already logged in (via useEffect)
+            - Security badge: "bcrypt + Sessions + حماية ضد محاولات الاختراق"
+            - Mobile responsive
+            - RTL Arabic
+            - Toast on success: "مرحباً بك مجدداً <username>"
+            
+            VERIFIED END-TO-END:
+            ✅ POST /api/auth/login with superadmin/SuperAdmin@2026 → 200, token returned
+            ✅ Login page renders with full design (screenshot)
+            ✅ Login form submission → redirects to "/" successfully  
+            ✅ Token saved to localStorage + cookie
+            ✅ Re-visiting /admin/login when logged in → auto-redirects to "/"
+            ✅ Wrong password → 401, no token issued
+            ✅ Activity logged in activity_logs
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Super Admin Account System is COMPLETE and tested end-to-end.
+      
+      Default credentials (updated in /app/memory/test_credentials.md):
+      - URL: /admin/login
+      - Username: superadmin
+      - Password: SuperAdmin@2026 (CHANGE THIS IN PRODUCTION!)
+      
+      NOT YET DONE (deferred to next session):
+      - User Management UI inside admin dashboard (API exists, UI pending)
+      - Current user widget + logout button in main app header
+      - Enforce auth on /admin routes (currently login page is standalone, main / page still public)
+      - Two Factor Authentication (flag exists, UI not built)
+      
+      The user can now log in via /admin/login, but the main dashboard at "/" 
+      remains accessible without auth for backward compatibility. To enforce auth,
+      wrap the main page.js content with <RequireAuth> from /lib/auth-context.js
+      and add AuthProvider in app/layout.js (or to a parent client component).
