@@ -69,6 +69,30 @@ const nextConfig = {
           { key: 'Access-Control-Max-Age', value: '86400' },
         ],
       },
+      // Service Worker: must not be cached aggressively and must be served at root scope
+      {
+        source: '/sw.js',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=0, must-revalidate' },
+          { key: 'Service-Worker-Allowed', value: '/' },
+          { key: 'Content-Type', value: 'application/javascript; charset=utf-8' },
+        ],
+      },
+      // Manifest: short cache
+      {
+        source: '/manifest.json',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=3600' },
+          { key: 'Content-Type', value: 'application/manifest+json; charset=utf-8' },
+        ],
+      },
+      // PWA icons: long cache (immutable filenames)
+      {
+        source: '/icons/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=604800' },
+        ],
+      },
       {
         source: '/(.*)',
         headers: [

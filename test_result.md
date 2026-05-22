@@ -6495,3 +6495,97 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+
+  - task: "PWA Setup — Full Progressive Web App support"
+    implemented: true
+    working: true
+    file: "public/manifest.json, public/sw.js, components/pwa-installer.js, app/layout.js, next.config.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            COMPLETE PWA IMPLEMENTATION:
+            
+            1) Icons generated (14 sizes) at /public/icons/:
+               icon-72/96/128/144/152/167/180/192/256/384/512.png
+               icon-maskable-512.png (with 80% safe zone for Android adaptive)
+               apple-touch-icon.png (180x180)
+               favicon-32.png
+               Built from /public/logo-icon.png using Pillow (centered on dark #0f0f19 bg)
+            
+            2) /public/manifest.json:
+               name: "مركز الغزلان ERP", short_name: "الغزلان"
+               display: "standalone" with override fullscreen/minimal-ui
+               theme_color: #d4af37 (gold), background_color: #0f0f19 (dark)
+               dir: rtl, lang: ar
+               12 icons including maskable
+               3 shortcuts: POS, Store, Employee
+               categories: business/productivity/finance
+            
+            3) /public/sw.js (Service Worker):
+               Cache strategies:
+               - API (/api/*): Network only (never cached)
+               - SSE streams: Network only
+               - Icons/logos/manifest: Cache First
+               - _next/static/*: Cache First (long lived)
+               - Images: Stale While Revalidate
+               - HTML/Documents: Network First with 3s fallback to cache
+               - Offline fallback: Custom HTML page with retry button
+               Push notification handler ready (for future Web Push)
+               Notification click → focus existing tab or open new
+               SKIP_WAITING message support for instant updates
+            
+            4) /app/components/pwa-installer.js:
+               - Auto-registers SW on mount
+               - Detects iOS (different install flow via Add to Home Screen)
+               - Listens for beforeinstallprompt event
+               - Smart Install Banner:
+                 * Shows 5-6s after load if not installed and not dismissed in last 24h
+                 * Mobile and desktop adaptive
+                 * Apple icon thumbnail
+                 * Gold theme matching brand
+               - iOS Guide Modal: 4-step instructions with icons (Share → Add to Home → Add)
+               - Dismiss saves timestamp to localStorage (24h cooldown, 7-day cooldown for iOS)
+            
+            5) /app/app/layout.js:
+               Added PWAInstaller component
+               metadata.manifest = '/manifest.json'
+               applicationName: "مركز الغزلان"
+               appleWebApp config: capable, statusBarStyle: black-translucent
+               icons: favicon + 192/512 + apple-touch-icon
+               openGraph for social sharing
+               viewport with themeColor #d4af37
+               Apple/Microsoft/Mobile PWA meta tags
+            
+            6) /app/next.config.js headers:
+               /sw.js → Cache-Control: must-revalidate, Service-Worker-Allowed: /
+               /manifest.json → Cache-Control: 1h, correct MIME type
+               /icons/* → Cache-Control: 7 days
+            
+            VERIFIED:
+            ✅ GET /manifest.json returns 200 application/manifest+json
+            ✅ GET /sw.js returns 200 application/javascript
+            ✅ All icon endpoints return 200
+            ✅ Service Worker registered and ACTIVATED at scope http://localhost:3000/
+            ✅ All PWA meta tags present (theme-color, apple-capable, viewport)
+            ✅ Page loads correctly with no regressions (dashboard shows real data)
+            ✅ Install banner ready (triggers on beforeinstallprompt or iOS detection)
+
+agent_communication:
+  - agent: "main"
+    message: |
+      PWA implementation complete and verified. 
+      - User can now install the platform as an app on:
+        * Android (Chrome/Edge): beforeinstallprompt → native install dialog
+        * iOS (Safari): Share button → Add to Home Screen (guided by iOS modal)
+        * Windows/Mac (Chrome/Edge): Install icon in address bar OR custom banner
+      - Service Worker provides offline support, faster loads, and image caching
+      - Push notifications infrastructure ready for future activation
+      
+      NOT IMPLEMENTED (out of scope for this session):
+      - Capacitor APK build (requires Android SDK + Java in container, not available)
+        Can be done locally by user when ready to publish to Google Play
