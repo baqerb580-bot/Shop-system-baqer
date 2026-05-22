@@ -5992,3 +5992,21 @@ agent_communication:
       
       NO CRITICAL ISSUES FOUND. Employee self-task creation endpoint is production-ready.
 
+
+
+  - task: "Employee 'Add Task' UI button + dialog (verified)"
+    implemented: true
+    working: true
+    file: "app/employee/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            VERIFIED via screenshots: Button "+ مهمة شخصية" appears at top-right of TasksSection.
+            Dialog opens correctly with all fields (title, description, priority, dueDate).
+            Form filled and submitted successfully - DB confirmed task created with 
+            taskType='self_created', status='in_progress'. Total 3 self-tasks now exist for amer.
+            UI flow verified end-to-end. Backend testing also passed 8/8 cases.
