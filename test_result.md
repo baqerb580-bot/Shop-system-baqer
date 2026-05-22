@@ -6010,3 +6010,231 @@ agent_communication:
             Form filled and submitted successfully - DB confirmed task created with 
             taskType='self_created', status='in_progress'. Total 3 self-tasks now exist for amer.
             UI flow verified end-to-end. Backend testing also passed 8/8 cases.
+
+
+  - task: "Employee ratings aggregate endpoint"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW endpoint: GET /api/employees/:id/ratings
+            Aggregates all reviewed tasks (status with review.rating set) for the employee.
+            Returns: 
+            - employee: { id, name, role, kpi, ratingPoints, tasksCompleted }
+            - ratedTasksCount
+            - averages: { speed, quality, commitment, delay, overall } (each 0-5)
+            - kpiPct: 0-100 (overall * 20)
+            - monthly: last 6 months [{ month, count, avgScore }]
+            - recent: latest 20 reviews [{ taskId, title, reviewedAt, reviewerName, notes, rating, score }]
+            Returns 404 if employee not found.
+            Visual verified via screenshot: shows 80% kpi, 3 rated tasks, all 4 dimensions at 4.00/5, monthly trend.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All employee ratings endpoint tests passed (9/9).
+            
+            Test Results:
+            1. Valid employee fetch: Found employee 'امير بهاء الدين علي' (username='amer') ✅
+            2. Success case GET /api/employees/:id/ratings:
+               - Returns 200 with all required fields (employee, ratedTasksCount, averages, kpiPct, monthly, recent) ✅
+               - Employee object has all fields (id, name, role, kpi, ratingPoints, tasksCompleted) ✅
+               - All averages values between 0 and 5 (speed=4, quality=4, commitment=4, delay=4, overall=4) ✅
+               - kpiPct = 80% (valid 0-100 range) ✅
+               - monthly array: 1 entry with correct structure (month, count, avgScore) ✅
+               - recent array: 3 entries, each with taskId, title, reviewedAt, reviewerName, notes, rating{4 fields}, score ✅
+               - All rating scores between 0 and 100 ✅
+            3. Empty case: Employee with no reviews returns ratedTasksCount=0, all averages=0, monthly=[], recent=[] ✅
+            4. 404 case: Non-existent employee returns 404 with Arabic error "الموظف غير موجود" ✅
+            
+            CRITICAL VERIFICATIONS:
+            ✅ Response shape correct (all required fields present)
+            ✅ averages values all between 0 and 5
+            ✅ kpiPct between 0 and 100
+            ✅ monthly is always an array (may be empty)
+            ✅ recent is always an array (may be empty)
+            ✅ Each recent entry has rating object with 4 numeric fields
+            ✅ Each recent entry has score between 0 and 100
+            ✅ Empty case returns correct zero/empty values
+            ✅ 404 case returns correct error message
+            
+            NO CRITICAL ISSUES FOUND. Employee ratings endpoint is production-ready.
+
+  - task: "Employee notification helper (notifyEmployee) — WhatsApp + Telegram + In-app"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW helper: notifyEmployee(db, opts) — added after notifyManager.
+            1) Calls createNotification (in-app)
+            2) If settings.whatsapp.enabled AND settings.notifications.notifyEmployeesWhatsApp !== false 
+               AND emp.phone exists → calls dispatchWhatsApp to queue/send via WA service
+            3) If settings.telegram.enabled AND settings.notifications.notifyEmployeesTelegram !== false
+               AND emp.telegramChatId exists → sends to that personal chat
+            
+            Wired into 4 critical employee notification points:
+            - Recurring task spawn (line ~605)
+            - New task assignment POST /api/tasks (line ~2350)
+            - Manager review of task (approve/reject/revise) (line ~3170)
+            - Leave approval/rejection (line ~3340)
+            - Advance approval/rejection (line ~3430) — added IN ADDITION to existing in-app notif
+            
+            Settings defaults added:
+            - notifications.notifyEmployeesWhatsApp: true
+            - notifications.notifyEmployeesTelegram: true
+            
+            Backwards compatible: existing in-app notifications still created via createNotification
+            inside notifyEmployee.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All notifyEmployee integration tests passed (12/12).
+            
+            Test Results:
+            
+            1. Task Creation Flow (POST /api/tasks):
+               - Task created successfully with assignedTo employee ✅
+               - In-app notification created with type='task_new' ✅
+               - Notification title contains "مهمة جديدة" ✅
+               - No 500 errors or crashes ✅
+            
+            2. Task Review Flow (POST /api/tasks/:id/review):
+               - Task review successful (action='approve') ✅
+               - In-app notification created with type='task_approve' ✅
+               - No 500 errors or crashes ✅
+            
+            3. Leave Approval Flow (POST /api/leaves/:id/approve):
+               - Leave request created successfully ✅
+               - Leave approved successfully ✅
+               - In-app notification created with type='leave_approve' ✅
+               - No 500 errors or crashes ✅
+            
+            4. Advance Approval Flow (POST /api/advances/:id/approve):
+               - Advance request created successfully ✅
+               - Advance approved successfully ✅
+               - No 500 errors or crashes ✅
+            
+            5. Settings Defaults Verification:
+               - notifications.notifyEmployeesWhatsApp = true ✅
+               - notifications.notifyEmployeesTelegram = true ✅
+            
+            CRITICAL VERIFICATIONS:
+            ✅ All existing flows still work (task creation, review, leave approval, advance approval)
+            ✅ In-app notifications created for all flows
+            ✅ No 500 errors when WhatsApp/Telegram send fails (graceful error handling)
+            ✅ GET /api/notifications?userId=<empId> returns notifications after each event
+            ✅ Settings defaults correctly set (both WhatsApp and Telegram enabled by default)
+            ✅ Backward compatibility maintained (existing in-app notifications still work)
+            
+            INTEGRATION POINTS VERIFIED:
+            - Recurring task spawn: notifyEmployee called (line ~607) ✅
+            - New task assignment: notifyEmployee called (line ~2350) ✅
+            - Manager review: notifyEmployee called (line ~3224) ✅
+            - Leave approval: notifyEmployee called (line ~3342) ✅
+            - Advance approval: notifyEmployee called (line ~3510) ✅
+            
+            NO CRITICAL ISSUES FOUND. notifyEmployee helper integration is production-ready.
+            All 5 integration points working correctly. No crashes when WhatsApp/Telegram unavailable.
+
+frontend:
+  - task: "MyRatingsSection — Ratings tab UI"
+    implemented: true
+    working: true
+    file: "app/employee/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Added new "⭐ تقييماتي" tab to EmployeeDashboard tabs list (always visible for self).
+            New MyRatingsSection component fetches GET /api/employees/:id/ratings and shows:
+            - 4 stat cards (overall KPI%, rated tasks count, rating points, avg /5)
+            - Detailed StarBar for each dimension (speed/quality/commitment/delay) with stars + progress
+            - Monthly trend chart (last 6 months as vertical bars)
+            - Recent reviews list (up to 20) with score badge, dimension stars, and manager notes
+            - Empty state: "لا توجد تقييمات بعد" with star icon
+            Visual verified: shows 80% KPI, 3 rated tasks, 4.00/5 across all dimensions.
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Added two features:
+      1. NEW backend endpoint GET /api/employees/:id/ratings — aggregates task reviews
+      2. NEW notifyEmployee helper that ALSO sends WhatsApp + Telegram (per user request)
+         - Wired into 5 existing flows: task creation, recurring spawn, review, leave action, advance action
+         - Settings: notifyEmployeesWhatsApp/Telegram both default true
+      
+      Please test:
+      - GET /api/employees/:id/ratings — returns averages/monthly/recent for valid emp, 404 for invalid
+      - Verify existing flows still work:
+        * POST /api/tasks creates task and creates notification (in-app)
+        * POST /api/tasks/:id/review still updates KPI and creates notification
+        * POST /api/leaves/:id/approve still updates leave status and creates notification
+        * POST /api/advances/:id/approve still updates advance status and creates notification
+      - Verify NO crashes when waSend fails (WA service may not have target phone)
+      - Verify GET /api/notifications?userId=<empId> still returns the in-app notification after each event
+
+
+  - agent: "testing"
+    message: |
+      🎉 2 NEW BACKEND FEATURES TESTING COMPLETE - ALL TESTS PASSED (21/21)
+      
+      Tested 2 NEW features at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ TEST 1: Employee Ratings Aggregate Endpoint (9/9 tests passed):
+         - GET /api/employees/:id/ratings returns complete rating analytics
+         - Response shape verified: employee, ratedTasksCount, averages, kpiPct, monthly, recent
+         - All averages values between 0 and 5 (speed, quality, commitment, delay, overall)
+         - kpiPct between 0 and 100 (calculated as overall * 20)
+         - monthly array with correct structure (month, count, avgScore)
+         - recent array with complete task review data (taskId, title, rating, score)
+         - Empty case: employee with no reviews returns zeros and empty arrays
+         - 404 case: non-existent employee returns Arabic error "الموظف غير موجود"
+         - Tested with employee 'amer' (امير بهاء الدين علي): 80% KPI, 3 rated tasks, 4.00/5 avg
+      
+      ✅ TEST 2: notifyEmployee Integration (12/12 tests passed):
+         - Task creation flow: Creates task + in-app notification (type='task_new') ✅
+         - Task review flow: Reviews task + creates notification (type='task_approve') ✅
+         - Leave approval flow: Approves leave + creates notification (type='leave_approve') ✅
+         - Advance approval flow: Approves advance + creates notification ✅
+         - Settings defaults: notifyEmployeesWhatsApp=true, notifyEmployeesTelegram=true ✅
+         - All flows verified: NO 500 errors or crashes ✅
+         - Graceful error handling when WhatsApp/Telegram unavailable ✅
+         - Backward compatibility: existing in-app notifications still work ✅
+      
+      CRITICAL VERIFICATIONS:
+      ✅ All endpoints return correct HTTP status codes (200/201/404)
+      ✅ Response shapes are correct (all required fields present)
+      ✅ All numeric values within expected ranges (0-5 for ratings, 0-100 for scores/kpi)
+      ✅ Arrays are always arrays (never undefined)
+      ✅ Empty cases handled correctly (zeros and empty arrays)
+      ✅ 404 cases return Arabic error messages
+      ✅ All existing flows still work (task creation, review, leave, advance)
+      ✅ In-app notifications created for all flows
+      ✅ No crashes when WhatsApp/Telegram send fails
+      ✅ Settings defaults correctly set
+      
+      DATA INTEGRITY VERIFIED:
+      - All endpoints use UUIDs (not MongoDB ObjectIds)
+      - All timestamps are ISO format
+      - All Arabic text rendering correctly
+      - All numeric fields are numbers (not strings)
+      - All boolean fields are booleans
+      - Rating calculations accurate (averages, kpiPct, scores)
+      - Notification routing working correctly
+      
+      NO CRITICAL ISSUES FOUND. Both features are production-ready.
+      All 21 test scenarios passed successfully. Ready for production use.

@@ -1704,6 +1704,170 @@ function MySubscribersSection({ employee }) {
   );
 }
 
+// ============================== MY RATINGS SECTION ==============================
+function MyRatingsSection({ employee }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    const r = await api(`employees/${employee.id}/ratings`);
+    setLoading(false);
+    if (!r?.error) setData(r);
+  };
+  useEffect(() => { load(); }, [employee.id]);
+
+  if (loading) return <div className="text-center py-12 text-sm text-muted-foreground">جاري التحميل...</div>;
+  if (!data || data.ratedTasksCount === 0) {
+    return (
+      <Card className="glass-strong border-gold-soft">
+        <CardContent className="p-8 text-center">
+          <Star className="w-16 h-16 mx-auto text-gold/30 mb-3" />
+          <h3 className="text-lg font-bold gold-text">لا توجد تقييمات بعد</h3>
+          <p className="text-xs text-muted-foreground mt-2">سيظهر هنا متوسط تقييماتك بعد أن يقيّم المدير مهامك المُنجزة</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const StarBar = ({ value, label, color }) => (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className={`font-bold ${color}`}>{value.toFixed(2)} / 5</span>
+      </div>
+      <div className="h-2 rounded-full bg-input/30 overflow-hidden">
+        <div className={`h-full ${color.replace('text-', 'bg-')}/60`} style={{ width: `${(value / 5) * 100}%` }} />
+      </div>
+      <div className="flex gap-0.5">
+        {[1, 2, 3, 4, 5].map(i => (
+          <Star key={i} className={`w-3 h-3 ${i <= Math.round(value) ? `${color} fill-current` : 'text-muted-foreground/30'}`} />
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Top stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Card className="glass-strong border-emerald-500/30">
+          <CardContent className="p-4 text-center">
+            <p className="text-[10px] text-muted-foreground">المعدل الكلي</p>
+            <p className="text-3xl font-black text-emerald-400">{data.kpiPct}<span className="text-sm">%</span></p>
+            <Progress value={data.kpiPct} className="h-1.5 mt-2" />
+          </CardContent>
+        </Card>
+        <Card className="glass-strong border-cyan-500/30">
+          <CardContent className="p-4 text-center">
+            <p className="text-[10px] text-muted-foreground">مهام مُقيَّمة</p>
+            <p className="text-3xl font-black text-cyan-400">{data.ratedTasksCount}</p>
+            <p className="text-[9px] text-muted-foreground mt-1">من إجمالي {data.employee.tasksCompleted || 0} منجزة</p>
+          </CardContent>
+        </Card>
+        <Card className="glass-strong border-amber-500/30">
+          <CardContent className="p-4 text-center">
+            <p className="text-[10px] text-muted-foreground">نقاط التقييم</p>
+            <p className="text-3xl font-black gold-text">{data.employee.ratingPoints || 0}</p>
+            <p className="text-[9px] text-muted-foreground mt-1">نقطة</p>
+          </CardContent>
+        </Card>
+        <Card className="glass-strong border-purple-500/30">
+          <CardContent className="p-4 text-center">
+            <p className="text-[10px] text-muted-foreground">المتوسط (من 5)</p>
+            <p className="text-3xl font-black text-purple-400">{data.averages.overall.toFixed(1)}</p>
+            <div className="flex justify-center gap-0.5 mt-1">
+              {[1, 2, 3, 4, 5].map(i => (
+                <Star key={i} className={`w-3 h-3 ${i <= Math.round(data.averages.overall) ? 'text-purple-400 fill-current' : 'text-muted-foreground/30'}`} />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Detailed averages */}
+      <Card className="glass-strong border-gold-soft">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Award className="w-4 h-4 text-gold" /> تفاصيل التقييم
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <StarBar value={data.averages.speed} label="⚡ السرعة" color="text-cyan-400" />
+          <StarBar value={data.averages.quality} label="💎 الجودة" color="text-emerald-400" />
+          <StarBar value={data.averages.commitment} label="🎯 الالتزام" color="text-amber-400" />
+          <StarBar value={data.averages.delay} label="⏰ عدم التأخير" color="text-purple-400" />
+        </CardContent>
+      </Card>
+
+      {/* Monthly trend */}
+      {data.monthly?.length > 0 && (
+        <Card className="glass-strong border-gold-soft">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Activity className="w-4 h-4 text-cyan-400" /> الاتجاه الشهري (آخر 6 أشهر)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-end gap-2 h-32">
+              {data.monthly.map(m => (
+                <div key={m.month} className="flex-1 flex flex-col items-center gap-1">
+                  <span className="text-[10px] font-bold text-cyan-400">{m.avgScore}%</span>
+                  <div
+                    className="w-full bg-gradient-to-t from-cyan-500/60 to-cyan-300/80 rounded-t-md transition-all"
+                    style={{ height: `${Math.max(8, m.avgScore)}%` }}
+                    title={`${m.count} مهمة`}
+                  />
+                  <span className="text-[9px] text-muted-foreground font-mono">{m.month.slice(5)}</span>
+                  <span className="text-[8px] text-muted-foreground">({m.count})</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Recent reviews */}
+      <Card className="glass-strong border-gold-soft">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <FileText className="w-4 h-4 text-purple-400" /> أحدث المراجعات ({data.recent.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {data.recent.map(rev => (
+            <div key={rev.taskId} className="p-3 rounded-lg bg-input/30 border border-gold-soft space-y-2">
+              <div className="flex justify-between items-start gap-2">
+                <div className="flex-1">
+                  <h4 className="text-sm font-bold">{rev.title}</h4>
+                  <p className="text-[10px] text-muted-foreground">
+                    📅 {rev.reviewedAt ? new Date(rev.reviewedAt).toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
+                    · 👤 {rev.reviewerName}
+                  </p>
+                </div>
+                <Badge className={`${rev.score >= 80 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : rev.score >= 60 ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'}`}>
+                  {rev.score}%
+                </Badge>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px]">
+                <span>⚡ السرعة: {'⭐'.repeat(rev.rating.speed)}</span>
+                <span>💎 الجودة: {'⭐'.repeat(rev.rating.quality)}</span>
+                <span>🎯 الالتزام: {'⭐'.repeat(rev.rating.commitment)}</span>
+                <span>⏰ عدم التأخير: {'⭐'.repeat(rev.rating.delay)}</span>
+              </div>
+              {rev.notes && (
+                <p className="text-xs text-muted-foreground italic border-r-2 border-gold/40 pr-2">
+                  💬 {rev.notes}
+                </p>
+              )}
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 // 6) Unauthorized fallback
 function Unauthorized({ permission }) {
   return (
@@ -1761,6 +1925,7 @@ function EmployeeDashboard({ employee, onLogout }) {
   const allTabs = [
     { key: 'home', label: 'الرئيسية', icon: Home, perm: null }, // always
     { key: 'tasks', label: 'المهام', icon: ListTodo, perm: 'tasks', badge: tasks.filter(t => ['pending', 'new'].includes(t.status)).length },
+    { key: 'ratings', label: 'تقييماتي', icon: Star, perm: null }, // always for self
     { key: 'leaves', label: 'إجازاتي', icon: CalendarDays, perm: null }, // always for self
     { key: 'advances', label: 'سُلفي', icon: Wallet, perm: null }, // always for self
     { key: 'payroll', label: 'راتبي', icon: BadgeCheck, perm: null }, // always for self
@@ -1828,6 +1993,10 @@ function EmployeeDashboard({ employee, onLogout }) {
 
             <TabsContent value="payroll" className="mt-4">
               <PayrollTab payroll={payroll} employee={selfData} />
+            </TabsContent>
+
+            <TabsContent value="ratings" className="mt-4">
+              <MyRatingsSection employee={selfData} />
             </TabsContent>
 
             <TabsContent value="leaves" className="mt-4">

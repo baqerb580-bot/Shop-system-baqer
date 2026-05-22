@@ -115,6 +115,8 @@ const SETTINGS_DEFAULTS = {
     lowStock: { whatsapp: false, telegram: true, email: true, sms: false, push: true },
     networkAlert: { whatsapp: false, telegram: true, email: false, sms: false, push: true },
     newSubscriber: { whatsapp: false, telegram: true, email: false, sms: false, push: false },
+    notifyEmployeesWhatsApp: true,
+    notifyEmployeesTelegram: true,
   },
   maps: {
     provider: 'osm',
@@ -602,8 +604,9 @@ async function spawnRecurringIfNeeded(db, completedTask) {
     delete newTask._id;
     // Notify the assignee
     if (newTask.assignedTo) {
-      await createNotification(db, {
-        userId: newTask.assignedTo, type: 'task_new', icon: '🔁',
+      await notifyEmployee(db, {
+        employeeId: newTask.assignedTo,
+        type: 'task_new', icon: '🔁',
         title: '🔁 مهمة متكررة جديدة',
         message: `تم إنشاء "${newTask.title}" تلقائياً (مهمة دورية) - تاريخ التسليم: ${nextDate}`,
         entityType: 'task', entityId: newTask.id,
@@ -658,6 +661,59 @@ async function notifyManager(db, { title, message, type, taskId, employeeId, ent
   }
   // 2) Telegram to manager
   await sendTelegram(db, `<b>${title}</b>\n${message}`);
+}
+
+// ============ NOTIFY EMPLOYEE (in-app + WhatsApp + Telegram) ============
+async function notifyEmployee(db, { employeeId, type, title, message, entityType, entityId, priority, icon, taskId } = {}) {
+  if (!employeeId) return null;
+  // 1) In-app via createNotification
+  const notif = await createNotification(db, {
+    userId: employeeId,
+    type: type || 'generic',
+    title: title || '',
+    message: message || '',
+    entityType, entityId,
+    priority: priority || 'normal',
+    icon: icon || '🔔',
+    extra: taskId ? { taskId } : {},
+  });
+
+  // 2) Lookup settings + employee for side-channels
+  let settings, emp;
+  try {
+    settings = await db.collection('settings').findOne({ id: 'system' });
+    emp = await db.collection('employees').findOne({ id: employeeId });
+  } catch {}
+
+  const wa = settings?.whatsapp || {};
+  const tg = settings?.telegram || {};
+  const ns = settings?.notifications || {};
+  const sendWa = (wa.enabled !== false) && (ns.notifyEmployeesWhatsApp !== false); // default ON when wa configured
+  const sendTg = (tg.enabled === true) && (ns.notifyEmployeesTelegram !== false);
+
+  // 3) WhatsApp to employee
+  if (sendWa && emp?.phone) {
+    try {
+      const text = `*${title}*\n\n${message}`;
+      await dispatchWhatsApp(db, {
+        phone: emp.phone, type: `emp_${type || 'notif'}`,
+        message: text, employeeId: emp.id, employeeName: emp.name,
+      });
+    } catch (e) { console.warn('[notifyEmployee] WA fail:', e?.message); }
+  }
+
+  // 4) Telegram to employee chat (if linked) — fallback to manager chat NOT used to avoid spam
+  if (sendTg && tg.botToken && emp?.telegramChatId) {
+    try {
+      await fetch(`https://api.telegram.org/bot${tg.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: emp.telegramChatId, text: `<b>${title}</b>\n${message}`, parse_mode: 'HTML' }),
+      });
+    } catch (e) { console.warn('[notifyEmployee] TG fail:', e?.message); }
+  }
+
+  return notif;
 }
 
 import { tgSend, tgEdit, tgAnswerCallback, buildHome, buildReports, buildEmployees, buildSubscribers, buildFinance, buildMaintenance, buildNetwork, buildMe, buildLogs, buildAdmin, ROLE_DEFAULT_PERMS, PERMS_ALL } from '@/lib/telegram-bot';
@@ -2291,8 +2347,8 @@ async function handle(request, params) {
     await db.collection('tasks').insertOne(doc);
     delete doc._id;
     if (doc.assignedTo) {
-      await createNotification(db, {
-        userId: doc.assignedTo, type: 'task_new', icon: '📋',
+      await notifyEmployee(db, {
+        employeeId: doc.assignedTo, type: 'task_new', icon: '📋',
         title: '📋 مهمة جديدة',
         message: `وُكِّلت إليك مهمة "${doc.title}" بأولوية ${doc.priority || 'متوسطة'}. يرجى القبول أو الرفض`,
         entityType: 'task', entityId: doc.id,
@@ -3159,15 +3215,21 @@ async function handle(request, params) {
       }
     }
 
-    // Notify employee
+    // Notify employee (in-app + WhatsApp + Telegram)
     const msgMap = {
-      approve: { title: '✅ تم قبول مهمتك', text: `وافق المدير على إنجاز المهمة "${task.title}"` },
-      reject: { title: '❌ رُفض إنجازك', text: `رفض المدير إنجاز المهمة "${task.title}". ملاحظات: ${notes || '-'}` },
-      revise: { title: '🔄 إعادة تعديل', text: `طلب المدير تعديلات على المهمة "${task.title}". ملاحظات: ${notes || '-'}` },
+      approve: { title: '✅ تم قبول مهمتك', text: `وافق المدير على إنجاز المهمة "${task.title}"${rating ? `\n⭐ السرعة: ${rating.speed||0} | الجودة: ${rating.quality||0} | الالتزام: ${rating.commitment||0} | عدم التأخير: ${rating.delay||0}` : ''}` },
+      reject: { title: '❌ رُفض إنجازك', text: `رفض المدير إنجاز المهمة "${task.title}".\nملاحظات: ${notes || '-'}` },
+      revise: { title: '🔄 إعادة تعديل', text: `طلب المدير تعديلات على المهمة "${task.title}".\nملاحظات: ${notes || '-'}` },
     };
-    await db.collection('notifications').insertOne({
-      id: uuidv4(), userId: task.assignedTo, type: `task_${action}`, title: msgMap[action].title,
-      message: msgMap[action].text, taskId, read: false, createdAt: now,
+    await notifyEmployee(db, {
+      employeeId: task.assignedTo,
+      type: `task_${action}`,
+      title: msgMap[action].title,
+      message: msgMap[action].text,
+      entityType: 'task', entityId: taskId,
+      icon: action === 'approve' ? '✅' : action === 'reject' ? '❌' : '🔄',
+      priority: action === 'reject' ? 'high' : 'normal',
+      taskId,
     });
 
     // If revise → put task back in_progress
@@ -3276,12 +3338,17 @@ async function handle(request, params) {
       approvedAt: now, rejectionReason: action === 'reject' ? (body.reason || '') : '',
     }});
     await logActivity(db, { action: `leave_${action}`, entity: 'leaves', entityId: id, user: body.approvedBy || 'المدير', details: `${action === 'approve' ? 'موافقة' : 'رفض'} على إجازة ${leave.employeeName}`, ip: clientIp });
-    // Notify employee
-    await db.collection('notifications').insertOne({
-      id: uuidv4(), userId: leave.employeeId, type: `leave_${action}`,
+    // Notify employee (in-app + WhatsApp + Telegram)
+    await notifyEmployee(db, {
+      employeeId: leave.employeeId,
+      type: `leave_${action}`,
+      icon: action === 'approve' ? '✅' : '❌',
       title: action === 'approve' ? '✅ إجازتك مقبولة' : '❌ إجازتك مرفوضة',
-      message: action === 'approve' ? `تمت الموافقة على إجازتك (${leave.days} يوم) من ${leave.startDate}` : `سبب الرفض: ${body.reason || '-'}`,
-      read: false, createdAt: now,
+      message: action === 'approve'
+        ? `تمت الموافقة على إجازتك (${leave.days} يوم) من ${leave.startDate} إلى ${leave.endDate}`
+        : `تم رفض طلب إجازتك.\nالسبب: ${body.reason || '-'}`,
+      entityType: 'leave', entityId: id,
+      priority: action === 'reject' ? 'high' : 'normal',
     });
     return ok({ success: true });
   }
@@ -3297,6 +3364,82 @@ async function handle(request, params) {
     const pending = await db.collection('leaves').find({ employeeId: empId, status: 'pending' }).toArray();
     const pendingDays = pending.reduce((s, x) => s + (x.days || 0), 0);
     return ok({ year, allowance: yearlyAllowance, used, pending: pendingDays, remaining: Math.max(0, yearlyAllowance - used) });
+  }
+
+  // ============ EMPLOYEE RATINGS AGGREGATE ============
+  // GET /api/employees/:id/ratings — aggregated rating analytics for employee
+  if (path.match(/^employees\/[^/]+\/ratings$/) && method === 'GET') {
+    const empId = path.split('/')[1];
+    const emp = await db.collection('employees').findOne({ id: empId });
+    if (!emp) return err('الموظف غير موجود', 404);
+
+    // All reviewed tasks (status=completed and review.rating present)
+    const tasks = await db.collection('tasks').find({
+      assignedTo: empId,
+      'review.rating': { $exists: true, $ne: null },
+    }).sort({ reviewedAt: -1 }).toArray();
+
+    let sumSpeed = 0, sumQuality = 0, sumCommitment = 0, sumDelay = 0;
+    const recent = [];
+    const monthly = {}; // { 'YYYY-MM': { count, totalScore } }
+
+    for (const t of tasks) {
+      const r = t.review?.rating || {};
+      const speed = Number(r.speed || 0);
+      const quality = Number(r.quality || 0);
+      const commitment = Number(r.commitment || 0);
+      const delay = Number(r.delay || 0);
+      sumSpeed += speed;
+      sumQuality += quality;
+      sumCommitment += commitment;
+      sumDelay += delay;
+      const score = Math.round(((speed + quality + commitment + delay) / 4) * 20); // 0-100
+      const ymonth = (t.reviewedAt || t.createdAt || '').slice(0, 7);
+      if (ymonth) {
+        if (!monthly[ymonth]) monthly[ymonth] = { count: 0, totalScore: 0 };
+        monthly[ymonth].count += 1;
+        monthly[ymonth].totalScore += score;
+      }
+      if (recent.length < 20) {
+        recent.push({
+          taskId: t.id,
+          title: t.title,
+          reviewedAt: t.reviewedAt || null,
+          reviewerName: t.review?.reviewerName || 'المدير',
+          notes: t.review?.notes || '',
+          rating: { speed, quality, commitment, delay },
+          score,
+        });
+      }
+    }
+
+    const count = tasks.length;
+    const averages = count > 0 ? {
+      speed: Number((sumSpeed / count).toFixed(2)),
+      quality: Number((sumQuality / count).toFixed(2)),
+      commitment: Number((sumCommitment / count).toFixed(2)),
+      delay: Number((sumDelay / count).toFixed(2)),
+      overall: Number((((sumSpeed + sumQuality + sumCommitment + sumDelay) / 4) / count).toFixed(2)),
+    } : { speed: 0, quality: 0, commitment: 0, delay: 0, overall: 0 };
+
+    // Trend: last 6 months
+    const months = Object.keys(monthly).sort().slice(-6).map(k => ({
+      month: k,
+      count: monthly[k].count,
+      avgScore: Math.round(monthly[k].totalScore / monthly[k].count),
+    }));
+
+    // KPI percentage based on overall average (0-5 → 0-100%)
+    const kpiPct = Math.round(averages.overall * 20);
+
+    return ok({
+      employee: { id: emp.id, name: emp.name, role: emp.role, kpi: emp.kpi || 0, ratingPoints: emp.ratingPoints || 0, tasksCompleted: emp.tasksCompleted || 0 },
+      ratedTasksCount: count,
+      averages,
+      kpiPct,
+      monthly: months,
+      recent,
+    });
   }
 
   // ============ ADVANCES (السلف) ============
@@ -3363,6 +3506,18 @@ async function handle(request, params) {
       title: action === 'approve' ? '✅ سلفتك مقبولة' : '❌ سلفتك مرفوضة',
       message: action === 'approve' ? `وافق المدير على سلفتك (${advance.amount.toLocaleString('en-US')} د.ع) - ستُخصم على ${body.installments || advance.installments} قسط` : `سبب الرفض: ${body.reason || '-'}`,
       read: false, createdAt: now,
+    });
+    // Also send WhatsApp + Telegram via notifyEmployee
+    await notifyEmployee(db, {
+      employeeId: advance.employeeId,
+      type: `advance_${action}`,
+      icon: action === 'approve' ? '💰' : '❌',
+      title: action === 'approve' ? '✅ سلفتك مقبولة' : '❌ سلفتك مرفوضة',
+      message: action === 'approve'
+        ? `وافق المدير على سلفتك بقيمة ${advance.amount.toLocaleString('en-US')} د.ع.\nستُخصم على ${body.installments || advance.installments} قسط شهري.`
+        : `تم رفض طلب السلفة.\nالسبب: ${body.reason || '-'}`,
+      entityType: 'advance', entityId: id,
+      priority: action === 'reject' ? 'high' : 'normal',
     });
     return ok({ success: true });
   }
