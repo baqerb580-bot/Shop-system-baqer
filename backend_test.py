@@ -1,617 +1,722 @@
 #!/usr/bin/env python3
 """
-Backend API Testing Script for Ghazlan ERP
-Tests 2 NEW features:
-1. GET /api/employees/:id/ratings - Employee ratings aggregate endpoint
-2. notifyEmployee helper integration (regression tests)
+Backend Testing Script for POS Discount/Increase and Zones AI Load Balancing
+Tests 14 endpoints as specified in the review request
 """
 
 import requests
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Base URL from environment
 BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
 
-def log(msg, level="INFO"):
-    """Print formatted log message"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] [{level}] {msg}")
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-def test_get_request(endpoint, expected_status=200, description=""):
-    """Helper for GET requests"""
-    url = f"{BASE_URL}/{endpoint}"
-    log(f"Testing GET {endpoint} - {description}")
+def test_result(test_num, name, passed, details=""):
+    status = "✅ PASSED" if passed else "❌ FAILED"
+    log(f"Test {test_num}: {name} - {status}")
+    if details:
+        log(f"  Details: {details}")
+    return passed
+
+# ============================================================================
+# TEST GROUP 1: POS Discount/Increase with permissions + audit log
+# ============================================================================
+
+def test_1_get_settings():
+    """Test 1: GET /api/settings - verify pos section exists with defaults"""
+    log("\n=== TEST 1: GET /api/settings ===")
     try:
-        response = requests.get(url, timeout=30)
-        log(f"Status: {response.status_code}, Expected: {expected_status}")
-        if response.status_code != expected_status:
-            log(f"FAIL: Expected {expected_status}, got {response.status_code}", "ERROR")
-            log(f"Response: {response.text[:500]}", "ERROR")
-            return None
-        return response.json()
+        resp = requests.get(f"{BASE_URL}/settings", timeout=10)
+        if resp.status_code != 200:
+            return test_result(1, "GET /api/settings", False, f"Status {resp.status_code}")
+        
+        data = resp.json()
+        if 'pos' not in data:
+            return test_result(1, "GET /api/settings", False, "pos section missing")
+        
+        pos = data['pos']
+        required_fields = [
+            'allowDiscount', 'maxDiscountAmount', 'maxDiscountPercent', 'requireDiscountReason',
+            'allowIncrease', 'maxIncreaseAmount', 'maxIncreasePercent',
+            'discountAllowedRoles', 'increaseAllowedRoles', 'requireManagerApprovalAboveLimit'
+        ]
+        
+        missing = [f for f in required_fields if f not in pos]
+        if missing:
+            return test_result(1, "GET /api/settings", False, f"Missing fields: {missing}")
+        
+        # Verify defaults
+        checks = []
+        checks.append(pos['allowDiscount'] == True)
+        checks.append(pos['maxDiscountAmount'] == 50000)
+        checks.append(pos['maxDiscountPercent'] == 30)
+        checks.append(pos['requireDiscountReason'] == True)
+        checks.append(pos['allowIncrease'] == True)
+        checks.append(pos['maxIncreaseAmount'] == 50000)
+        checks.append(pos['maxIncreasePercent'] == 20)
+        checks.append(pos['requireManagerApprovalAboveLimit'] == True)
+        checks.append(isinstance(pos['discountAllowedRoles'], list))
+        checks.append(isinstance(pos['increaseAllowedRoles'], list))
+        
+        if not all(checks):
+            return test_result(1, "GET /api/settings", False, f"Default values incorrect: {pos}")
+        
+        return test_result(1, "GET /api/settings", True, "pos section with all defaults verified")
     except Exception as e:
-        log(f"FAIL: Exception - {str(e)}", "ERROR")
-        return None
+        return test_result(1, "GET /api/settings", False, str(e))
 
-def test_post_request(endpoint, data, expected_status=200, description=""):
-    """Helper for POST requests"""
-    url = f"{BASE_URL}/{endpoint}"
-    log(f"Testing POST {endpoint} - {description}")
+def test_2_checkout_with_discount():
+    """Test 2: POST /api/pos/checkout - happy path with small discount"""
+    log("\n=== TEST 2: POST /api/pos/checkout with discount ===")
     try:
-        response = requests.post(url, json=data, timeout=30)
-        log(f"Status: {response.status_code}, Expected: {expected_status}")
-        if response.status_code != expected_status:
-            log(f"FAIL: Expected {expected_status}, got {response.status_code}", "ERROR")
-            log(f"Response: {response.text[:500]}", "ERROR")
-            return None
-        return response.json()
+        # First get a real product
+        resp = requests.get(f"{BASE_URL}/products", timeout=10)
+        if resp.status_code != 200:
+            return test_result(2, "Checkout with discount", False, "Cannot fetch products")
+        
+        products = resp.json()
+        if not products or len(products) == 0:
+            return test_result(2, "Checkout with discount", False, "No products available")
+        
+        product = products[0]
+        product_id = product['id']
+        product_name = product.get('name', 'Test Product')
+        product_price = product.get('price', 10000)
+        
+        # Create checkout with small discount
+        payload = {
+            "items": [{"id": product_id, "name": product_name, "price": product_price, "quantity": 2}],
+            "discount": 1000,
+            "discountReason": "زبون مميز",
+            "paymentMethod": "cash",
+            "cashier": "TestCashier"
+        }
+        
+        resp = requests.post(f"{BASE_URL}/pos/checkout", json=payload, timeout=10)
+        if resp.status_code != 201:
+            return test_result(2, "Checkout with discount", False, f"Status {resp.status_code}: {resp.text}")
+        
+        data = resp.json()
+        
+        # Verify response structure
+        required_fields = ['invoiceNumber', 'subtotal', 'discount', 'surcharge', 'total']
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            return test_result(2, "Checkout with discount", False, f"Missing fields: {missing}")
+        
+        expected_subtotal = product_price * 2
+        expected_total = expected_subtotal - 1000
+        
+        if data['subtotal'] != expected_subtotal:
+            return test_result(2, "Checkout with discount", False, f"Subtotal mismatch: {data['subtotal']} != {expected_subtotal}")
+        
+        if data['discount'] != 1000:
+            return test_result(2, "Checkout with discount", False, f"Discount mismatch: {data['discount']} != 1000")
+        
+        if data['surcharge'] != 0:
+            return test_result(2, "Checkout with discount", False, f"Surcharge should be 0: {data['surcharge']}")
+        
+        if data['total'] != expected_total:
+            return test_result(2, "Checkout with discount", False, f"Total mismatch: {data['total']} != {expected_total}")
+        
+        # Verify pos_modifications entry exists
+        resp = requests.get(f"{BASE_URL}/pos/modifications", timeout=10)
+        if resp.status_code != 200:
+            return test_result(2, "Checkout with discount", False, "Cannot verify pos_modifications")
+        
+        mods_data = resp.json()
+        if 'items' not in mods_data:
+            return test_result(2, "Checkout with discount", False, "pos_modifications missing items")
+        
+        return test_result(2, "Checkout with discount", True, f"Sale created: subtotal={expected_subtotal}, discount=1000, total={expected_total}")
     except Exception as e:
-        log(f"FAIL: Exception - {str(e)}", "ERROR")
-        return None
+        return test_result(2, "Checkout with discount", False, str(e))
+
+def test_3_checkout_with_surcharge():
+    """Test 3: POST /api/pos/checkout - happy path with surcharge"""
+    log("\n=== TEST 3: POST /api/pos/checkout with surcharge ===")
+    try:
+        # Get a product
+        resp = requests.get(f"{BASE_URL}/products", timeout=10)
+        if resp.status_code != 200:
+            return test_result(3, "Checkout with surcharge", False, "Cannot fetch products")
+        
+        products = resp.json()
+        if not products:
+            return test_result(3, "Checkout with surcharge", False, "No products available")
+        
+        product = products[0]
+        product_id = product['id']
+        product_name = product.get('name', 'Test Product')
+        product_price = 5000
+        
+        # Create checkout with surcharge
+        payload = {
+            "items": [{"id": product_id, "name": product_name, "price": product_price, "quantity": 1}],
+            "surcharge": 500,
+            "surchargeReason": "خدمة توصيل",
+            "paymentMethod": "cash",
+            "cashier": "TestCashier"
+        }
+        
+        resp = requests.post(f"{BASE_URL}/pos/checkout", json=payload, timeout=10)
+        if resp.status_code != 201:
+            return test_result(3, "Checkout with surcharge", False, f"Status {resp.status_code}: {resp.text}")
+        
+        data = resp.json()
+        
+        expected_subtotal = product_price
+        expected_total = expected_subtotal + 500
+        
+        if data['subtotal'] != expected_subtotal:
+            return test_result(3, "Checkout with surcharge", False, f"Subtotal mismatch: {data['subtotal']} != {expected_subtotal}")
+        
+        if data.get('surcharge', 0) != 500:
+            return test_result(3, "Checkout with surcharge", False, f"Surcharge mismatch: {data.get('surcharge')} != 500")
+        
+        if data['total'] != expected_total:
+            return test_result(3, "Checkout with surcharge", False, f"Total mismatch: {data['total']} != {expected_total}")
+        
+        return test_result(3, "Checkout with surcharge", True, f"Sale created: subtotal={expected_subtotal}, surcharge=500, total={expected_total}")
+    except Exception as e:
+        return test_result(3, "Checkout with surcharge", False, str(e))
+
+def test_4_missing_discount_reason():
+    """Test 4: Validation - missing discount reason"""
+    log("\n=== TEST 4: Validation - missing discount reason ===")
+    try:
+        # Get a product
+        resp = requests.get(f"{BASE_URL}/products", timeout=10)
+        if resp.status_code != 200:
+            return test_result(4, "Missing discount reason", False, "Cannot fetch products")
+        
+        products = resp.json()
+        if not products:
+            return test_result(4, "Missing discount reason", False, "No products available")
+        
+        product = products[0]
+        product_id = product['id']
+        
+        # Create checkout with discount but NO reason
+        payload = {
+            "items": [{"id": product_id, "name": "X", "price": 1000, "quantity": 1}],
+            "discount": 100,
+            "paymentMethod": "cash",
+            "cashier": "TestCashier"
+        }
+        
+        resp = requests.post(f"{BASE_URL}/pos/checkout", json=payload, timeout=10)
+        if resp.status_code != 400:
+            return test_result(4, "Missing discount reason", False, f"Expected 400, got {resp.status_code}")
+        
+        error_text = resp.text
+        if "سبب الخصم مطلوب" not in error_text:
+            return test_result(4, "Missing discount reason", False, f"Expected Arabic error, got: {error_text}")
+        
+        return test_result(4, "Missing discount reason", True, "Correctly rejected with 400 and Arabic error")
+    except Exception as e:
+        return test_result(4, "Missing discount reason", False, str(e))
+
+def test_5_discount_over_limit():
+    """Test 5: Validation - discount over limit, no override"""
+    log("\n=== TEST 5: Validation - discount over limit ===")
+    try:
+        # Get a product
+        resp = requests.get(f"{BASE_URL}/products", timeout=10)
+        if resp.status_code != 200:
+            return test_result(5, "Discount over limit", False, "Cannot fetch products")
+        
+        products = resp.json()
+        if not products:
+            return test_result(5, "Discount over limit", False, "No products available")
+        
+        product = products[0]
+        product_id = product['id']
+        
+        # Create checkout with discount OVER limit (60000 > maxDiscountAmount 50000)
+        payload = {
+            "items": [{"id": product_id, "name": "X", "price": 100000, "quantity": 1}],
+            "discount": 60000,
+            "discountReason": "test",
+            "paymentMethod": "cash",
+            "cashier": "TestCashier"
+        }
+        
+        resp = requests.post(f"{BASE_URL}/pos/checkout", json=payload, timeout=10)
+        if resp.status_code != 403:
+            return test_result(5, "Discount over limit", False, f"Expected 403, got {resp.status_code}")
+        
+        error_text = resp.text
+        if "يحتاج موافقة المدير" not in error_text:
+            return test_result(5, "Discount over limit", False, f"Expected Arabic error with 'يحتاج موافقة المدير', got: {error_text}")
+        
+        return test_result(5, "Discount over limit", True, "Correctly rejected with 403 and manager approval message")
+    except Exception as e:
+        return test_result(5, "Discount over limit", False, str(e))
+
+def test_6_manager_override():
+    """Test 6: Manager override with valid override flag"""
+    log("\n=== TEST 6: Manager override ===")
+    try:
+        # Get a product
+        resp = requests.get(f"{BASE_URL}/products", timeout=10)
+        if resp.status_code != 200:
+            return test_result(6, "Manager override", False, "Cannot fetch products")
+        
+        products = resp.json()
+        if not products:
+            return test_result(6, "Manager override", False, "No products available")
+        
+        product = products[0]
+        product_id = product['id']
+        
+        # Same as test 5 but with managerOverride=true
+        payload = {
+            "items": [{"id": product_id, "name": "X", "price": 100000, "quantity": 1}],
+            "discount": 60000,
+            "discountReason": "test",
+            "managerOverride": True,
+            "paymentMethod": "cash",
+            "cashier": "TestCashier"
+        }
+        
+        resp = requests.post(f"{BASE_URL}/pos/checkout", json=payload, timeout=10)
+        if resp.status_code != 201:
+            return test_result(6, "Manager override", False, f"Expected 201, got {resp.status_code}: {resp.text}")
+        
+        data = resp.json()
+        
+        # Verify managerOverride flag is set
+        if not data.get('managerOverride'):
+            return test_result(6, "Manager override", False, "managerOverride flag not set in response")
+        
+        # Verify overLimitWarnings array exists
+        if 'overLimitWarnings' not in data:
+            return test_result(6, "Manager override", False, "overLimitWarnings array missing")
+        
+        if 'discount_over_limit' not in data['overLimitWarnings']:
+            return test_result(6, "Manager override", False, "discount_over_limit not in overLimitWarnings")
+        
+        return test_result(6, "Manager override", True, "Sale created with managerOverride=true and overLimitWarnings")
+    except Exception as e:
+        return test_result(6, "Manager override", False, str(e))
+
+def test_7_get_modifications():
+    """Test 7: GET /api/pos/modifications"""
+    log("\n=== TEST 7: GET /api/pos/modifications ===")
+    try:
+        resp = requests.get(f"{BASE_URL}/pos/modifications", timeout=10)
+        if resp.status_code != 200:
+            return test_result(7, "GET pos/modifications", False, f"Status {resp.status_code}")
+        
+        data = resp.json()
+        
+        # Verify response shape
+        if 'items' not in data:
+            return test_result(7, "GET pos/modifications", False, "items field missing")
+        
+        if 'summary' not in data:
+            return test_result(7, "GET pos/modifications", False, "summary field missing")
+        
+        summary = data['summary']
+        required_summary_fields = ['totalCount', 'totalDiscount', 'totalIncrease', 'overLimitCount', 'netAdjustment']
+        missing = [f for f in required_summary_fields if f not in summary]
+        if missing:
+            return test_result(7, "GET pos/modifications", False, f"Missing summary fields: {missing}")
+        
+        # Verify items is an array
+        if not isinstance(data['items'], list):
+            return test_result(7, "GET pos/modifications", False, "items is not an array")
+        
+        return test_result(7, "GET pos/modifications", True, f"Returns items array and summary with all fields. Found {len(data['items'])} modifications")
+    except Exception as e:
+        return test_result(7, "GET pos/modifications", False, str(e))
+
+def test_8_get_modifications_filtered():
+    """Test 8: GET /api/pos/modifications?type=discount"""
+    log("\n=== TEST 8: GET /api/pos/modifications?type=discount ===")
+    try:
+        resp = requests.get(f"{BASE_URL}/pos/modifications?type=discount", timeout=10)
+        if resp.status_code != 200:
+            return test_result(8, "GET pos/modifications filtered", False, f"Status {resp.status_code}")
+        
+        data = resp.json()
+        
+        if 'items' not in data:
+            return test_result(8, "GET pos/modifications filtered", False, "items field missing")
+        
+        # Verify all items have discount > 0
+        items = data['items']
+        if items:
+            for item in items:
+                if item.get('discount', 0) <= 0:
+                    return test_result(8, "GET pos/modifications filtered", False, f"Item has no discount: {item}")
+        
+        return test_result(8, "GET pos/modifications filtered", True, f"Filter working. Found {len(items)} discount-only entries")
+    except Exception as e:
+        return test_result(8, "GET pos/modifications filtered", False, str(e))
 
 # ============================================================================
-# TEST 1: GET /api/employees/:id/ratings - Employee Ratings Aggregate
+# TEST GROUP 2: Zones AI Load Balancing
 # ============================================================================
 
-def test_employee_ratings():
-    """Test employee ratings aggregate endpoint"""
-    log("=" * 80)
-    log("TEST 1: Employee Ratings Aggregate Endpoint")
-    log("=" * 80)
-    
-    results = {"passed": 0, "failed": 0, "tests": []}
-    
-    # Step 1: Fetch a valid employee (username='amer')
-    log("\n--- Step 1: Fetch valid employee with username='amer' ---")
-    employees = test_get_request("employees", description="Get all employees")
-    if not employees:
-        results["failed"] += 1
-        results["tests"].append("❌ Failed to fetch employees")
-        return results
-    
-    # Find employee with username='amer'
-    amer = None
-    for emp in employees:
-        if emp.get("username") == "amer":
-            amer = emp
-            break
-    
-    if not amer:
-        log("Employee 'amer' not found, trying first employee", "WARN")
-        amer = employees[0] if employees else None
-    
-    if not amer:
-        results["failed"] += 1
-        results["tests"].append("❌ No employees found in database")
-        return results
-    
-    emp_id = amer.get("id")
-    emp_name = amer.get("name", "Unknown")
-    log(f"✅ Found employee: {emp_name} (ID: {emp_id})")
-    results["passed"] += 1
-    results["tests"].append(f"✅ Found employee: {emp_name}")
-    
-    # Step 2: Success case - GET /api/employees/:id/ratings
-    log(f"\n--- Step 2: GET /api/employees/{emp_id}/ratings (Success Case) ---")
-    ratings = test_get_request(f"employees/{emp_id}/ratings", description="Get employee ratings")
-    
-    if not ratings:
-        results["failed"] += 1
-        results["tests"].append("❌ Failed to fetch ratings")
-        return results
-    
-    # Verify response shape
-    required_fields = ["employee", "ratedTasksCount", "averages", "kpiPct", "monthly", "recent"]
-    missing_fields = [f for f in required_fields if f not in ratings]
-    
-    if missing_fields:
-        log(f"FAIL: Missing fields: {missing_fields}", "ERROR")
-        results["failed"] += 1
-        results["tests"].append(f"❌ Missing fields: {missing_fields}")
-        return results
-    
-    log(f"✅ All required fields present: {required_fields}")
-    results["passed"] += 1
-    results["tests"].append("✅ Response has all required fields")
-    
-    # Verify employee object
-    employee = ratings.get("employee", {})
-    emp_required = ["id", "name", "role", "kpi", "ratingPoints", "tasksCompleted"]
-    emp_missing = [f for f in emp_required if f not in employee]
-    
-    if emp_missing:
-        log(f"FAIL: Employee object missing fields: {emp_missing}", "ERROR")
-        results["failed"] += 1
-        results["tests"].append(f"❌ Employee object missing: {emp_missing}")
-    else:
-        log(f"✅ Employee object complete: {employee}")
-        results["passed"] += 1
-        results["tests"].append("✅ Employee object has all fields")
-    
-    # Verify averages (each should be 0-5)
-    averages = ratings.get("averages", {})
-    avg_fields = ["speed", "quality", "commitment", "delay", "overall"]
-    
-    for field in avg_fields:
-        value = averages.get(field, -1)
-        if not isinstance(value, (int, float)) or value < 0 or value > 5:
-            log(f"FAIL: averages.{field} = {value} (should be 0-5)", "ERROR")
-            results["failed"] += 1
-            results["tests"].append(f"❌ averages.{field} out of range: {value}")
-        else:
-            log(f"✅ averages.{field} = {value} (valid)")
-    
-    if all(0 <= averages.get(f, -1) <= 5 for f in avg_fields):
-        results["passed"] += 1
-        results["tests"].append("✅ All averages values between 0 and 5")
-    
-    # Verify kpiPct (0-100)
-    kpi_pct = ratings.get("kpiPct", -1)
-    if not isinstance(kpi_pct, (int, float)) or kpi_pct < 0 or kpi_pct > 100:
-        log(f"FAIL: kpiPct = {kpi_pct} (should be 0-100)", "ERROR")
-        results["failed"] += 1
-        results["tests"].append(f"❌ kpiPct out of range: {kpi_pct}")
-    else:
-        log(f"✅ kpiPct = {kpi_pct}% (valid)")
-        results["passed"] += 1
-        results["tests"].append(f"✅ kpiPct valid: {kpi_pct}%")
-    
-    # Verify monthly array
-    monthly = ratings.get("monthly", [])
-    if not isinstance(monthly, list):
-        log(f"FAIL: monthly is not an array: {type(monthly)}", "ERROR")
-        results["failed"] += 1
-        results["tests"].append("❌ monthly is not an array")
-    else:
-        log(f"✅ monthly is array with {len(monthly)} entries")
-        results["passed"] += 1
-        results["tests"].append(f"✅ monthly array: {len(monthly)} entries")
+def test_9_get_load_balance():
+    """Test 9: GET /api/zones/load-balance"""
+    log("\n=== TEST 9: GET /api/zones/load-balance ===")
+    try:
+        resp = requests.get(f"{BASE_URL}/zones/load-balance", timeout=10)
+        if resp.status_code != 200:
+            return test_result(9, "GET zones/load-balance", False, f"Status {resp.status_code}")
         
-        # Check monthly structure
-        for m in monthly[:3]:  # Check first 3
-            if not all(k in m for k in ["month", "count", "avgScore"]):
-                log(f"FAIL: monthly entry missing fields: {m}", "ERROR")
-                results["failed"] += 1
-                results["tests"].append(f"❌ monthly entry incomplete: {m}")
-                break
-    
-    # Verify recent array
-    recent = ratings.get("recent", [])
-    if not isinstance(recent, list):
-        log(f"FAIL: recent is not an array: {type(recent)}", "ERROR")
-        results["failed"] += 1
-        results["tests"].append("❌ recent is not an array")
-    else:
-        log(f"✅ recent is array with {len(recent)} entries")
-        results["passed"] += 1
-        results["tests"].append(f"✅ recent array: {len(recent)} entries")
+        data = resp.json()
         
-        # Check recent structure
-        for r in recent[:2]:  # Check first 2
-            required_recent = ["taskId", "title", "reviewedAt", "reviewerName", "notes", "rating", "score"]
-            missing_recent = [f for f in required_recent if f not in r]
-            if missing_recent:
-                log(f"FAIL: recent entry missing: {missing_recent}", "ERROR")
-                results["failed"] += 1
-                results["tests"].append(f"❌ recent entry missing: {missing_recent}")
-                break
-            
-            # Check rating object
-            rating = r.get("rating", {})
-            rating_fields = ["speed", "quality", "commitment", "delay"]
-            if not all(f in rating for f in rating_fields):
-                log(f"FAIL: rating missing fields: {rating}", "ERROR")
-                results["failed"] += 1
-                results["tests"].append(f"❌ rating incomplete: {rating}")
-                break
-            
-            # Check score (0-100)
-            score = r.get("score", -1)
-            if not isinstance(score, (int, float)) or score < 0 or score > 100:
-                log(f"FAIL: score = {score} (should be 0-100)", "ERROR")
-                results["failed"] += 1
-                results["tests"].append(f"❌ score out of range: {score}")
-                break
-    
-    # Step 3: Empty case - Find employee with no reviewed tasks
-    log("\n--- Step 3: Empty case (employee with no reviews) ---")
-    # Try to find an employee with 0 rated tasks or create a test one
-    empty_emp = None
-    for emp in employees:
-        # Quick check - if employee has no tasks, likely no reviews
-        if emp.get("tasksCompleted", 0) == 0:
-            empty_emp = emp
-            break
-    
-    if empty_emp:
-        empty_id = empty_emp.get("id")
-        log(f"Testing with employee: {empty_emp.get('name')} (ID: {empty_id})")
-        empty_ratings = test_get_request(f"employees/{empty_id}/ratings", description="Get ratings for employee with no reviews")
+        # Verify response shape
+        required_fields = ['generatedAt', 'summary', 'zones', 'suggestions']
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            return test_result(9, "GET zones/load-balance", False, f"Missing fields: {missing}")
         
-        if empty_ratings:
-            if (empty_ratings.get("ratedTasksCount") == 0 and
-                all(empty_ratings.get("averages", {}).get(f) == 0 for f in ["speed", "quality", "commitment", "delay", "overall"]) and
-                len(empty_ratings.get("monthly", [])) == 0 and
-                len(empty_ratings.get("recent", [])) == 0):
-                log("✅ Empty case verified: ratedTasksCount=0, all averages=0, monthly=[], recent=[]")
-                results["passed"] += 1
-                results["tests"].append("✅ Empty case: correct response for employee with no reviews")
-            else:
-                log(f"WARN: Empty case response unexpected: {empty_ratings}", "WARN")
-                results["passed"] += 1  # Not critical
-                results["tests"].append("⚠️  Empty case: response structure OK but has data")
-    else:
-        log("SKIP: No employee with 0 tasks found for empty case test", "WARN")
-        results["tests"].append("⚠️  Empty case: skipped (no suitable employee)")
-    
-    # Step 4: 404 case - Non-existent employee
-    log("\n--- Step 4: 404 case (non-existent employee) ---")
-    fake_id = "non-existent-id-zzz"
-    response = requests.get(f"{BASE_URL}/employees/{fake_id}/ratings", timeout=30)
-    
-    if response.status_code == 404:
-        try:
-            error_data = response.json()
-            error_msg = error_data.get("error", "")
-            if "الموظف غير موجود" in error_msg or "not found" in error_msg.lower():
-                log(f"✅ 404 case verified: {error_msg}")
-                results["passed"] += 1
-                results["tests"].append("✅ 404 case: correct error for non-existent employee")
-            else:
-                log(f"WARN: 404 but unexpected error message: {error_msg}", "WARN")
-                results["passed"] += 1
-                results["tests"].append("⚠️  404 case: status correct but message unexpected")
-        except:
-            log("✅ 404 case verified (no JSON body)")
-            results["passed"] += 1
-            results["tests"].append("✅ 404 case: correct status code")
-    else:
-        log(f"FAIL: Expected 404, got {response.status_code}", "ERROR")
-        results["failed"] += 1
-        results["tests"].append(f"❌ 404 case: got {response.status_code} instead")
-    
-    return results
+        # Verify summary shape
+        summary = data['summary']
+        summary_fields = ['totalZones', 'overloadedCount', 'underUsedCount', 'offlineCount', 'thresholds']
+        missing = [f for f in summary_fields if f not in summary]
+        if missing:
+            return test_result(9, "GET zones/load-balance", False, f"Missing summary fields: {missing}")
+        
+        # Verify thresholds
+        thresholds = summary['thresholds']
+        if 'warning' not in thresholds or 'critical' not in thresholds:
+            return test_result(9, "GET zones/load-balance", False, "Missing thresholds.warning or thresholds.critical")
+        
+        # Verify zones array
+        if not isinstance(data['zones'], list):
+            return test_result(9, "GET zones/load-balance", False, "zones is not an array")
+        
+        if data['zones']:
+            zone = data['zones'][0]
+            zone_fields = ['id', 'name', 'subscribers', 'capacity', 'utilization', 'networks']
+            missing = [f for f in zone_fields if f not in zone]
+            if missing:
+                return test_result(9, "GET zones/load-balance", False, f"Missing zone fields: {missing}")
+        
+        # Verify suggestions array
+        if not isinstance(data['suggestions'], list):
+            return test_result(9, "GET zones/load-balance", False, "suggestions is not an array")
+        
+        if data['suggestions']:
+            suggestion = data['suggestions'][0]
+            suggestion_fields = ['id', 'zoneId', 'zoneName', 'priority', 'type', 'title', 'reason', 'action']
+            missing = [f for f in suggestion_fields if f not in suggestion]
+            if missing:
+                return test_result(9, "GET zones/load-balance", False, f"Missing suggestion fields: {missing}")
+        
+        return test_result(9, "GET zones/load-balance", True, f"Returns complete data: {summary['totalZones']} zones, {len(data['suggestions'])} suggestions")
+    except Exception as e:
+        return test_result(9, "GET zones/load-balance", False, str(e))
 
-# ============================================================================
-# TEST 2: notifyEmployee Integration (Regression Tests)
-# ============================================================================
-
-def test_notify_employee_integration():
-    """Test notifyEmployee helper integration in existing flows"""
-    log("=" * 80)
-    log("TEST 2: notifyEmployee Integration (Regression Tests)")
-    log("=" * 80)
-    
-    results = {"passed": 0, "failed": 0, "tests": []}
-    
-    # Get test data
-    log("\n--- Setup: Fetch test data ---")
-    employees = test_get_request("employees", description="Get employees")
-    subscribers = test_get_request("subscribers", description="Get subscribers")
-    packages = test_get_request("packages", description="Get packages")
-    
-    if not employees or not subscribers or not packages:
-        results["failed"] += 1
-        results["tests"].append("❌ Failed to fetch test data")
-        return results
-    
-    test_emp = employees[0] if employees else None
-    test_sub = subscribers[0] if subscribers else None
-    test_pkg = packages[0] if packages else None
-    
-    if not test_emp or not test_sub or not test_pkg:
-        results["failed"] += 1
-        results["tests"].append("❌ Insufficient test data")
-        return results
-    
-    emp_id = test_emp.get("id")
-    emp_name = test_emp.get("name")
-    sub_id = test_sub.get("id")
-    pkg_id = test_pkg.get("id")
-    
-    log(f"✅ Test employee: {emp_name} (ID: {emp_id})")
-    log(f"✅ Test subscriber: {test_sub.get('name')} (ID: {sub_id})")
-    log(f"✅ Test package: {test_pkg.get('name')} (ID: {pkg_id})")
-    results["passed"] += 1
-    results["tests"].append("✅ Test data fetched successfully")
-    
-    # Test 5: Task creation flow
-    log("\n--- Test 5: Task creation flow (notifyEmployee integration) ---")
-    task_data = {
-        "title": "اختبار notifyEmp",
-        "description": "مهمة اختبار لنظام الإشعارات",
-        "assignedTo": emp_id,
-        "assignedToName": emp_name,
-        "priority": "high",
-        "dueDate": (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"),
-        "createdBy": "Tester",
-        "createdById": "test-system"
-    }
-    
-    task_response = test_post_request("tasks", task_data, expected_status=201, description="Create task")
-    
-    if task_response and task_response.get("id"):
-        task_id = task_response.get("id")
-        log(f"✅ Task created: {task_id}")
-        results["passed"] += 1
-        results["tests"].append("✅ Task creation: successful")
+def test_10_apply_add_fat():
+    """Test 10: POST /api/zones/load-balance/apply - add_fat action"""
+    log("\n=== TEST 10: POST zones/load-balance/apply - add_fat ===")
+    try:
+        # First get a zone
+        resp = requests.get(f"{BASE_URL}/zones", timeout=10)
+        if resp.status_code != 200:
+            return test_result(10, "Apply add_fat", False, "Cannot fetch zones")
         
-        # Verify notification was created
-        log("Checking notifications for employee...")
-        notifs = test_get_request(f"notifications?userId={emp_id}", description="Get employee notifications")
+        zones = resp.json()
+        if not zones:
+            return test_result(10, "Apply add_fat", False, "No zones available")
         
-        if notifs and isinstance(notifs, list):
-            # Look for task_new notification
-            task_notif = None
-            for n in notifs:
-                if n.get("type") == "task_new" and "مهمة جديدة" in n.get("title", ""):
-                    task_notif = n
-                    break
-            
-            if task_notif:
-                log(f"✅ Notification found: {task_notif.get('title')}")
-                results["passed"] += 1
-                results["tests"].append("✅ Task notification: created successfully")
-            else:
-                log("WARN: task_new notification not found (may be async)", "WARN")
-                results["tests"].append("⚠️  Task notification: not found (may be async)")
-        else:
-            log("WARN: Could not verify notifications", "WARN")
-            results["tests"].append("⚠️  Task notification: could not verify")
+        zone = zones[0]
+        zone_id = zone['id']
         
-        # Cleanup: delete test task
-        requests.delete(f"{BASE_URL}/tasks/{task_id}", timeout=30)
-        log(f"Cleaned up test task: {task_id}")
-    else:
-        log("FAIL: Task creation failed", "ERROR")
-        results["failed"] += 1
-        results["tests"].append("❌ Task creation: failed")
-    
-    # Test 6: Task review flow
-    log("\n--- Test 6: Task review flow (notifyEmployee integration) ---")
-    # Find a task in pending_review status or create one
-    tasks = test_get_request("tasks", description="Get all tasks")
-    
-    if tasks:
-        # Look for a task we can review
-        reviewable_task = None
-        for t in tasks:
-            if t.get("status") in ["pending_review", "completed"] and t.get("assignedTo") == emp_id:
-                reviewable_task = t
-                break
+        # Get initial network count
+        resp = requests.get(f"{BASE_URL}/networks", timeout=10)
+        if resp.status_code != 200:
+            return test_result(10, "Apply add_fat", False, "Cannot fetch networks")
         
-        if not reviewable_task:
-            # Create a task and mark it as pending_review
-            log("Creating task for review test...")
-            review_task_data = {
-                "title": "مهمة للمراجعة",
-                "assignedTo": emp_id,
-                "assignedToName": emp_name,
-                "priority": "medium",
-                "dueDate": datetime.now().strftime("%Y-%m-%d"),
-                "status": "pending_review",
-                "createdBy": "Tester"
+        initial_networks = resp.json()
+        initial_count = len([n for n in initial_networks if n.get('zoneId') == zone_id])
+        
+        # Apply add_fat action
+        payload = {
+            "action": {
+                "type": "add_fat",
+                "zoneId": zone_id,
+                "count": 1,
+                "capacityPerFat": 32
             }
-            reviewable_task = test_post_request("tasks", review_task_data, expected_status=201, description="Create task for review")
+        }
         
-        if reviewable_task:
-            review_task_id = reviewable_task.get("id")
-            log(f"Testing review for task: {review_task_id}")
-            
-            review_data = {
-                "action": "approve",
-                "rating": {"speed": 5, "quality": 5, "commitment": 4, "delay": 4},
-                "notes": "ممتاز",
-                "reviewerName": "المدير"
+        resp = requests.post(f"{BASE_URL}/zones/load-balance/apply", json=payload, timeout=10)
+        if resp.status_code != 200:
+            return test_result(10, "Apply add_fat", False, f"Status {resp.status_code}: {resp.text}")
+        
+        data = resp.json()
+        
+        # Verify response
+        if not data.get('success'):
+            return test_result(10, "Apply add_fat", False, "success field is not true")
+        
+        if data.get('created') != 1:
+            return test_result(10, "Apply add_fat", False, f"Expected created=1, got {data.get('created')}")
+        
+        if data.get('type') != 'add_fat':
+            return test_result(10, "Apply add_fat", False, f"Expected type=add_fat, got {data.get('type')}")
+        
+        # Verify new network was added
+        resp = requests.get(f"{BASE_URL}/networks", timeout=10)
+        if resp.status_code != 200:
+            return test_result(10, "Apply add_fat", False, "Cannot verify networks")
+        
+        final_networks = resp.json()
+        final_count = len([n for n in final_networks if n.get('zoneId') == zone_id])
+        
+        if final_count != initial_count + 1:
+            return test_result(10, "Apply add_fat", False, f"Network count mismatch: {initial_count} -> {final_count} (expected +1)")
+        
+        # Verify zone.fats incremented
+        resp = requests.get(f"{BASE_URL}/zones", timeout=10)
+        if resp.status_code != 200:
+            return test_result(10, "Apply add_fat", False, "Cannot verify zone")
+        
+        zones = resp.json()
+        updated_zone = next((z for z in zones if z['id'] == zone_id), None)
+        if not updated_zone:
+            return test_result(10, "Apply add_fat", False, "Zone not found after update")
+        
+        return test_result(10, "Apply add_fat", True, f"Network added successfully. Zone networks: {initial_count} -> {final_count}")
+    except Exception as e:
+        return test_result(10, "Apply add_fat", False, str(e))
+
+def test_11_apply_create_subzone():
+    """Test 11: POST /api/zones/load-balance/apply - create_subzone"""
+    log("\n=== TEST 11: POST zones/load-balance/apply - create_subzone ===")
+    try:
+        # Get a zone
+        resp = requests.get(f"{BASE_URL}/zones", timeout=10)
+        if resp.status_code != 200:
+            return test_result(11, "Apply create_subzone", False, "Cannot fetch zones")
+        
+        zones = resp.json()
+        if not zones:
+            return test_result(11, "Apply create_subzone", False, "No zones available")
+        
+        zone = zones[0]
+        zone_id = zone['id']
+        
+        # Apply create_subzone action
+        payload = {
+            "action": {
+                "type": "create_subzone",
+                "parentZoneId": zone_id
             }
-            
-            review_response = test_post_request(f"tasks/{review_task_id}/review", review_data, expected_status=200, description="Review task")
-            
-            if review_response and review_response.get("success"):
-                log("✅ Task review successful")
-                results["passed"] += 1
-                results["tests"].append("✅ Task review: successful")
-                
-                # Check for notification
-                notifs = test_get_request(f"notifications?userId={emp_id}", description="Get notifications after review")
-                if notifs:
-                    review_notif = any(n.get("type") == "task_approve" for n in notifs)
-                    if review_notif:
-                        log("✅ Review notification found")
-                        results["passed"] += 1
-                        results["tests"].append("✅ Review notification: created")
-                    else:
-                        log("WARN: Review notification not found", "WARN")
-                        results["tests"].append("⚠️  Review notification: not found")
-            else:
-                log("WARN: Task review failed or already reviewed", "WARN")
-                results["tests"].append("⚠️  Task review: could not complete")
-        else:
-            log("SKIP: No reviewable task found", "WARN")
-            results["tests"].append("⚠️  Task review: skipped (no suitable task)")
-    else:
-        log("SKIP: No tasks found", "WARN")
-        results["tests"].append("⚠️  Task review: skipped (no tasks)")
-    
-    # Test 7: Leave approve flow
-    log("\n--- Test 7: Leave approve flow (notifyEmployee integration) ---")
-    # Create a leave request
-    leave_data = {
-        "employeeId": emp_id,
-        "type": "annual",
-        "reason": "test",
-        "startDate": (datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d"),
-        "endDate": (datetime.now() + timedelta(days=11)).strftime("%Y-%m-%d"),
-        "days": 2
-    }
-    
-    leave_response = test_post_request("leaves", leave_data, expected_status=201, description="Create leave request")
-    
-    if leave_response and leave_response.get("id"):
-        leave_id = leave_response.get("id")
-        log(f"✅ Leave request created: {leave_id}")
+        }
         
-        # Approve the leave
-        approve_data = {"approvedBy": "Tester"}
-        approve_response = test_post_request(f"leaves/{leave_id}/approve", approve_data, expected_status=200, description="Approve leave")
+        resp = requests.post(f"{BASE_URL}/zones/load-balance/apply", json=payload, timeout=10)
+        if resp.status_code != 200:
+            return test_result(11, "Apply create_subzone", False, f"Status {resp.status_code}: {resp.text}")
         
-        if approve_response and approve_response.get("success"):
-            log("✅ Leave approved successfully")
-            results["passed"] += 1
-            results["tests"].append("✅ Leave approve: successful")
-            
-            # Verify no 500 errors occurred
-            log("✅ No 500 errors during leave approval")
-            results["passed"] += 1
-            results["tests"].append("✅ Leave approve: no crashes")
-            
-            # Check notification
-            notifs = test_get_request(f"notifications?userId={emp_id}", description="Get notifications after leave approval")
-            if notifs:
-                leave_notif = any(n.get("type") == "leave_approve" for n in notifs)
-                if leave_notif:
-                    log("✅ Leave approval notification found")
-                    results["passed"] += 1
-                    results["tests"].append("✅ Leave notification: created")
-                else:
-                    log("WARN: Leave notification not found", "WARN")
-                    results["tests"].append("⚠️  Leave notification: not found")
-        else:
-            log("FAIL: Leave approval failed", "ERROR")
-            results["failed"] += 1
-            results["tests"].append("❌ Leave approve: failed")
-    else:
-        log("FAIL: Leave creation failed", "ERROR")
-        results["failed"] += 1
-        results["tests"].append("❌ Leave creation: failed")
-    
-    # Test 8: Advance approve flow
-    log("\n--- Test 8: Advance approve flow (notifyEmployee integration) ---")
-    # Create an advance request
-    advance_data = {
-        "employeeId": emp_id,
-        "amount": 100000,
-        "reason": "test",
-        "installments": 2
-    }
-    
-    advance_response = test_post_request("advances", advance_data, expected_status=201, description="Create advance request")
-    
-    if advance_response and advance_response.get("id"):
-        advance_id = advance_response.get("id")
-        log(f"✅ Advance request created: {advance_id}")
+        data = resp.json()
         
-        # Approve the advance
-        approve_data = {"approvedBy": "Tester"}
-        approve_response = test_post_request(f"advances/{advance_id}/approve", approve_data, expected_status=200, description="Approve advance")
+        # Verify response
+        if not data.get('success'):
+            return test_result(11, "Apply create_subzone", False, "success field is not true")
         
-        if approve_response and approve_response.get("success"):
-            log("✅ Advance approved successfully")
-            results["passed"] += 1
-            results["tests"].append("✅ Advance approve: successful")
-            
-            # Verify no 500 errors
-            log("✅ No 500 errors during advance approval")
-            results["passed"] += 1
-            results["tests"].append("✅ Advance approve: no crashes")
-        else:
-            log("FAIL: Advance approval failed", "ERROR")
-            results["failed"] += 1
-            results["tests"].append("❌ Advance approve: failed")
-    else:
-        log("FAIL: Advance creation failed", "ERROR")
-        results["failed"] += 1
-        results["tests"].append("❌ Advance creation: failed")
-    
-    # Test 9: Verify settings defaults
-    log("\n--- Test 9: Verify settings defaults ---")
-    settings = test_get_request("settings", description="Get settings")
-    
-    if settings:
-        notifications = settings.get("notifications", {})
-        notify_wa = notifications.get("notifyEmployeesWhatsApp")
-        notify_tg = notifications.get("notifyEmployeesTelegram")
+        if 'subzoneId' not in data:
+            return test_result(11, "Apply create_subzone", False, "subzoneId field missing")
         
-        if notify_wa is True:
-            log("✅ notifyEmployeesWhatsApp = true (default)")
-            results["passed"] += 1
-            results["tests"].append("✅ Settings: notifyEmployeesWhatsApp = true")
-        else:
-            log(f"WARN: notifyEmployeesWhatsApp = {notify_wa} (expected true)", "WARN")
-            results["tests"].append(f"⚠️  Settings: notifyEmployeesWhatsApp = {notify_wa}")
+        if data.get('type') != 'create_subzone':
+            return test_result(11, "Apply create_subzone", False, f"Expected type=create_subzone, got {data.get('type')}")
         
-        if notify_tg is True:
-            log("✅ notifyEmployeesTelegram = true (default)")
-            results["passed"] += 1
-            results["tests"].append("✅ Settings: notifyEmployeesTelegram = true")
-        else:
-            log(f"WARN: notifyEmployeesTelegram = {notify_tg} (expected true)", "WARN")
-            results["tests"].append(f"⚠️  Settings: notifyEmployeesTelegram = {notify_tg}")
-    else:
-        log("FAIL: Could not fetch settings", "ERROR")
-        results["failed"] += 1
-        results["tests"].append("❌ Settings: fetch failed")
-    
-    return results
+        subzone_id = data['subzoneId']
+        
+        # Verify new zone was created with parentZoneId
+        resp = requests.get(f"{BASE_URL}/zones", timeout=10)
+        if resp.status_code != 200:
+            return test_result(11, "Apply create_subzone", False, "Cannot verify zones")
+        
+        zones = resp.json()
+        subzone = next((z for z in zones if z['id'] == subzone_id), None)
+        if not subzone:
+            return test_result(11, "Apply create_subzone", False, "Subzone not found")
+        
+        if subzone.get('parentZoneId') != zone_id:
+            return test_result(11, "Apply create_subzone", False, f"parentZoneId mismatch: {subzone.get('parentZoneId')} != {zone_id}")
+        
+        return test_result(11, "Apply create_subzone", True, f"Subzone created with parentZoneId={zone_id}")
+    except Exception as e:
+        return test_result(11, "Apply create_subzone", False, str(e))
+
+def test_12_apply_create_repair_task():
+    """Test 12: POST /api/zones/load-balance/apply - create_repair_task"""
+    log("\n=== TEST 12: POST zones/load-balance/apply - create_repair_task ===")
+    try:
+        # Get a zone
+        resp = requests.get(f"{BASE_URL}/zones", timeout=10)
+        if resp.status_code != 200:
+            return test_result(12, "Apply create_repair_task", False, "Cannot fetch zones")
+        
+        zones = resp.json()
+        if not zones:
+            return test_result(12, "Apply create_repair_task", False, "No zones available")
+        
+        zone = zones[0]
+        zone_id = zone['id']
+        zone_name = zone.get('name', 'TestZone')
+        
+        # Get initial task count
+        resp = requests.get(f"{BASE_URL}/tasks", timeout=10)
+        if resp.status_code != 200:
+            return test_result(12, "Apply create_repair_task", False, "Cannot fetch tasks")
+        
+        initial_tasks = resp.json()
+        initial_count = len(initial_tasks)
+        
+        # Apply create_repair_task action
+        payload = {
+            "action": {
+                "type": "create_repair_task",
+                "zoneId": zone_id,
+                "zoneName": zone_name
+            }
+        }
+        
+        resp = requests.post(f"{BASE_URL}/zones/load-balance/apply", json=payload, timeout=10)
+        if resp.status_code != 200:
+            return test_result(12, "Apply create_repair_task", False, f"Status {resp.status_code}: {resp.text}")
+        
+        data = resp.json()
+        
+        # Verify response
+        if not data.get('success'):
+            return test_result(12, "Apply create_repair_task", False, "success field is not true")
+        
+        if 'taskId' not in data:
+            return test_result(12, "Apply create_repair_task", False, "taskId field missing")
+        
+        if data.get('type') != 'create_repair_task':
+            return test_result(12, "Apply create_repair_task", False, f"Expected type=create_repair_task, got {data.get('type')}")
+        
+        task_id = data['taskId']
+        
+        # Verify new task was created
+        resp = requests.get(f"{BASE_URL}/tasks", timeout=10)
+        if resp.status_code != 200:
+            return test_result(12, "Apply create_repair_task", False, "Cannot verify tasks")
+        
+        final_tasks = resp.json()
+        final_count = len(final_tasks)
+        
+        if final_count != initial_count + 1:
+            return test_result(12, "Apply create_repair_task", False, f"Task count mismatch: {initial_count} -> {final_count} (expected +1)")
+        
+        # Verify task contains zone name in title
+        task = next((t for t in final_tasks if t['id'] == task_id), None)
+        if not task:
+            return test_result(12, "Apply create_repair_task", False, "Task not found")
+        
+        if zone_name not in task.get('title', ''):
+            return test_result(12, "Apply create_repair_task", False, f"Zone name not in task title: {task.get('title')}")
+        
+        return test_result(12, "Apply create_repair_task", True, f"Urgent task created with title containing '{zone_name}'")
+    except Exception as e:
+        return test_result(12, "Apply create_repair_task", False, str(e))
+
+def test_13_invalid_action_type():
+    """Test 13: Invalid action type"""
+    log("\n=== TEST 13: Invalid action type ===")
+    try:
+        payload = {
+            "action": {
+                "type": "unknown_xyz"
+            }
+        }
+        
+        resp = requests.post(f"{BASE_URL}/zones/load-balance/apply", json=payload, timeout=10)
+        if resp.status_code != 400:
+            return test_result(13, "Invalid action type", False, f"Expected 400, got {resp.status_code}")
+        
+        error_text = resp.text
+        if "نوع action غير مدعوم" not in error_text:
+            return test_result(13, "Invalid action type", False, f"Expected Arabic error, got: {error_text}")
+        
+        return test_result(13, "Invalid action type", True, "Correctly rejected with 400 and Arabic error")
+    except Exception as e:
+        return test_result(13, "Invalid action type", False, str(e))
+
+def test_14_missing_action_body():
+    """Test 14: Missing action body"""
+    log("\n=== TEST 14: Missing action body ===")
+    try:
+        payload = {}
+        
+        resp = requests.post(f"{BASE_URL}/zones/load-balance/apply", json=payload, timeout=10)
+        if resp.status_code != 400:
+            return test_result(14, "Missing action body", False, f"Expected 400, got {resp.status_code}")
+        
+        error_text = resp.text
+        if "action مطلوب" not in error_text:
+            return test_result(14, "Missing action body", False, f"Expected Arabic error, got: {error_text}")
+        
+        return test_result(14, "Missing action body", True, "Correctly rejected with 400 and Arabic error")
+    except Exception as e:
+        return test_result(14, "Missing action body", False, str(e))
 
 # ============================================================================
 # MAIN TEST RUNNER
 # ============================================================================
 
 def main():
-    """Run all tests and print summary"""
     log("=" * 80)
-    log("BACKEND API TESTING - 2 NEW FEATURES")
+    log("BACKEND TESTING: POS Discount/Increase + Zones AI Load Balancing")
     log("=" * 80)
-    log(f"Base URL: {BASE_URL}")
-    log(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log("")
     
-    all_results = {"passed": 0, "failed": 0, "tests": []}
+    results = []
     
-    # Test 1: Employee Ratings
-    try:
-        results1 = test_employee_ratings()
-        all_results["passed"] += results1["passed"]
-        all_results["failed"] += results1["failed"]
-        all_results["tests"].extend(results1["tests"])
-    except Exception as e:
-        log(f"CRITICAL ERROR in test_employee_ratings: {str(e)}", "ERROR")
-        all_results["failed"] += 1
-        all_results["tests"].append(f"❌ Employee Ratings: Critical error - {str(e)}")
-    
-    # Test 2: notifyEmployee Integration
-    try:
-        results2 = test_notify_employee_integration()
-        all_results["passed"] += results2["passed"]
-        all_results["failed"] += results2["failed"]
-        all_results["tests"].extend(results2["tests"])
-    except Exception as e:
-        log(f"CRITICAL ERROR in test_notify_employee_integration: {str(e)}", "ERROR")
-        all_results["failed"] += 1
-        all_results["tests"].append(f"❌ notifyEmployee Integration: Critical error - {str(e)}")
-    
-    # Print summary
-    log("")
+    # TEST GROUP 1: POS Discount/Increase (8 tests)
+    log("\n" + "=" * 80)
+    log("TEST GROUP 1: POS Discount/Increase with permissions + audit log")
     log("=" * 80)
+    results.append(test_1_get_settings())
+    results.append(test_2_checkout_with_discount())
+    results.append(test_3_checkout_with_surcharge())
+    results.append(test_4_missing_discount_reason())
+    results.append(test_5_discount_over_limit())
+    results.append(test_6_manager_override())
+    results.append(test_7_get_modifications())
+    results.append(test_8_get_modifications_filtered())
+    
+    # TEST GROUP 2: Zones AI Load Balancing (6 tests)
+    log("\n" + "=" * 80)
+    log("TEST GROUP 2: Zones AI Load Balancing")
+    log("=" * 80)
+    results.append(test_9_get_load_balance())
+    results.append(test_10_apply_add_fat())
+    results.append(test_11_apply_create_subzone())
+    results.append(test_12_apply_create_repair_task())
+    results.append(test_13_invalid_action_type())
+    results.append(test_14_missing_action_body())
+    
+    # Summary
+    log("\n" + "=" * 80)
     log("TEST SUMMARY")
     log("=" * 80)
+    passed = sum(results)
+    total = len(results)
+    log(f"Total: {total} tests")
+    log(f"Passed: {passed} tests")
+    log(f"Failed: {total - passed} tests")
+    log(f"Success Rate: {(passed/total)*100:.1f}%")
     
-    for test in all_results["tests"]:
-        log(test)
-    
-    log("")
-    log(f"Total Passed: {all_results['passed']}")
-    log(f"Total Failed: {all_results['failed']}")
-    log(f"Total Tests: {all_results['passed'] + all_results['failed']}")
-    
-    if all_results["failed"] == 0:
-        log("✅ ALL TESTS PASSED", "SUCCESS")
+    if passed == total:
+        log("\n✅ ALL TESTS PASSED!")
         return 0
     else:
-        log(f"❌ {all_results['failed']} TEST(S) FAILED", "ERROR")
+        log(f"\n❌ {total - passed} TEST(S) FAILED")
         return 1
 
 if __name__ == "__main__":

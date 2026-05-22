@@ -86,6 +86,23 @@ const SETTINGS_DEFAULTS = {
     proRateOnUpgrade: true,
     requireFullPayment: false,
   },
+  pos: {
+    // Discount controls
+    allowDiscount: true,
+    maxDiscountAmount: 50000,        // 0 = unlimited
+    maxDiscountPercent: 30,          // 0 = unlimited (% of subtotal)
+    requireDiscountReason: true,
+    // Increase/surcharge controls
+    allowIncrease: true,
+    maxIncreaseAmount: 50000,
+    maxIncreasePercent: 20,
+    requireIncreaseReason: true,
+    // Permissions
+    discountAllowedRoles: ['admin', 'manager', 'cashier'],   // role names allowed to apply discount
+    increaseAllowedRoles: ['admin', 'manager', 'cashier'],
+    // Manager approval for over-limit
+    requireManagerApprovalAboveLimit: true,
+  },
   whatsapp: {
     enabled: false,
     provider: 'cloud',
@@ -4379,17 +4396,69 @@ async function handle(request, params) {
   if (path === 'pos/checkout' && method === 'POST') {
     const body = await getJsonBody(request);
     const items = Array.isArray(body.items) ? body.items : [];
-    const discount = Number(body.discount || 0);
+    const discount = Math.max(0, Number(body.discount || 0));
+    const surcharge = Math.max(0, Number(body.surcharge || 0));
     const paymentMethod = body.paymentMethod || 'cash';
     const cashier = body.cashier || body.cashierName || null;
     const cashierId = body.cashierId || null;
+    const cashierRole = body.cashierRole || '';
     const customer = body.customer || 'زبون نقدي';
-    const discountReason = body.discountReason || '';
+    const discountReason = String(body.discountReason || '').trim();
+    const surchargeReason = String(body.surchargeReason || '').trim();
+    const managerOverride = body.managerOverride === true; // true if manager approved over-limit
     if (items.length === 0) return err('السلة فارغة', 400);
 
     let subtotal = 0;
     for (const it of items) {
       subtotal += Number(it.price || 0) * Number(it.quantity || 1);
+    }
+
+    // ============ POS PERMISSIONS & LIMIT VALIDATION ============
+    const settingsDoc = await db.collection('settings').findOne({ id: 'system' });
+    // Merge with defaults to ensure pos section exists
+    const posCfg = { ...SETTINGS_DEFAULTS.pos, ...(settingsDoc?.pos || {}) };
+    const overLimitWarnings = [];
+
+    if (discount > 0) {
+      if (posCfg.allowDiscount === false) return err('الخصم غير مسموح حسب الإعدادات', 403);
+      if (posCfg.requireDiscountReason !== false && !discountReason) return err('سبب الخصم مطلوب', 400);
+      if (Array.isArray(posCfg.discountAllowedRoles) && posCfg.discountAllowedRoles.length > 0 && cashierRole && !posCfg.discountAllowedRoles.includes(cashierRole) && cashierRole !== 'admin') {
+        return err('الدور الحالي لا يملك صلاحية الخصم', 403);
+      }
+      const maxAmt = Number(posCfg.maxDiscountAmount || 0);
+      const maxPct = Number(posCfg.maxDiscountPercent || 0);
+      const pctOfSub = subtotal > 0 ? (discount / subtotal) * 100 : 0;
+      const overAmt = maxAmt > 0 && discount > maxAmt;
+      const overPct = maxPct > 0 && pctOfSub > maxPct;
+      if (overAmt || overPct) {
+        if (!managerOverride && posCfg.requireManagerApprovalAboveLimit !== false) {
+          return err(`الخصم يتجاوز الحد المسموح${overAmt ? ` (الحد ${maxAmt.toLocaleString('en-US')} د.ع)` : ''}${overPct ? ` (الحد ${maxPct}%)` : ''} - يحتاج موافقة المدير`, 403);
+        }
+        overLimitWarnings.push('discount_over_limit');
+      }
+    }
+
+    if (surcharge > 0) {
+      if (posCfg.allowIncrease === false) return err('الزيادة غير مسموحة حسب الإعدادات', 403);
+      if (posCfg.requireIncreaseReason !== false && !surchargeReason) return err('سبب الزيادة مطلوب', 400);
+      if (Array.isArray(posCfg.increaseAllowedRoles) && posCfg.increaseAllowedRoles.length > 0 && cashierRole && !posCfg.increaseAllowedRoles.includes(cashierRole) && cashierRole !== 'admin') {
+        return err('الدور الحالي لا يملك صلاحية الزيادة', 403);
+      }
+      const maxAmt = Number(posCfg.maxIncreaseAmount || 0);
+      const maxPct = Number(posCfg.maxIncreasePercent || 0);
+      const pctOfSub = subtotal > 0 ? (surcharge / subtotal) * 100 : 0;
+      const overAmt = maxAmt > 0 && surcharge > maxAmt;
+      const overPct = maxPct > 0 && pctOfSub > maxPct;
+      if (overAmt || overPct) {
+        if (!managerOverride && posCfg.requireManagerApprovalAboveLimit !== false) {
+          return err(`الزيادة تتجاوز الحد المسموح${overAmt ? ` (الحد ${maxAmt.toLocaleString('en-US')} د.ع)` : ''}${overPct ? ` (الحد ${maxPct}%)` : ''} - تحتاج موافقة المدير`, 403);
+        }
+        overLimitWarnings.push('surcharge_over_limit');
+      }
+    }
+
+    // ============ DECREMENT STOCK ============
+    for (const it of items) {
       if (it.id || it.productId) {
         await db.collection('products').updateOne(
           { id: it.productId || it.id },
@@ -4397,23 +4466,93 @@ async function handle(request, params) {
         );
       }
     }
-    const total = Math.max(0, subtotal - discount);
+
+    const total = Math.max(0, subtotal - discount + surcharge);
     const now = new Date().toISOString();
     const sale = {
       id: uuidv4(),
       invoiceNumber: `INV-${Date.now()}`,
-      items, subtotal, discount, total, paymentMethod,
-      cashier, cashierId, cashierName: cashier,
-      customer, discountReason,
+      items, subtotal, discount, surcharge, total, paymentMethod,
+      cashier, cashierId, cashierName: cashier, cashierRole,
+      customer, discountReason, surchargeReason,
+      managerOverride: !!managerOverride,
+      overLimitWarnings,
       profit: 0, status: 'completed', cancelled: false,
       createdAt: now,
     };
     await db.collection('sales').insertOne(sale);
     delete sale._id;
+
+    // Standard sale activity log
     await logActivity(db, { action: 'sale_created', entity: 'sales', entityId: sale.id, user: cashier || 'POS', details: `فاتورة ${sale.invoiceNumber} - ${total.toLocaleString()} د.ع`, ip: clientIp });
+
+    // ============ POS MODIFICATION AUDIT LOG ============
+    if (discount > 0 || surcharge > 0) {
+      await db.collection('pos_modifications').insertOne({
+        id: uuidv4(),
+        saleId: sale.id,
+        invoiceNumber: sale.invoiceNumber,
+        cashier, cashierId, cashierRole,
+        customer, subtotal, discount, surcharge, total,
+        discountReason, surchargeReason,
+        managerOverride: !!managerOverride,
+        overLimitWarnings,
+        modificationType: discount > 0 && surcharge > 0 ? 'both' : (discount > 0 ? 'discount' : 'increase'),
+        createdAt: now,
+      });
+      await logActivity(db, {
+        action: 'pos_modification', entity: 'pos_modifications', entityId: sale.id,
+        user: cashier || 'POS',
+        details: `${discount > 0 ? `خصم ${discount.toLocaleString('en-US')} د.ع${discountReason ? ` (${discountReason})` : ''}` : ''}${discount > 0 && surcharge > 0 ? ' | ' : ''}${surcharge > 0 ? `زيادة ${surcharge.toLocaleString('en-US')} د.ع${surchargeReason ? ` (${surchargeReason})` : ''}` : ''} - فاتورة ${sale.invoiceNumber}`,
+        ip: clientIp,
+      });
+      // Notify manager for visibility
+      if (overLimitWarnings.length > 0 || managerOverride) {
+        await notifyManager(db, {
+          type: 'pos_over_limit',
+          title: `⚠️ تعديل POS فوق الحد - ${sale.invoiceNumber}`,
+          message: `الكاشير: ${cashier || '-'}\n${discount > 0 ? `الخصم: ${discount.toLocaleString('en-US')} د.ع${discountReason ? ` (${discountReason})` : ''}\n` : ''}${surcharge > 0 ? `الزيادة: ${surcharge.toLocaleString('en-US')} د.ع${surchargeReason ? ` (${surchargeReason})` : ''}\n` : ''}الإجمالي: ${total.toLocaleString('en-US')} د.ع`,
+          entityType: 'generic', entityId: sale.id,
+          priority: 'high',
+        });
+      }
+    }
+
     // Emit real-time event
     await db.collection('events').insertOne({ id: uuidv4(), type: 'sale_new', saleId: sale.id, invoiceNumber: sale.invoiceNumber, total, cashier, ts: now });
     return ok(sale, 201);
+  }
+
+  // ============ POS MODIFICATIONS AUDIT LOG ============
+  if (path === 'pos/modifications' && method === 'GET') {
+    const url = new URL(request.url);
+    const startDate = url.searchParams.get('startDate');
+    const endDate = url.searchParams.get('endDate');
+    const cashierId = url.searchParams.get('cashierId');
+    const type = url.searchParams.get('type'); // 'discount' | 'increase' | 'both' | undefined
+    const q = {};
+    if (startDate || endDate) {
+      q.createdAt = {};
+      if (startDate) q.createdAt.$gte = startDate;
+      if (endDate) q.createdAt.$lte = endDate + 'T23:59:59.999Z';
+    }
+    if (cashierId) q.cashierId = cashierId;
+    if (type && ['discount', 'increase', 'both'].includes(type)) q.modificationType = type;
+    const items = await db.collection('pos_modifications').find(q).sort({ createdAt: -1 }).limit(500).toArray();
+    const cleaned = items.map(x => { delete x._id; return x; });
+    // Summary
+    const totalDiscount = cleaned.reduce((s, x) => s + Number(x.discount || 0), 0);
+    const totalIncrease = cleaned.reduce((s, x) => s + Number(x.surcharge || 0), 0);
+    const overLimitCount = cleaned.filter(x => Array.isArray(x.overLimitWarnings) && x.overLimitWarnings.length > 0).length;
+    return ok({
+      items: cleaned,
+      summary: {
+        totalCount: cleaned.length,
+        totalDiscount, totalIncrease,
+        overLimitCount,
+        netAdjustment: totalIncrease - totalDiscount,
+      },
+    });
   }
 
   if (path.startsWith('products/barcode/') && method === 'GET') {
@@ -4550,6 +4689,224 @@ async function handle(request, params) {
       totalTraffic: Math.floor(Math.random() * 5000) + 3000,
       alerts: zones.filter(z => z.status !== 'online').map(z => ({ id: z.id, type: z.status === 'offline' ? 'critical' : 'warning', message: z.status === 'offline' ? `الزون ${z.name} مفصول!` : `الزون ${z.name} ضغط عالي (${z.utilization}%)`, time: new Date().toISOString() })),
     });
+  }
+
+  // ============ AI LOAD BALANCING SUGGESTIONS ============
+  // GET /api/zones/load-balance — deterministic suggestions for over-loaded zones
+  if (path === 'zones/load-balance' && method === 'GET') {
+    const settingsDoc = await db.collection('settings').findOne({ id: 'system' });
+    const zonesCfg = settingsDoc?.zones || {};
+    const warnTh = Number(zonesCfg.warningThreshold ?? 80);
+    const critTh = Number(zonesCfg.criticalThreshold ?? 95);
+    const defaultCap = Number(zonesCfg.defaultCapacity ?? 32);
+
+    const zones = await db.collection('zones').find({}).toArray();
+    const networks = await db.collection('networks').find({}).toArray();
+    const subs = await db.collection('subscribers').find({ status: 'active' }).toArray();
+
+    // Index networks by zone
+    const netsByZone = {};
+    for (const n of networks) {
+      if (!n.zoneId) continue;
+      (netsByZone[n.zoneId] ||= []).push(n);
+    }
+
+    // Compute richer utilization (subscribers vs total capacity)
+    const enriched = zones.map(z => {
+      const zNets = netsByZone[z.id] || [];
+      const capacity = zNets.length > 0 ? zNets.reduce((s, n) => s + (Number(n.capacity) || defaultCap), 0) : (Number(z.fats || 1) * defaultCap);
+      const subsHere = subs.filter(s => s.zoneId === z.id).length;
+      const utilization = capacity > 0 ? Math.round((subsHere / capacity) * 100) : 0;
+      return { ...z, _capacity: capacity, _subscribers: subsHere, _utilization: utilization, _networks: zNets.length };
+    });
+
+    const overloaded = enriched.filter(z => (z._utilization || z.utilization || 0) >= warnTh);
+    const underUsed = enriched.filter(z => (z._utilization || z.utilization || 0) < warnTh - 30 && z.status !== 'offline');
+
+    const suggestions = [];
+
+    for (const z of overloaded) {
+      const util = z._utilization || z.utilization || 0;
+      const isCritical = util >= critTh;
+      const overBy = Math.max(0, z._subscribers - Math.floor(z._capacity * (warnTh / 100)));
+
+      // Suggestion 1: Add new FAT(s)
+      const fatsToAdd = Math.max(1, Math.ceil(overBy / defaultCap));
+      suggestions.push({
+        id: uuidv4(),
+        zoneId: z.id, zoneName: z.name,
+        priority: isCritical ? 'critical' : 'high',
+        type: 'add_fat',
+        title: `➕ إضافة ${fatsToAdd} فات${fatsToAdd > 1 ? '' : ' '} جديدة في ${z.name}`,
+        reason: `الزون مُحمَّل بنسبة ${util}% (${z._subscribers}/${z._capacity}). إضافة ${fatsToAdd} فات تزيد السعة بـ ${fatsToAdd * defaultCap} مشترك.`,
+        action: { type: 'add_fat', zoneId: z.id, count: fatsToAdd, capacityPerFat: defaultCap },
+      });
+
+      // Suggestion 2: Move subscribers to nearby under-used zone
+      if (underUsed.length > 0 && overBy > 0) {
+        // Pick closest under-used zone by lat/lng if available, else first
+        let target = underUsed[0];
+        if (z.lat && z.lng) {
+          target = underUsed.reduce((best, u) => {
+            if (!u.lat || !u.lng) return best;
+            const dCur = Math.hypot((u.lat - z.lat), (u.lng - z.lng));
+            const dBest = best.lat ? Math.hypot((best.lat - z.lat), (best.lng - z.lng)) : Infinity;
+            return dCur < dBest ? u : best;
+          }, target);
+        }
+        const moveCount = Math.min(overBy, target._capacity - target._subscribers);
+        if (moveCount > 0) {
+          suggestions.push({
+            id: uuidv4(),
+            zoneId: z.id, zoneName: z.name,
+            priority: isCritical ? 'critical' : 'medium',
+            type: 'move_subscribers',
+            title: `🔀 نقل ${moveCount} مشترك من ${z.name} إلى ${target.name}`,
+            reason: `${z.name} مُحمَّل ${util}%، بينما ${target.name} مستخدم ${target._utilization}% فقط. النقل يخفّف الضغط ويحسّن الاستقرار.`,
+            action: { type: 'move_subscribers', fromZoneId: z.id, toZoneId: target.id, count: moveCount },
+          });
+        }
+      }
+
+      // Suggestion 3: Create sub-zone (split)
+      if (isCritical) {
+        suggestions.push({
+          id: uuidv4(),
+          zoneId: z.id, zoneName: z.name,
+          priority: 'high',
+          type: 'create_subzone',
+          title: `🪓 تقسيم ${z.name} إلى زون فرعي`,
+          reason: `الزون عند ${util}% (حرج). تقسيمه إلى زون رئيسي + فرعي يضمن استقراراً طويل المدى ومراقبة أدق.`,
+          action: { type: 'create_subzone', parentZoneId: z.id, parentZoneName: z.name },
+        });
+      }
+    }
+
+    // Offline zones — investigation needed
+    for (const z of enriched.filter(x => x.status === 'offline')) {
+      suggestions.push({
+        id: uuidv4(),
+        zoneId: z.id, zoneName: z.name,
+        priority: 'critical',
+        type: 'investigate_offline',
+        title: `🚨 تحقيق فوري في ${z.name} (مفصول)`,
+        reason: `الزون ${z.name} في حالة offline. ${z._subscribers} مشترك متأثر. يلزم إرسال فني فوراً.`,
+        action: { type: 'create_repair_task', zoneId: z.id, zoneName: z.name },
+      });
+    }
+
+    // Sort: critical → high → medium → low
+    const order = { critical: 0, high: 1, medium: 2, low: 3 };
+    suggestions.sort((a, b) => (order[a.priority] || 9) - (order[b.priority] || 9));
+
+    return ok({
+      generatedAt: new Date().toISOString(),
+      summary: {
+        totalZones: zones.length,
+        overloadedCount: overloaded.length,
+        underUsedCount: underUsed.length,
+        offlineCount: enriched.filter(x => x.status === 'offline').length,
+        thresholds: { warning: warnTh, critical: critTh },
+      },
+      zones: enriched.map(z => ({ id: z.id, name: z.name, status: z.status, subscribers: z._subscribers, capacity: z._capacity, utilization: z._utilization, networks: z._networks })),
+      suggestions,
+    });
+  }
+
+  // POST /api/zones/load-balance/apply — apply a suggestion
+  if (path === 'zones/load-balance/apply' && method === 'POST') {
+    const { action } = await getJsonBody(request);
+    if (!action || !action.type) return err('action مطلوب', 400);
+    const now = new Date().toISOString();
+    let result = { success: false };
+
+    if (action.type === 'add_fat') {
+      const z = await db.collection('zones').findOne({ id: action.zoneId });
+      if (!z) return err('الزون غير موجود', 404);
+      const nets = await db.collection('networks').find({ zoneId: action.zoneId }).toArray();
+      const docs = [];
+      for (let i = 0; i < (action.count || 1); i++) {
+        const num = nets.length + i + 1;
+        docs.push({
+          id: uuidv4(),
+          number: `F-${String(z.number || z.id).slice(-4)}-${String(num).padStart(2, '0')}`,
+          name: `FAT-${num} - ${z.name}`,
+          zoneId: z.id, zoneName: z.name, zoneNumber: z.number,
+          capacity: action.capacityPerFat || 32,
+          subscribers: 0, status: 'active',
+          lat: z.lat, lng: z.lng,
+          utilization: 0,
+          createdAt: now,
+        });
+      }
+      if (docs.length > 0) await db.collection('networks').insertMany(docs);
+      await db.collection('zones').updateOne({ id: z.id }, { $inc: { fats: docs.length } });
+      result = { success: true, created: docs.length, type: 'add_fat' };
+
+    } else if (action.type === 'move_subscribers') {
+      const fromZ = await db.collection('zones').findOne({ id: action.fromZoneId });
+      const toZ = await db.collection('zones').findOne({ id: action.toZoneId });
+      if (!fromZ || !toZ) return err('زون غير موجود', 404);
+      const subs = await db.collection('subscribers').find({ zoneId: action.fromZoneId, status: 'active' }).limit(Math.max(1, Number(action.count) || 1)).toArray();
+      const ids = subs.map(s => s.id);
+      if (ids.length > 0) {
+        await db.collection('subscribers').updateMany(
+          { id: { $in: ids } },
+          { $set: { zoneId: toZ.id, zoneName: toZ.name, zoneNumber: toZ.number, movedAt: now, movedFromZoneId: fromZ.id } }
+        );
+        // Update counters
+        const fromCount = await db.collection('subscribers').countDocuments({ zoneId: fromZ.id });
+        const toCount = await db.collection('subscribers').countDocuments({ zoneId: toZ.id });
+        await db.collection('zones').updateOne({ id: fromZ.id }, { $set: { subscribers: fromCount } });
+        await db.collection('zones').updateOne({ id: toZ.id }, { $set: { subscribers: toCount } });
+      }
+      result = { success: true, moved: ids.length, type: 'move_subscribers' };
+
+    } else if (action.type === 'create_subzone') {
+      const parent = await db.collection('zones').findOne({ id: action.parentZoneId });
+      if (!parent) return err('الزون الأب غير موجود', 404);
+      const sibling = await db.collection('zones').countDocuments({ parentZoneId: parent.id });
+      const sub = {
+        id: uuidv4(),
+        number: `${parent.number}-S${sibling + 1}`,
+        name: `${parent.name} - فرعي ${sibling + 1}`,
+        location: parent.location,
+        lat: parent.lat, lng: parent.lng,
+        status: 'online', subscribers: 0, fats: 1, utilization: 0,
+        parentZoneId: parent.id, parentZoneName: parent.name,
+        createdAt: now,
+      };
+      await db.collection('zones').insertOne(sub);
+      result = { success: true, subzoneId: sub.id, type: 'create_subzone' };
+
+    } else if (action.type === 'create_repair_task') {
+      const t = {
+        id: uuidv4(),
+        title: `🚨 إصلاح زون مفصول: ${action.zoneName}`,
+        description: `الزون ${action.zoneName} في حالة offline. التحقيق وإعادة التشغيل فوراً.`,
+        priority: 'urgent',
+        status: 'pending',
+        progress: 0,
+        attachments: [], notes: '',
+        taskType: 'noc_investigation',
+        relatedZoneId: action.zoneId,
+        createdBy: 'AI Load Balancer',
+        createdAt: now,
+      };
+      await db.collection('tasks').insertOne(t);
+      result = { success: true, taskId: t.id, type: 'create_repair_task' };
+
+    } else {
+      return err('نوع action غير مدعوم', 400);
+    }
+
+    await logActivity(db, {
+      action: `ai_loadbalance_apply_${action.type}`,
+      entity: 'zones',
+      entityId: action.zoneId || action.fromZoneId || null,
+      user: 'المدير', details: `تطبيق اقتراح AI: ${action.type}`, ip: clientIp,
+    });
+    return ok(result);
   }
 
   if (path === 'reports/summary' && method === 'GET') {

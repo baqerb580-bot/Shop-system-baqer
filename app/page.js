@@ -31,7 +31,7 @@ import {
   Send, Bot, Menu, Bell, ChevronLeft, ChevronRight, Box, CreditCard, FileText, X,
   CheckCircle2, Clock, AlertCircle, Globe, Smartphone, Headphones,
   HardDrive, Plug, Battery, ScanLine, Receipt, ShoppingBag, UserCheck,
-  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer, ListTodo, Check, XCircle, LogOut, MessageSquare, QrCode, Power, RefreshCw, Wallet
+  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer, ListTodo, Check, XCircle, LogOut, MessageSquare, QrCode, Power, RefreshCw, Wallet, Brain
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, BarChart as RBarChart, Bar,
@@ -1073,20 +1073,29 @@ function POS() {
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState('');
   const [discount, setDiscount] = useState(0);
+  const [discountReason, setDiscountReason] = useState('');
+  const [surcharge, setSurcharge] = useState(0);
+  const [surchargeReason, setSurchargeReason] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [customer, setCustomer] = useState('');
   const [showInvoice, setShowInvoice] = useState(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [posCfg, setPosCfg] = useState({});
+  const [overrideOpen, setOverrideOpen] = useState(null); // { error, payload }
+  const [adminPin, setAdminPin] = useState('');
   const barcodeRef = useRef(null);
 
-  useEffect(() => { api('products').then(setArr(setProducts)); }, []);
+  useEffect(() => {
+    api('products').then(setArr(setProducts));
+    api('settings').then(s => setPosCfg(s?.pos || {}));
+  }, []);
 
   const filtered = useMemo(() =>
     products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.sku?.includes(search) || p.barcode?.includes(search))
   , [products, search]);
 
   const subtotal = cart.reduce((s, x) => s + x.price * x.quantity, 0);
-  const total = Math.max(0, subtotal - Number(discount || 0));
+  const total = Math.max(0, subtotal - Number(discount || 0) + Number(surcharge || 0));
 
   const addToCart = (p) => {
     if (p.stock <= 0) { toast.error('المنتج نفد من المخزون'); return; }
@@ -1097,14 +1106,42 @@ function POS() {
     });
   };
 
-  const checkout = async () => {
+  const checkout = async (managerOverride = false) => {
     if (cart.length === 0) { toast.error('السلة فارغة'); return; }
-    const r = await api('pos/checkout', { method: 'POST', body: JSON.stringify({ items: cart, discount: Number(discount), paymentMethod, customer: customer || 'زبون نقدي' }) });
-    if (r.error) { toast.error(r.error); return; }
+    const payload = {
+      items: cart,
+      discount: Number(discount), discountReason,
+      surcharge: Number(surcharge), surchargeReason,
+      paymentMethod,
+      customer: customer || 'زبون نقدي',
+      managerOverride,
+    };
+    const r = await api('pos/checkout', { method: 'POST', body: JSON.stringify(payload) });
+    if (r.error) {
+      // Detect "needs manager approval" error and open override dialog
+      if (typeof r.error === 'string' && (r.error.includes('موافقة المدير') || r.error.includes('يتجاوز الحد'))) {
+        setOverrideOpen({ error: r.error });
+        return;
+      }
+      toast.error(r.error);
+      return;
+    }
     toast.success('تم إصدار الفاتورة بنجاح');
     setShowInvoice(r);
-    setCart([]); setDiscount(0); setCustomer('');
+    setCart([]); setDiscount(0); setDiscountReason(''); setSurcharge(0); setSurchargeReason(''); setCustomer('');
+    setOverrideOpen(null); setAdminPin('');
     api('products').then(setArr(setProducts));
+  };
+
+  const tryManagerOverride = async () => {
+    if (!adminPin) { toast.error('أدخل كلمة سر المدير'); return; }
+    const r = await fetch('/api/admin/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: adminPin }),
+    });
+    const d = await r.json();
+    if (!d?.success) { toast.error('كلمة سر المدير غير صحيحة'); return; }
+    await checkout(true);
   };
 
   const handleBarcodeSubmit = async (e) => {
@@ -1207,28 +1244,77 @@ function POS() {
 
         <div className="border-t border-gold-soft p-4 space-y-3">
           <Input placeholder="اسم الزبون (اختياري)" value={customer} onChange={e => setCustomer(e.target.value)} className="bg-input/30 border-gold/20" />
-          <div className="flex gap-2">
-            <Input type="number" placeholder="خصم" value={discount} onChange={e => setDiscount(e.target.value)} className="bg-input/30 border-gold/20" />
-            <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-              <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cash">نقد</SelectItem>
-                <SelectItem value="card">بطاقة</SelectItem>
-                <SelectItem value="transfer">حوالة</SelectItem>
-                <SelectItem value="debt">آجل</SelectItem>
-              </SelectContent>
-            </Select>
+          {/* Discount + Surcharge */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label className="text-[10px] text-rose-300">💸 خصم</Label>
+              <Input type="number" min="0" placeholder="0" value={discount} onChange={e => setDiscount(e.target.value)} className="bg-input/30 border-rose-500/30 h-9" />
+              {Number(discount) > 0 && (posCfg.requireDiscountReason !== false) && (
+                <Input placeholder="سبب الخصم *" value={discountReason} onChange={e => setDiscountReason(e.target.value)} className="bg-input/30 border-rose-500/30 h-8 text-xs" />
+              )}
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] text-emerald-300">💰 زيادة</Label>
+              <Input type="number" min="0" placeholder="0" value={surcharge} onChange={e => setSurcharge(e.target.value)} className="bg-input/30 border-emerald-500/30 h-9" />
+              {Number(surcharge) > 0 && (posCfg.requireIncreaseReason !== false) && (
+                <Input placeholder="سبب الزيادة *" value={surchargeReason} onChange={e => setSurchargeReason(e.target.value)} className="bg-input/30 border-emerald-500/30 h-8 text-xs" />
+              )}
+            </div>
           </div>
+          {/* Limit hints */}
+          {(Number(discount) > 0 || Number(surcharge) > 0) && (
+            <div className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2 leading-relaxed">
+              {posCfg.maxDiscountAmount > 0 && <div>الحد الأقصى للخصم: {posCfg.maxDiscountAmount.toLocaleString('en-US')} د.ع{posCfg.maxDiscountPercent > 0 && ` أو ${posCfg.maxDiscountPercent}%`}</div>}
+              {posCfg.maxIncreaseAmount > 0 && <div>الحد الأقصى للزيادة: {posCfg.maxIncreaseAmount.toLocaleString('en-US')} د.ع{posCfg.maxIncreasePercent > 0 && ` أو ${posCfg.maxIncreasePercent}%`}</div>}
+            </div>
+          )}
+          <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+            <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="cash">نقد</SelectItem>
+              <SelectItem value="card">بطاقة</SelectItem>
+              <SelectItem value="transfer">حوالة</SelectItem>
+              <SelectItem value="debt">آجل</SelectItem>
+            </SelectContent>
+          </Select>
           <div className="space-y-1 text-sm">
             <div className="flex justify-between text-muted-foreground"><span>المجموع الفرعي:</span><span>{fmt(subtotal)}</span></div>
-            <div className="flex justify-between text-muted-foreground"><span>الخصم:</span><span>-{fmt(discount || 0)}</span></div>
+            {Number(discount) > 0 && <div className="flex justify-between text-rose-400"><span>الخصم:</span><span>-{fmt(discount || 0)}</span></div>}
+            {Number(surcharge) > 0 && <div className="flex justify-between text-emerald-400"><span>الزيادة:</span><span>+{fmt(surcharge || 0)}</span></div>}
             <div className="flex justify-between text-lg font-bold gold-text"><span>الإجمالي:</span><span>{fmtCurrency(total)}</span></div>
           </div>
-          <Button onClick={checkout} className="w-full btn-gold h-12 text-base">
+          <Button onClick={() => checkout(false)} className="w-full btn-gold h-12 text-base">
             <Receipt className="w-4 h-4 ml-2" /> إصدار الفاتورة
           </Button>
         </div>
       </Card>
+
+      {/* Manager Override Dialog */}
+      <Dialog open={!!overrideOpen} onOpenChange={(v) => { if (!v) { setOverrideOpen(null); setAdminPin(''); } }}>
+        <DialogContent className="glass-strong border-amber-500/40 max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-amber-400 flex items-center gap-2">⚠️ يحتاج موافقة المدير</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-2 text-xs">{overrideOpen?.error}</p>
+            <div>
+              <Label className="text-xs">كلمة سر المدير</Label>
+              <Input
+                type="password" value={adminPin}
+                onChange={e => setAdminPin(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && tryManagerOverride()}
+                className="bg-input/30 border-amber-500/40 font-mono" dir="ltr"
+                placeholder="••••"
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => { setOverrideOpen(null); setAdminPin(''); }}>إلغاء</Button>
+              <Button onClick={tryManagerOverride} className="flex-1 btn-gold">تأكيد ومتابعة</Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">سيُسجَّل هذا التعديل في سجل التعديلات مع علامة "موافقة مدير"</p>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Invoice Dialog */}
       <Dialog open={!!showInvoice} onOpenChange={() => setShowInvoice(null)}>
@@ -2549,6 +2635,9 @@ function Zones() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: '', location: '', lat: 33.3, lng: 44.4, status: 'online', fats: 1, utilization: 50 });
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiData, setAiData] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   const load = () => api('zones').then(setArr(setItems));
   useEffect(() => { load(); }, []);
@@ -2562,13 +2651,37 @@ function Zones() {
   const remove = async (id) => { await api(`zones/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
   const startEdit = (z) => { setEditing(z); setForm(z); setOpen(true); };
 
+  const loadAI = async () => {
+    setAiLoading(true);
+    const r = await api('zones/load-balance');
+    setAiLoading(false);
+    if (r?.error) { toast.error(r.error); return; }
+    setAiData(r);
+    setAiOpen(true);
+  };
+
+  const applySuggestion = async (s) => {
+    if (!confirm(`تطبيق الاقتراح: ${s.title}؟`)) return;
+    const r = await api('zones/load-balance/apply', { method: 'POST', body: JSON.stringify({ action: s.action }) });
+    if (r?.error) { toast.error(r.error); return; }
+    toast.success('✅ تم تطبيق الاقتراح');
+    // Remove from current suggestion list and reload data
+    setAiData(prev => ({ ...prev, suggestions: prev.suggestions.filter(x => x.id !== s.id) }));
+    load();
+  };
+
   return (
     <div className="max-w-[1600px] mx-auto space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h1 className="text-2xl font-bold gold-text">الزونات والشبكات</h1>
-        <Button onClick={() => { setEditing(null); setForm({ name: '', location: '', lat: 33.3, lng: 44.4, status: 'online', fats: 1, utilization: 50 }); setOpen(true); }} className="btn-gold">
-          <Plus className="w-4 h-4 ml-1" /> زون جديد
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={loadAI} disabled={aiLoading} variant="outline" className="border-cyan-500/40 hover:bg-cyan-500/10 text-cyan-400">
+            <Brain className="w-4 h-4 ml-1" /> {aiLoading ? 'جاري التحليل...' : '🤖 اقتراحات AI لتوزيع الحمل'}
+          </Button>
+          <Button onClick={() => { setEditing(null); setForm({ name: '', location: '', lat: 33.3, lng: 44.4, status: 'online', fats: 1, utilization: 50 }); setOpen(true); }} className="btn-gold">
+            <Plus className="w-4 h-4 ml-1" /> زون جديد
+          </Button>
+        </div>
       </div>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -2635,6 +2748,108 @@ function Zones() {
           />
 
           <DialogFooter><Button onClick={save} className="btn-gold w-full">حفظ</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* AI Load Balancing Suggestions Dialog */}
+      <Dialog open={aiOpen} onOpenChange={setAiOpen}>
+        <DialogContent className="glass-strong border-cyan-500/40 max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-cyan-400">
+              <Brain className="w-5 h-5" /> 🤖 اقتراحات AI لتوزيع حمل الزونات
+            </DialogTitle>
+          </DialogHeader>
+          {aiData && (
+            <div className="space-y-4">
+              {/* Summary */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div className="glass-card rounded-lg p-3 text-center">
+                  <p className="text-[10px] text-muted-foreground">إجمالي الزونات</p>
+                  <p className="text-2xl font-bold gold-text">{aiData.summary.totalZones}</p>
+                </div>
+                <div className="glass-card rounded-lg p-3 text-center border border-amber-500/30">
+                  <p className="text-[10px] text-muted-foreground">مُحمَّلة</p>
+                  <p className="text-2xl font-bold text-amber-400">{aiData.summary.overloadedCount}</p>
+                </div>
+                <div className="glass-card rounded-lg p-3 text-center border border-emerald-500/30">
+                  <p className="text-[10px] text-muted-foreground">قليلة الاستخدام</p>
+                  <p className="text-2xl font-bold text-emerald-400">{aiData.summary.underUsedCount}</p>
+                </div>
+                <div className="glass-card rounded-lg p-3 text-center border border-red-500/30">
+                  <p className="text-[10px] text-muted-foreground">مفصولة</p>
+                  <p className="text-2xl font-bold text-red-400">{aiData.summary.offlineCount}</p>
+                </div>
+              </div>
+
+              {/* Suggestions */}
+              <div>
+                <h3 className="text-sm font-bold gold-text mb-2">🎯 اقتراحات ({aiData.suggestions.length})</h3>
+                {aiData.suggestions.length === 0 ? (
+                  <div className="p-6 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-center">
+                    <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-400 mb-2" />
+                    <p className="text-sm font-bold text-emerald-400">✨ كل الزونات في حالة متوازنة!</p>
+                    <p className="text-xs text-muted-foreground mt-1">لا توجد اقتراحات حالياً</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {aiData.suggestions.map(s => {
+                      const colors = {
+                        critical: 'border-red-500/50 bg-red-500/5',
+                        high: 'border-amber-500/50 bg-amber-500/5',
+                        medium: 'border-cyan-500/50 bg-cyan-500/5',
+                        low: 'border-emerald-500/50 bg-emerald-500/5',
+                      };
+                      const labels = { critical: '🔴 حرج', high: '🟠 عالي', medium: '🟡 متوسط', low: '🟢 منخفض' };
+                      return (
+                        <div key={s.id} className={`p-3 rounded-lg border ${colors[s.priority] || colors.medium}`}>
+                          <div className="flex justify-between items-start gap-2 mb-2">
+                            <h4 className="text-sm font-bold flex-1">{s.title}</h4>
+                            <Badge className="text-[10px]">{labels[s.priority]}</Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mb-2">{s.reason}</p>
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={() => applySuggestion(s)} className="btn-gold h-7 text-xs">
+                              ✅ تطبيق الاقتراح
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Zones overview */}
+              <div>
+                <h3 className="text-sm font-bold gold-text mb-2">📊 نظرة عامة ({aiData.zones.length} زون)</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {aiData.zones.map(z => (
+                    <div key={z.id} className="p-2 rounded border border-gold-soft bg-input/20 flex justify-between items-center text-xs">
+                      <div className="flex-1">
+                        <p className="font-bold">{z.name}</p>
+                        <p className="text-[10px] text-muted-foreground">{z.subscribers}/{z.capacity} مشترك · {z.networks} فات</p>
+                      </div>
+                      <div className="text-left">
+                        <p className={`font-bold ${z.utilization >= 90 ? 'text-red-400' : z.utilization >= 70 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {z.utilization}%
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <p className="text-[10px] text-muted-foreground text-center">
+                آخر تحديث: {new Date(aiData.generatedAt).toLocaleString('ar-IQ')}
+              </p>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button onClick={loadAI} variant="outline" className="border-cyan-500/40">
+              <RefreshCw className="w-4 h-4 ml-1" /> تحديث التحليل
+            </Button>
+            <Button onClick={() => setAiOpen(false)} className="btn-gold flex-1">إغلاق</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
