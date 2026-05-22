@@ -1099,6 +1099,226 @@ async function handle(request, params) {
     return ok({ totalSent, totalFailed, totalQueued, todaySent, weekSent });
   }
 
+  // ============ BALANCE ACCOUNTS (Fast / Master / Management / Cash / Box) ============
+  // List all accounts with current balance + recent stats
+  if (path === 'balance/accounts' && method === 'GET') {
+    let accounts = await db.collection('balance_accounts').find({}).toArray();
+    // Auto-seed default accounts once (first call)
+    if (accounts.length === 0) {
+      const defaults = [
+        { id: uuidv4(), key: 'fast',       name: 'رصيد Fast',     type: 'fast',       balance: 0, color: '#3b82f6', icon: '⚡', enabled: true, createdAt: new Date().toISOString() },
+        { id: uuidv4(), key: 'master',     name: 'رصيد Master',   type: 'master',     balance: 0, color: '#a855f7', icon: '💳', enabled: true, createdAt: new Date().toISOString() },
+        { id: uuidv4(), key: 'management', name: 'رصيد المنجمنت', type: 'management', balance: 0, color: '#10b981', icon: '🌐', enabled: true, createdAt: new Date().toISOString() },
+        { id: uuidv4(), key: 'cash',       name: 'رصيد الكاش',    type: 'cash',       balance: 0, color: '#f59e0b', icon: '💵', enabled: true, createdAt: new Date().toISOString() },
+        { id: uuidv4(), key: 'box',        name: 'الصندوق',       type: 'box',        balance: 0, color: '#ec4899', icon: '🧰', enabled: true, createdAt: new Date().toISOString() },
+      ];
+      await db.collection('balance_accounts').insertMany(defaults.map(d => ({ ...d })));
+      accounts = defaults;
+    }
+    // Add transaction counts
+    const enriched = await Promise.all(accounts.map(async a => {
+      try { delete a._id; } catch {}
+      const txCount = await db.collection('balance_transactions').countDocuments({ accountId: a.id });
+      return { ...a, txCount };
+    }));
+    return ok(enriched);
+  }
+  // Create new account
+  if (path === 'balance/accounts' && method === 'POST') {
+    const body = await getJsonBody(request);
+    if (!body?.name) return err('name مطلوب', 400);
+    const doc = {
+      id: uuidv4(),
+      key: body.key || body.name.toLowerCase().replace(/\s+/g, '_'),
+      name: body.name,
+      type: body.type || 'other',
+      balance: Number(body.balance) || 0,
+      color: body.color || '#888',
+      icon: body.icon || '💰',
+      enabled: body.enabled !== false,
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('balance_accounts').insertOne({ ...doc });
+    await logActivity(db, { action: 'balance_account_created', entity: 'balance_accounts', entityId: doc.id, details: doc.name, ip: clientIp });
+    return ok(doc);
+  }
+  // Update account
+  if (path.match(/^balance\/accounts\/[^/]+$/) && method === 'PUT') {
+    const id = path.split('/')[2];
+    const body = await getJsonBody(request);
+    const allowed = ['name', 'type', 'color', 'icon', 'enabled'];
+    const updates = {};
+    for (const k of allowed) if (body[k] !== undefined) updates[k] = body[k];
+    updates.updatedAt = new Date().toISOString();
+    await db.collection('balance_accounts').updateOne({ id }, { $set: updates });
+    await logActivity(db, { action: 'balance_account_updated', entity: 'balance_accounts', entityId: id, details: JSON.stringify(updates), ip: clientIp });
+    return ok({ success: true });
+  }
+  // Delete account (only if zero balance + no transactions)
+  if (path.match(/^balance\/accounts\/[^/]+$/) && method === 'DELETE') {
+    const id = path.split('/')[2];
+    const acc = await db.collection('balance_accounts').findOne({ id });
+    if (!acc) return err('غير موجود', 404);
+    const txCount = await db.collection('balance_transactions').countDocuments({ accountId: id });
+    if (txCount > 0 || Math.abs(Number(acc.balance) || 0) > 0.01) return err('لا يمكن الحذف — يوجد رصيد أو معاملات. عطّل الحساب بدلاً من حذفه.', 400);
+    await db.collection('balance_accounts').deleteOne({ id });
+    await logActivity(db, { action: 'balance_account_deleted', entity: 'balance_accounts', entityId: id, details: acc.name, ip: clientIp });
+    return ok({ success: true });
+  }
+
+  // Deposit (إضافة رصيد)
+  if (path === 'balance/deposit' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { accountId, amount, description, linkedEntity, linkedEntityId, by } = body || {};
+    if (!accountId || !amount || amount <= 0) return err('accountId و amount > 0 مطلوبان', 400);
+    const acc = await db.collection('balance_accounts').findOne({ id: accountId });
+    if (!acc) return err('الحساب غير موجود', 404);
+    const newBalance = Number(acc.balance || 0) + Number(amount);
+    await db.collection('balance_accounts').updateOne({ id: accountId }, { $set: { balance: newBalance, updatedAt: new Date().toISOString() } });
+    const tx = {
+      id: uuidv4(), accountId, accountName: acc.name, type: 'deposit',
+      amount: Number(amount), balanceBefore: Number(acc.balance || 0), balanceAfter: newBalance,
+      description: description || 'تعبئة رصيد',
+      linkedEntity: linkedEntity || null, linkedEntityId: linkedEntityId || null,
+      createdBy: by?.id || 'admin', createdByName: by?.name || 'المدير',
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('balance_transactions').insertOne({ ...tx });
+    await logActivity(db, { action: 'balance_deposit', entity: 'balance_transactions', entityId: tx.id, details: `${acc.name}: +${amount.toLocaleString()} د.ع`, ip: clientIp });
+    await createNotification(db, {
+      type: 'balance_deposit', icon: '➕',
+      title: `تعبئة ${acc.name}`,
+      message: `+${Number(amount).toLocaleString()} د.ع — الرصيد الجديد: ${newBalance.toLocaleString()} د.ع${description ? '\n' + description : ''}`,
+      entityType: 'generic', priority: 'low',
+    });
+    return ok({ success: true, transaction: tx, newBalance });
+  }
+
+  // Withdraw (صرف من الرصيد)
+  if (path === 'balance/withdraw' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { accountId, amount, description, linkedEntity, linkedEntityId, by, allowOverdraft } = body || {};
+    if (!accountId || !amount || amount <= 0) return err('accountId و amount > 0 مطلوبان', 400);
+    const acc = await db.collection('balance_accounts').findOne({ id: accountId });
+    if (!acc) return err('الحساب غير موجود', 404);
+    const newBalance = Number(acc.balance || 0) - Number(amount);
+    if (newBalance < 0 && !allowOverdraft) return err(`الرصيد غير كافٍ. الحالي: ${(acc.balance || 0).toLocaleString()} د.ع`, 400);
+    await db.collection('balance_accounts').updateOne({ id: accountId }, { $set: { balance: newBalance, updatedAt: new Date().toISOString() } });
+    const tx = {
+      id: uuidv4(), accountId, accountName: acc.name, type: 'withdraw',
+      amount: Number(amount), balanceBefore: Number(acc.balance || 0), balanceAfter: newBalance,
+      description: description || 'صرف من الرصيد',
+      linkedEntity: linkedEntity || null, linkedEntityId: linkedEntityId || null,
+      createdBy: by?.id || 'admin', createdByName: by?.name || 'المدير',
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('balance_transactions').insertOne({ ...tx });
+    await logActivity(db, { action: 'balance_withdraw', entity: 'balance_transactions', entityId: tx.id, details: `${acc.name}: -${amount.toLocaleString()} د.ع — ${description || ''}`, ip: clientIp });
+    if (newBalance < 0) {
+      await createNotification(db, {
+        type: 'balance_overdraft', icon: '⚠️', priority: 'critical',
+        title: `تحذير: ${acc.name} في السالب`,
+        message: `الرصيد الحالي: ${newBalance.toLocaleString()} د.ع — يجب التعبئة فوراً!`,
+        entityType: 'generic',
+      });
+    }
+    return ok({ success: true, transaction: tx, newBalance });
+  }
+
+  // Transfer between accounts
+  if (path === 'balance/transfer' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { fromAccountId, toAccountId, amount, description, by } = body || {};
+    if (!fromAccountId || !toAccountId || !amount || amount <= 0) return err('fromAccountId و toAccountId و amount > 0 مطلوبة', 400);
+    if (fromAccountId === toAccountId) return err('لا يمكن التحويل لنفس الحساب', 400);
+    const fromAcc = await db.collection('balance_accounts').findOne({ id: fromAccountId });
+    const toAcc = await db.collection('balance_accounts').findOne({ id: toAccountId });
+    if (!fromAcc || !toAcc) return err('حساب غير موجود', 404);
+    if ((fromAcc.balance || 0) < amount) return err('رصيد المصدر غير كافٍ', 400);
+    const fromNew = Number(fromAcc.balance || 0) - Number(amount);
+    const toNew = Number(toAcc.balance || 0) + Number(amount);
+    await db.collection('balance_accounts').updateOne({ id: fromAccountId }, { $set: { balance: fromNew } });
+    await db.collection('balance_accounts').updateOne({ id: toAccountId }, { $set: { balance: toNew } });
+    const batchId = uuidv4();
+    const now = new Date().toISOString();
+    await db.collection('balance_transactions').insertMany([
+      { id: uuidv4(), accountId: fromAccountId, accountName: fromAcc.name, type: 'transfer_out',
+        amount: Number(amount), balanceBefore: fromAcc.balance || 0, balanceAfter: fromNew,
+        description: description || `تحويل إلى ${toAcc.name}`, linkedEntity: 'balance_account', linkedEntityId: toAccountId,
+        batchId, createdBy: by?.id || 'admin', createdByName: by?.name || 'المدير', createdAt: now },
+      { id: uuidv4(), accountId: toAccountId, accountName: toAcc.name, type: 'transfer_in',
+        amount: Number(amount), balanceBefore: toAcc.balance || 0, balanceAfter: toNew,
+        description: description || `تحويل من ${fromAcc.name}`, linkedEntity: 'balance_account', linkedEntityId: fromAccountId,
+        batchId, createdBy: by?.id || 'admin', createdByName: by?.name || 'المدير', createdAt: now },
+    ]);
+    await logActivity(db, { action: 'balance_transfer', entity: 'balance_transactions', details: `${fromAcc.name} → ${toAcc.name}: ${amount.toLocaleString()}`, ip: clientIp });
+    return ok({ success: true, fromBalance: fromNew, toBalance: toNew });
+  }
+
+  // List transactions with filters
+  if (path === 'balance/transactions' && method === 'GET') {
+    const url = new URL(request.url);
+    const accountId = url.searchParams.get('accountId');
+    const type = url.searchParams.get('type');
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10), 1000);
+    const filter = {};
+    if (accountId) filter.accountId = accountId;
+    if (type) filter.type = type;
+    if (from || to) filter.createdAt = {};
+    if (from) filter.createdAt.$gte = from;
+    if (to) filter.createdAt.$lte = to;
+    const items = await db.collection('balance_transactions').find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
+    return ok(items.map(x => { try { delete x._id; } catch {} return x; }));
+  }
+
+  // Per-account summary (for dashboard cards + reports)
+  if (path === 'balance/summary' && method === 'GET') {
+    const accounts = await db.collection('balance_accounts').find({}).toArray();
+    const result = await Promise.all(accounts.map(async a => {
+      try { delete a._id; } catch {}
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+      const yearStart = new Date(); yearStart.setMonth(0, 1); yearStart.setHours(0, 0, 0, 0);
+
+      const sumByDate = async (start, type) => {
+        const txs = await db.collection('balance_transactions').find({
+          accountId: a.id, type, createdAt: { $gte: start.toISOString() },
+        }).toArray();
+        return txs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+      };
+      return {
+        ...a,
+        todayDeposit: await sumByDate(today, 'deposit'),
+        todayWithdraw: await sumByDate(today, 'withdraw'),
+        monthDeposit: await sumByDate(monthStart, 'deposit'),
+        monthWithdraw: await sumByDate(monthStart, 'withdraw'),
+        yearDeposit: await sumByDate(yearStart, 'deposit'),
+        yearWithdraw: await sumByDate(yearStart, 'withdraw'),
+      };
+    }));
+    return ok(result);
+  }
+
+  // Delete a transaction (manager only — and only if it's the last one for that account, to preserve audit)
+  if (path.match(/^balance\/transactions\/[^/]+$/) && method === 'DELETE') {
+    const id = path.split('/')[1];
+    const tx = await db.collection('balance_transactions').findOne({ id: path.split('/')[2] });
+    if (!tx) return err('غير موجود', 404);
+    // Reverse the balance change
+    const acc = await db.collection('balance_accounts').findOne({ id: tx.accountId });
+    if (acc) {
+      const reverse = tx.type === 'deposit' || tx.type === 'transfer_in' ? -tx.amount : +tx.amount;
+      await db.collection('balance_accounts').updateOne({ id: tx.accountId }, { $set: { balance: (acc.balance || 0) + reverse } });
+    }
+    await db.collection('balance_transactions').deleteOne({ id: path.split('/')[2] });
+    await logActivity(db, { action: 'balance_transaction_deleted', entity: 'balance_transactions', entityId: tx.id, details: `حذف: ${tx.accountName} ${tx.type} ${tx.amount}`, ip: clientIp });
+    return ok({ success: true });
+  }
+
+  // ============ END BALANCE ACCOUNTS ============
+
   // ============ ISP SUBSCRIBER SYNC CENTER ============
   // Get sync config (URL, credentials, source type, field mappings, auto-sync settings)
   if (path === 'isp-sync/config' && method === 'GET') {
@@ -2001,6 +2221,38 @@ async function handle(request, params) {
         $inc: { totalActivations: 1, totalProfit: agentProfit, balance: agentProfit },
       });
     }
+
+    // ============ AUTO-DEDUCT BALANCE (تسقيط تلقائي) ============
+    // Map payment method to balance account key
+    const balanceKeyMap = { fastpay: 'fast', master: 'master', transfer: 'management', cash: 'cash' };
+    const balanceKey = balanceKeyMap[paymentMethod];
+    if (balanceKey) {
+      try {
+        const acc = await db.collection('balance_accounts').findOne({ key: balanceKey, enabled: { $ne: false } });
+        if (acc) {
+          const newBalance = Number(acc.balance || 0) - finalAmount;
+          await db.collection('balance_accounts').updateOne({ id: acc.id }, { $set: { balance: newBalance, updatedAt: new Date().toISOString() } });
+          await db.collection('balance_transactions').insertOne({
+            id: uuidv4(), accountId: acc.id, accountName: acc.name, type: 'auto_deduct',
+            amount: finalAmount, balanceBefore: Number(acc.balance || 0), balanceAfter: newBalance,
+            description: `تفعيل اشتراك: ${subscriber.name} - ${activation.packageName}`,
+            linkedEntity: 'activation', linkedEntityId: activation.id,
+            subscriberId: subId, subscriberName: subscriber.name,
+            createdBy: 'system', createdByName: 'تسقيط تلقائي',
+            createdAt: new Date().toISOString(),
+          });
+          if (newBalance < 0) {
+            await createNotification(db, {
+              type: 'balance_overdraft', icon: '⚠️', priority: 'critical',
+              title: `تحذير: ${acc.name} في السالب`,
+              message: `بعد تفعيل ${subscriber.name}: الرصيد ${newBalance.toLocaleString()} د.ع`,
+              entityType: 'generic',
+            });
+          }
+        }
+      } catch (e) { console.warn('[activation] balance deduct error:', e?.message); }
+    }
+    // ============ END AUTO-DEDUCT ============
 
     // Build WhatsApp message via template (with full subscriber + activation context)
     const settingsDoc = (await db.collection('settings').findOne({})) || {};

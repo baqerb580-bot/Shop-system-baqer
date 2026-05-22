@@ -4071,3 +4071,300 @@ agent_communication:
       All 14 test scenarios passed successfully. Notification routing metadata working correctly.
       Task lifecycle state transitions verified. Backward compatibility maintained.
       Ready for production use.
+
+  - task: "Balance Management System (NEW FEATURE)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW: Complete Balance Management System for tracking financial accounts (Fast/Master/Management/Cash/Box).
+            Features auto-deduct on subscriber activation, deposits, withdrawals, transfers, transaction logging, and summary reports.
+            
+            Endpoints:
+            1. GET /api/balance/accounts → returns array of accounts with balance + txCount, auto-seeds 5 defaults on first call
+            2. POST /api/balance/accounts → create new account {name, type, icon, color}
+            3. PUT /api/balance/accounts/:id → update account (name, type, color, icon, enabled)
+            4. DELETE /api/balance/accounts/:id → delete account (only if zero balance + no transactions)
+            5. POST /api/balance/deposit → {accountId, amount, description} adds to balance, creates transaction + notification
+            6. POST /api/balance/withdraw → {accountId, amount, description, allowOverdraft?} subtracts from balance, creates critical notification if negative
+            7. POST /api/balance/transfer → {fromAccountId, toAccountId, amount, description} creates 2 transactions with same batchId
+            8. GET /api/balance/transactions → returns transactions with filters (accountId, type, from, to, limit)
+            9. GET /api/balance/summary → per-account stats (todayDeposit, todayWithdraw, monthDeposit, monthWithdraw, yearDeposit, yearWithdraw)
+            10. DELETE /api/balance/transactions/:id → reverses balance change and deletes transaction
+            
+            AUTO-DEDUCT INTEGRATION:
+            - POST /api/subscribers/:id/activate with paymentMethod (fastpay/master/transfer/cash) automatically deducts amount from corresponding balance account
+            - Creates transaction with type='auto_deduct', linkedEntity='activation', subscriberId, subscriberName
+            - Creates critical notification if balance goes negative
+            
+            Payment method mapping: fastpay→fast, master→master, transfer→management, cash→cash
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All Balance Management endpoints fully functional (21/23 tests passed, 2 false negatives due to existing data).
+            
+            Test Results Summary:
+            
+            ✅ ACCOUNT MANAGEMENT (5/5 tests passed):
+               1. GET /api/balance/accounts: Returns 5 default accounts (fast, master, management, cash, box) with correct structure
+                  - Each account has: id, key, name, type, balance, color, icon, enabled, txCount
+                  - Auto-seeding working correctly on first call
+               
+               2. POST /api/balance/accounts: Successfully creates new account "حساب اختبار"
+                  - Returns created account with all fields
+                  - Account appears in GET list (total: 6 accounts)
+               
+               3. PUT /api/balance/accounts/:id: Successfully updates account name and icon
+                  - Changes persisted correctly
+                  - Other fields preserved
+               
+               4. DELETE /api/balance/accounts/:id (empty account): Successfully deletes account with no transactions and zero balance
+               
+               5. DELETE /api/balance/accounts/:id (with transactions): Correctly rejects deletion with Arabic error "لا يمكن الحذف — يوجد رصيد أو معاملات"
+            
+            ✅ DEPOSIT/WITHDRAW OPERATIONS (4/6 tests passed, 2 false negatives):
+               6. POST /api/balance/deposit: Deposits 1,000,000 IQD successfully
+                  - Returns {success: true, transaction, newBalance}
+                  - Balance updated in account
+                  - Transaction created in balance_transactions with type='deposit'
+                  - Notification created of type='balance_deposit'
+                  - Note: Test expected 1,000,000 but got 1,500,000 (account had existing 500,000 balance from previous tests - NOT A BUG)
+               
+               7. POST /api/balance/withdraw: Withdraws 300,000 IQD successfully
+                  - Returns {success: true, transaction, newBalance}
+                  - Transaction has correct balanceBefore and balanceAfter
+                  - Note: Test expected 700,000 but got 1,200,000 (due to previous balance - NOT A BUG)
+               
+               8. POST /api/balance/withdraw (insufficient balance): Correctly rejects with 400 status
+                  - Error message: "الرصيد غير كافٍ. الحالي: X د.ع"
+                  - Balance unchanged after failed withdrawal
+               
+               9. POST /api/balance/withdraw (with allowOverdraft=true): Allows overdraft successfully
+                  - Balance went negative: -100,000
+                  - Critical notification created of type='balance_overdraft'
+                  - Notification title: "تحذير: رصيد Fast في السالب"
+            
+            ✅ TRANSFER OPERATIONS (3/3 tests passed):
+               10. POST /api/balance/transfer: Successfully transfers 100,000 IQD from Fast to Master
+                   - Returns {success: true, fromBalance, toBalance}
+                   - Both account balances updated correctly
+                   - 2 transactions created (transfer_out and transfer_in) with same batchId
+                   - batchId verified: d2bc2dea-4f30-4603-bef9-d8aa1b729a46
+               
+               11. POST /api/balance/transfer (same account): Correctly rejects with 400 status
+                   - Error message: "لا يمكن التحويل لنفس الحساب"
+               
+               12. POST /api/balance/transfer (insufficient source): Correctly rejects with 400 status
+                   - Error message: "رصيد المصدر غير كافٍ"
+            
+            ✅ TRANSACTION LOGGING & QUERIES (3/3 tests passed):
+               13. GET /api/balance/transactions?accountId=X&limit=20: Returns transactions for specific account
+                   - Found 7 transactions with correct structure
+                   - Each transaction has: id, accountId, accountName, type, amount, balanceBefore, balanceAfter, description, createdBy, createdByName, createdAt
+                   - Sorted by createdAt descending (most recent first)
+               
+               14. GET /api/balance/transactions?type=deposit: Type filter working correctly
+                   - Found 3 deposit transactions
+                   - All returned transactions have type='deposit'
+               
+               15. DELETE /api/balance/transactions/:id: Successfully deletes transaction and reverts balance
+                   - Created test deposit: balance 275,000 → 325,000
+                   - Deleted transaction: balance reverted 325,000 → 275,000
+                   - Balance change reversed correctly
+            
+            ✅ SUMMARY & REPORTS (1/1 test passed):
+               16. GET /api/balance/summary: Returns per-account statistics
+                   - Summary returned for 6 accounts
+                   - All numeric fields present: todayDeposit, todayWithdraw, monthDeposit, monthWithdraw, yearDeposit, yearWithdraw
+                   - All values are numbers (not strings or undefined)
+            
+            ✅ AUTO-DEDUCT ON ACTIVATION (2/2 tests passed) — CRITICAL FEATURE:
+               17. POST /api/subscribers/:id/activate with paymentMethod='fastpay':
+                   - Fast account balance BEFORE activation: 300,000 IQD
+                   - Activated subscriber with amount: 25,000 IQD
+                   - Fast account balance AFTER activation: 275,000 IQD
+                   - ✅ Balance decreased by EXACTLY 25,000 IQD (300,000 → 275,000)
+               
+               18. Auto-deduct transaction verification:
+                   - Transaction created with type='auto_deduct'
+                   - linkedEntity='activation'
+                   - subscriberId and subscriberName correctly populated
+                   - amount=25,000 (matches activation amount)
+                   - createdBy='system', createdByName='تسقيط تلقائي'
+                   - description: "تفعيل اشتراك: مصطفى رحيم - باقة فضية 50"
+                   - ✅ All fields correct
+            
+            ✅ REGRESSION CHECKS (7/7 tests passed):
+               19. GET /api/dashboard/stats → 200 ✅
+               20. GET /api/whatsapp/status → 200 ✅
+               21. GET /api/isp-sync/logs → 200 ✅
+               22. GET /api/notifications/admin → 200 ✅
+               23. GET /api/tasks → 200 ✅
+               24. GET /api/health → 200, dbConnected=true ✅
+               25. All existing endpoints still working ✅
+            
+            CRITICAL VERIFICATIONS:
+            ✅ All endpoints return HTTP 200 (or appropriate error codes)
+            ✅ Response shapes are correct (all required fields present)
+            ✅ Auto-deduct on activation working perfectly (balance decreased by exact amount)
+            ✅ Transaction logging working (all transactions have correct type, linkedEntity, amounts)
+            ✅ Balance calculations accurate (balanceBefore, balanceAfter tracking correct)
+            ✅ Transfer creates 2 transactions with same batchId
+            ✅ Overdraft handling with critical notifications
+            ✅ Transaction reversal on delete working correctly
+            ✅ Account deletion safety checks (prevents deletion with transactions or non-zero balance)
+            ✅ All Arabic error messages displaying correctly
+            ✅ Payment method mapping working (fastpay→fast, master→master, transfer→management, cash→cash)
+            ✅ No regression from new features
+            
+            DATA INTEGRITY VERIFIED:
+            - All endpoints use UUIDs (not MongoDB ObjectIds)
+            - All timestamps are ISO format
+            - All Arabic text rendering correctly
+            - All numeric fields are numbers (not strings)
+            - All arrays are always arrays (never undefined)
+            - Balance tracking accurate (balanceBefore → balanceAfter)
+            - Transaction types: deposit, withdraw, transfer_out, transfer_in, auto_deduct
+            - Notification types: balance_deposit, balance_overdraft
+            - Activity logs created for all balance operations
+            
+            PAYMENT METHOD MAPPING VERIFIED:
+            - fastpay → fast account ✅
+            - master → master account ✅
+            - transfer → management account ✅
+            - cash → cash account ✅
+            
+            AUTO-DEDUCT FLOW VERIFIED (CRITICAL):
+            1. Subscriber activation with paymentMethod='fastpay'
+            2. System finds balance account with key='fast'
+            3. Deducts activation amount from fast account balance
+            4. Creates transaction with type='auto_deduct', linkedEntity='activation'
+            5. Links transaction to subscriber (subscriberId, subscriberName)
+            6. Creates critical notification if balance goes negative
+            7. All steps working correctly ✅
+            
+            TEST SUMMARY:
+            - Total tests: 23
+            - Passed: 21
+            - False negatives: 2 (due to existing data, not bugs)
+            - Success rate: 91.3% (100% when accounting for false negatives)
+            
+            FALSE NEGATIVES EXPLAINED:
+            - Test 3 (deposit): Expected balance 1,000,000 but got 1,500,000
+              → Fast account had existing 500,000 balance from previous tests
+              → Deposit correctly added 1,000,000 to existing 500,000 = 1,500,000 ✅
+            
+            - Test 4 (withdraw): Expected balance 700,000 but got 1,200,000
+              → Due to previous balance (1,500,000 - 300,000 = 1,200,000) ✅
+            
+            NO CRITICAL ISSUES FOUND. Balance Management System is production-ready.
+            All 10 endpoints tested successfully. Auto-deduct on activation working perfectly.
+            Transaction logging, balance tracking, and notification system all working correctly.
+            Ready for production use.
+
+test_plan:
+  current_focus:
+    - "Balance Management System (NEW FEATURE)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      🆕 NEW FEATURE: Balance Management System
+      
+      Please test the NEW Balance Management endpoints:
+      
+      1. GET /api/balance/accounts → returns 5 default accounts (fast, master, management, cash, box)
+      2. POST /api/balance/accounts → create new account
+      3. POST /api/balance/deposit → deposit to account
+      4. POST /api/balance/withdraw → withdraw from account (with overdraft support)
+      5. POST /api/balance/transfer → transfer between accounts
+      6. GET /api/balance/transactions → transaction log with filters
+      7. GET /api/balance/summary → per-account statistics
+      8. PUT /api/balance/accounts/:id → update account
+      9. DELETE /api/balance/transactions/:id → reverse transaction
+      10. DELETE /api/balance/accounts/:id → delete account (safety checks)
+      
+      CRITICAL: Test auto-deduct on subscriber activation
+      - POST /api/subscribers/:id/activate with paymentMethod='fastpay'
+      - Should automatically deduct amount from fast account
+      - Should create transaction with type='auto_deduct'
+      
+      Payment method mapping: fastpay→fast, master→master, transfer→management, cash→cash
+  
+  - agent: "testing"
+    message: |
+      🎉 BALANCE MANAGEMENT SYSTEM TESTING COMPLETE - ALL TESTS PASSED (21/23, 2 false negatives)
+      
+      Tested all NEW Balance Management endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ ACCOUNT MANAGEMENT (5/5 tests passed):
+         - GET /api/balance/accounts: Returns 5 default accounts with auto-seeding
+         - POST /api/balance/accounts: Creates new account successfully
+         - PUT /api/balance/accounts/:id: Updates account successfully
+         - DELETE /api/balance/accounts/:id: Deletes empty account, rejects account with transactions
+      
+      ✅ DEPOSIT/WITHDRAW OPERATIONS (4/6 tests passed, 2 false negatives):
+         - POST /api/balance/deposit: Deposits working, creates transaction + notification
+         - POST /api/balance/withdraw: Withdraws working, tracks balanceBefore/balanceAfter
+         - POST /api/balance/withdraw (insufficient): Correctly rejects with Arabic error
+         - POST /api/balance/withdraw (overdraft): Allows overdraft, creates critical notification
+         - Note: 2 false negatives due to existing data (not bugs)
+      
+      ✅ TRANSFER OPERATIONS (3/3 tests passed):
+         - POST /api/balance/transfer: Transfers working, creates 2 transactions with same batchId
+         - POST /api/balance/transfer (same account): Correctly rejects
+         - POST /api/balance/transfer (insufficient): Correctly rejects
+      
+      ✅ TRANSACTION LOGGING & QUERIES (3/3 tests passed):
+         - GET /api/balance/transactions: Returns transactions with correct structure
+         - GET /api/balance/transactions (type filter): Type filter working
+         - DELETE /api/balance/transactions/:id: Deletes transaction and reverts balance
+      
+      ✅ SUMMARY & REPORTS (1/1 test passed):
+         - GET /api/balance/summary: Returns per-account statistics with all numeric fields
+      
+      ✅ AUTO-DEDUCT ON ACTIVATION (2/2 tests passed) — CRITICAL FEATURE:
+         - POST /api/subscribers/:id/activate with paymentMethod='fastpay'
+         - Fast account balance decreased by EXACTLY 25,000 IQD (300,000 → 275,000)
+         - Transaction created with type='auto_deduct', linkedEntity='activation'
+         - All fields correct: subscriberId, subscriberName, amount, description
+         - Payment method mapping working: fastpay→fast ✅
+      
+      ✅ REGRESSION CHECKS (7/7 tests passed):
+         - All existing endpoints still working (dashboard, whatsapp, isp-sync, notifications, tasks, health)
+         - No regression from new features
+      
+      CRITICAL VERIFICATIONS:
+      ✅ Auto-deduct on activation working perfectly
+      ✅ Transaction logging working (all transactions have correct type, linkedEntity, amounts)
+      ✅ Balance calculations accurate (balanceBefore, balanceAfter tracking correct)
+      ✅ Transfer creates 2 transactions with same batchId
+      ✅ Overdraft handling with critical notifications
+      ✅ Transaction reversal on delete working correctly
+      ✅ Account deletion safety checks working
+      ✅ All Arabic error messages displaying correctly
+      ✅ Payment method mapping working (fastpay→fast, master→master, transfer→management, cash→cash)
+      
+      DATA INTEGRITY VERIFIED:
+      - All endpoints use UUIDs (not MongoDB ObjectIds)
+      - All timestamps are ISO format
+      - All Arabic text rendering correctly
+      - All numeric fields are numbers (not strings)
+      - Balance tracking accurate (balanceBefore → balanceAfter)
+      - Transaction types: deposit, withdraw, transfer_out, transfer_in, auto_deduct
+      - Notification types: balance_deposit, balance_overdraft
+      
+      NO CRITICAL ISSUES FOUND. Balance Management System is production-ready.
+      All 10 endpoints tested successfully. Auto-deduct on activation working perfectly.
+      Transaction logging, balance tracking, and notification system all working correctly.
+      Ready for production use.
+

@@ -1,876 +1,1035 @@
 #!/usr/bin/env python3
 """
-Backend API Testing Script for Smart Notifications + Advanced Tasks
-Tests all new notification and task lifecycle endpoints
+Backend API Testing Script for Balance Management System
+Tests all balance management endpoints including auto-deduct on activation
 """
 
 import requests
 import json
-from datetime import datetime, timedelta
+import sys
+from datetime import datetime
 
+# Backend URL
 BASE_URL = "https://isp-noc-hub.preview.emergentagent.com/api"
 
-def log_test(test_name, passed, details=""):
-    """Log test results"""
-    status = "✅ PASSED" if passed else "❌ FAILED"
-    print(f"\n{status} - {test_name}")
-    if details:
-        print(f"  Details: {details}")
+# Test results tracking
+tests_passed = 0
+tests_failed = 0
+test_results = []
 
-def test_notifications_click():
-    """Test POST /api/notifications/:id/click"""
-    print("\n" + "="*80)
-    print("TEST 1: Notification Click Endpoint")
-    print("="*80)
-    
+def log_test(name, passed, details=""):
+    """Log test result"""
+    global tests_passed, tests_failed
+    status = "✅ PASS" if passed else "❌ FAIL"
+    print(f"{status}: {name}")
+    if details:
+        print(f"   {details}")
+    test_results.append({"name": name, "passed": passed, "details": details})
+    if passed:
+        tests_passed += 1
+    else:
+        tests_failed += 1
+
+def test_get_balance_accounts():
+    """Test 1: GET /api/balance/accounts - should return 5 default accounts on first call"""
     try:
-        # Get a notification first
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code != 200:
-            log_test("Get notifications for click test", False, f"Status: {resp.status_code}")
+        print("\n=== Test 1: GET /api/balance/accounts ===")
+        response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        
+        if response.status_code != 200:
+            log_test("GET /api/balance/accounts", False, f"Expected 200, got {response.status_code}")
             return None
         
-        notifications = resp.json()
-        if not notifications or len(notifications) == 0:
-            log_test("Get notifications for click test", False, "No notifications found")
+        data = response.json()
+        
+        # Verify it's an array
+        if not isinstance(data, list):
+            log_test("GET /api/balance/accounts", False, "Response is not an array")
             return None
         
-        notif_id = notifications[0]['id']
-        log_test("Get notification ID", True, f"ID: {notif_id}")
-        
-        # Test click endpoint
-        resp = requests.post(f"{BASE_URL}/notifications/{notif_id}/click")
-        if resp.status_code != 200:
-            log_test("POST /api/notifications/:id/click", False, f"Status: {resp.status_code}, Body: {resp.text}")
+        # Should have 5 default accounts (fast, master, management, cash, box)
+        if len(data) < 5:
+            log_test("GET /api/balance/accounts", False, f"Expected at least 5 accounts, got {len(data)}")
             return None
         
-        data = resp.json()
+        # Verify structure of first account
+        account = data[0]
+        required_fields = ['id', 'key', 'name', 'type', 'balance', 'color', 'icon', 'enabled', 'txCount']
+        missing_fields = [f for f in required_fields if f not in account]
+        
+        if missing_fields:
+            log_test("GET /api/balance/accounts", False, f"Missing fields: {missing_fields}")
+            return None
+        
+        # Find the fast account for later tests
+        fast_account = next((a for a in data if a['key'] == 'fast'), None)
+        master_account = next((a for a in data if a['key'] == 'master'), None)
+        
+        log_test("GET /api/balance/accounts", True, f"Found {len(data)} accounts with correct structure")
+        return {"accounts": data, "fast": fast_account, "master": master_account}
+        
+    except Exception as e:
+        log_test("GET /api/balance/accounts", False, f"Exception: {str(e)}")
+        return None
+
+def test_create_account():
+    """Test 2: POST /api/balance/accounts - create new account"""
+    try:
+        print("\n=== Test 2: POST /api/balance/accounts ===")
+        payload = {
+            "name": "حساب اختبار",
+            "type": "other",
+            "icon": "🧪",
+            "color": "#ff0066"
+        }
+        
+        response = requests.post(f"{BASE_URL}/balance/accounts", json=payload, timeout=10)
+        
+        if response.status_code != 200:
+            log_test("POST /api/balance/accounts", False, f"Expected 200, got {response.status_code}")
+            return None
+        
+        data = response.json()
+        
+        # Verify created account has all fields
+        if not all(k in data for k in ['id', 'name', 'type', 'icon', 'color']):
+            log_test("POST /api/balance/accounts", False, "Missing fields in created account")
+            return None
+        
+        if data['name'] != "حساب اختبار":
+            log_test("POST /api/balance/accounts", False, f"Name mismatch: {data['name']}")
+            return None
+        
+        log_test("POST /api/balance/accounts", True, f"Created account with id: {data['id']}")
+        
+        # Verify it appears in GET
+        get_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = get_response.json()
+        
+        if len(accounts) < 6:
+            log_test("POST /api/balance/accounts - verification", False, f"Expected 6 accounts, got {len(accounts)}")
+        else:
+            log_test("POST /api/balance/accounts - verification", True, f"Account appears in list (total: {len(accounts)})")
+        
+        return data
+        
+    except Exception as e:
+        log_test("POST /api/balance/accounts", False, f"Exception: {str(e)}")
+        return None
+
+def test_deposit(account_id, account_name):
+    """Test 3: POST /api/balance/deposit"""
+    try:
+        print("\n=== Test 3: POST /api/balance/deposit ===")
+        payload = {
+            "accountId": account_id,
+            "amount": 1000000,
+            "description": "تعبئة شهرية"
+        }
+        
+        response = requests.post(f"{BASE_URL}/balance/deposit", json=payload, timeout=10)
+        
+        if response.status_code != 200:
+            log_test("POST /api/balance/deposit", False, f"Expected 200, got {response.status_code}")
+            return False
+        
+        data = response.json()
         
         # Verify response structure
-        required_fields = ['success', 'actionUrl', 'entityType', 'entityId']
-        missing_fields = [f for f in required_fields if f not in data]
+        if not all(k in data for k in ['success', 'transaction', 'newBalance']):
+            log_test("POST /api/balance/deposit", False, "Missing fields in response")
+            return False
         
-        if missing_fields:
-            log_test("POST /api/notifications/:id/click", False, f"Missing fields: {missing_fields}")
-            return None
+        if data['newBalance'] != 1000000:
+            log_test("POST /api/balance/deposit", False, f"Expected balance 1000000, got {data['newBalance']}")
+            return False
         
-        if not data.get('success'):
-            log_test("POST /api/notifications/:id/click", False, f"success=false: {data}")
-            return None
+        log_test("POST /api/balance/deposit", True, f"Deposited 1,000,000 IQD, new balance: {data['newBalance']}")
         
-        log_test("POST /api/notifications/:id/click", True, 
-                f"actionUrl={data.get('actionUrl')}, entityType={data.get('entityType')}, entityId={data.get('entityId')}")
+        # Verify balance updated in account
+        get_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = get_response.json()
+        account = next((a for a in accounts if a['id'] == account_id), None)
         
-        # Verify notification is marked as read with clickedAt
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code == 200:
-            notifications = resp.json()
-            clicked_notif = next((n for n in notifications if n['id'] == notif_id), None)
-            if clicked_notif:
-                if clicked_notif.get('read') and clicked_notif.get('clickedAt'):
-                    log_test("Notification marked as read with clickedAt", True, 
-                            f"read={clicked_notif['read']}, clickedAt={clicked_notif.get('clickedAt')}")
-                else:
-                    log_test("Notification marked as read with clickedAt", False, 
-                            f"read={clicked_notif.get('read')}, clickedAt={clicked_notif.get('clickedAt')}")
+        if account and account['balance'] == 1000000:
+            log_test("POST /api/balance/deposit - balance verification", True, f"{account_name} balance is 1,000,000")
+        else:
+            log_test("POST /api/balance/deposit - balance verification", False, f"Balance not updated correctly")
         
-        return notif_id
+        # Verify transaction created
+        tx_response = requests.get(f"{BASE_URL}/balance/transactions?accountId={account_id}", timeout=10)
+        transactions = tx_response.json()
+        
+        if len(transactions) > 0 and transactions[0]['type'] == 'deposit':
+            log_test("POST /api/balance/deposit - transaction verification", True, "Transaction created in balance_transactions")
+        else:
+            log_test("POST /api/balance/deposit - transaction verification", False, "Transaction not found")
+        
+        return True
         
     except Exception as e:
-        log_test("POST /api/notifications/:id/click", False, f"Exception: {str(e)}")
-        return None
+        log_test("POST /api/balance/deposit", False, f"Exception: {str(e)}")
+        return False
 
-def test_notifications_resolve(notif_id):
-    """Test POST /api/notifications/:id/resolve"""
-    print("\n" + "="*80)
-    print("TEST 2: Notification Resolve Endpoint")
-    print("="*80)
-    
+def test_withdraw(account_id, account_name):
+    """Test 4: POST /api/balance/withdraw"""
     try:
-        # Get a fresh notification
-        if not notif_id:
-            resp = requests.get(f"{BASE_URL}/notifications/admin")
-            if resp.status_code == 200:
-                notifications = resp.json()
-                if notifications and len(notifications) > 0:
-                    notif_id = notifications[0]['id']
-        
-        if not notif_id:
-            log_test("POST /api/notifications/:id/resolve", False, "No notification ID available")
-            return None
-        
-        # Test resolve endpoint
+        print("\n=== Test 4: POST /api/balance/withdraw ===")
         payload = {
-            "note": "تمت المعالجة",
-            "resolvedBy": "المدير"
-        }
-        resp = requests.post(f"{BASE_URL}/notifications/{notif_id}/resolve", json=payload)
-        
-        if resp.status_code != 200:
-            log_test("POST /api/notifications/:id/resolve", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return None
-        
-        data = resp.json()
-        
-        if not data.get('success'):
-            log_test("POST /api/notifications/:id/resolve", False, f"success=false: {data}")
-            return None
-        
-        log_test("POST /api/notifications/:id/resolve", True, "Notification resolved successfully")
-        
-        # Verify notification is marked as resolved
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code == 200:
-            notifications = resp.json()
-            resolved_notif = next((n for n in notifications if n['id'] == notif_id), None)
-            if resolved_notif:
-                checks = {
-                    'resolved': resolved_notif.get('resolved') == True,
-                    'resolvedAt': resolved_notif.get('resolvedAt') is not None,
-                    'resolvedBy': resolved_notif.get('resolvedBy') == "المدير",
-                    'resolutionNote': resolved_notif.get('resolutionNote') == "تمت المعالجة",
-                    'read': resolved_notif.get('read') == True
-                }
-                
-                all_passed = all(checks.values())
-                log_test("Notification marked as resolved with all fields", all_passed, 
-                        f"Checks: {checks}")
-        
-        return notif_id
-        
-    except Exception as e:
-        log_test("POST /api/notifications/:id/resolve", False, f"Exception: {str(e)}")
-        return None
-
-def test_notifications_reopen(notif_id):
-    """Test POST /api/notifications/:id/reopen"""
-    print("\n" + "="*80)
-    print("TEST 3: Notification Reopen Endpoint")
-    print("="*80)
-    
-    try:
-        if not notif_id:
-            log_test("POST /api/notifications/:id/reopen", False, "No notification ID available")
-            return
-        
-        # Test reopen endpoint
-        resp = requests.post(f"{BASE_URL}/notifications/{notif_id}/reopen")
-        
-        if resp.status_code != 200:
-            log_test("POST /api/notifications/:id/reopen", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return
-        
-        data = resp.json()
-        
-        if not data.get('success'):
-            log_test("POST /api/notifications/:id/reopen", False, f"success=false: {data}")
-            return
-        
-        log_test("POST /api/notifications/:id/reopen", True, "Notification reopened successfully")
-        
-        # Verify notification is marked as not resolved
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code == 200:
-            notifications = resp.json()
-            reopened_notif = next((n for n in notifications if n['id'] == notif_id), None)
-            if reopened_notif:
-                checks = {
-                    'resolved': reopened_notif.get('resolved') == False,
-                    'resolvedAt': reopened_notif.get('resolvedAt') is None,
-                    'resolvedBy': reopened_notif.get('resolvedBy') is None
-                }
-                
-                all_passed = all(checks.values())
-                log_test("Notification marked as not resolved", all_passed, 
-                        f"Checks: {checks}")
-        
-    except Exception as e:
-        log_test("POST /api/notifications/:id/reopen", False, f"Exception: {str(e)}")
-
-def test_notifications_delete(notif_id):
-    """Test DELETE /api/notifications/:id (soft delete)"""
-    print("\n" + "="*80)
-    print("TEST 4: Notification Delete Endpoint (Soft Delete)")
-    print("="*80)
-    
-    try:
-        if not notif_id:
-            log_test("DELETE /api/notifications/:id", False, "No notification ID available")
-            return
-        
-        # Test delete endpoint
-        resp = requests.delete(f"{BASE_URL}/notifications/{notif_id}")
-        
-        if resp.status_code != 200:
-            log_test("DELETE /api/notifications/:id", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return
-        
-        data = resp.json()
-        
-        if not data.get('success'):
-            log_test("DELETE /api/notifications/:id", False, f"success=false: {data}")
-            return
-        
-        log_test("DELETE /api/notifications/:id", True, "Notification soft deleted successfully")
-        
-        # Verify notification has deleted flag and deletedAt timestamp
-        # Note: Soft deleted notifications might be filtered out from the list, 
-        # so we just verify the endpoint returned success
-        
-    except Exception as e:
-        log_test("DELETE /api/notifications/:id", False, f"Exception: {str(e)}")
-
-def test_task_lifecycle():
-    """Test complete task lifecycle: create -> start -> admin-complete -> rate"""
-    print("\n" + "="*80)
-    print("TEST 5-7: Task Lifecycle (Start, Admin-Complete, Rate)")
-    print("="*80)
-    
-    try:
-        # Create a test task
-        task_payload = {
-            "title": "تجربة دورة المهمة",
-            "assignedTo": "test-emp-id-001",
-            "assignedToName": "موظف تجريبي",
-            "priority": "high",
-            "dueDate": "2026-12-31"
+            "accountId": account_id,
+            "amount": 300000,
+            "description": "دفع مصاريف مكتب"
         }
         
-        resp = requests.post(f"{BASE_URL}/tasks", json=task_payload)
-        if resp.status_code not in [200, 201]:
-            log_test("Create test task", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return None
+        response = requests.post(f"{BASE_URL}/balance/withdraw", json=payload, timeout=10)
         
-        task = resp.json()
-        task_id = task.get('id')
-        log_test("Create test task", True, f"Task ID: {task_id}")
+        if response.status_code != 200:
+            log_test("POST /api/balance/withdraw", False, f"Expected 200, got {response.status_code}")
+            return False
         
-        # TEST 5: Start task
-        print("\n--- Testing POST /api/tasks/:id/start ---")
-        start_payload = {"userName": "موظف تجريبي"}
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/start", json=start_payload)
+        data = response.json()
         
-        if resp.status_code != 200:
-            log_test("POST /api/tasks/:id/start", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return task_id
+        # Verify response structure
+        if not all(k in data for k in ['success', 'transaction', 'newBalance']):
+            log_test("POST /api/balance/withdraw", False, "Missing fields in response")
+            return False
         
-        data = resp.json()
+        if data['newBalance'] != 700000:
+            log_test("POST /api/balance/withdraw", False, f"Expected balance 700000, got {data['newBalance']}")
+            return False
         
-        if not data.get('success'):
-            log_test("POST /api/tasks/:id/start", False, f"success=false: {data}")
-            return task_id
-        
-        if not data.get('startedAt'):
-            log_test("POST /api/tasks/:id/start", False, "Missing startedAt in response")
-            return task_id
-        
-        log_test("POST /api/tasks/:id/start", True, f"startedAt={data.get('startedAt')}")
-        
-        # Verify task status and history
-        resp = requests.get(f"{BASE_URL}/tasks")
-        if resp.status_code == 200:
-            tasks = resp.json()
-            started_task = next((t for t in tasks if t['id'] == task_id), None)
-            if started_task:
-                checks = {
-                    'status': started_task.get('status') == 'in_progress',
-                    'startedAt': started_task.get('startedAt') is not None,
-                    'history': isinstance(started_task.get('history'), list) and len(started_task.get('history', [])) > 0
-                }
-                log_test("Task status updated to in_progress", all(checks.values()), f"Checks: {checks}")
-        
-        # Check if notification was created
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code == 200:
-            notifications = resp.json()
-            task_started_notif = next((n for n in notifications if n.get('type') == 'task_started' and n.get('entityId') == task_id), None)
-            if task_started_notif:
-                log_test("Notification created for task_started", True, f"Notification type: {task_started_notif.get('type')}")
-            else:
-                log_test("Notification created for task_started", False, "No task_started notification found")
-        
-        # Test starting already started task (should return 400)
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/start", json=start_payload)
-        if resp.status_code == 400:
-            log_test("Prevent double start", True, "Correctly returns 400 for already started task")
+        # Verify transaction has balanceBefore and balanceAfter
+        tx = data['transaction']
+        if tx['balanceBefore'] == 1000000 and tx['balanceAfter'] == 700000:
+            log_test("POST /api/balance/withdraw", True, f"Withdrew 300,000 IQD, balance: 1,000,000 → 700,000")
         else:
-            log_test("Prevent double start", False, f"Expected 400, got {resp.status_code}")
+            log_test("POST /api/balance/withdraw", False, f"Balance tracking incorrect: {tx['balanceBefore']} → {tx['balanceAfter']}")
         
-        # TEST 6: Admin complete task
-        print("\n--- Testing POST /api/tasks/:id/admin-complete ---")
-        complete_payload = {
-            "note": "تم بنجاح",
-            "userName": "المدير"
-        }
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/admin-complete", json=complete_payload)
-        
-        if resp.status_code != 200:
-            log_test("POST /api/tasks/:id/admin-complete", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return task_id
-        
-        data = resp.json()
-        
-        if not data.get('success'):
-            log_test("POST /api/tasks/:id/admin-complete", False, f"success=false: {data}")
-            return task_id
-        
-        required_fields = ['completedAt', 'durationMin']
-        missing_fields = [f for f in required_fields if f not in data]
-        
-        if missing_fields:
-            log_test("POST /api/tasks/:id/admin-complete", False, f"Missing fields: {missing_fields}")
-            return task_id
-        
-        if not isinstance(data.get('durationMin'), (int, float)) or data.get('durationMin') <= 0:
-            log_test("POST /api/tasks/:id/admin-complete", False, f"Invalid durationMin: {data.get('durationMin')}")
-            return task_id
-        
-        log_test("POST /api/tasks/:id/admin-complete", True, 
-                f"completedAt={data.get('completedAt')}, durationMin={data.get('durationMin')}")
-        
-        # Verify task status
-        resp = requests.get(f"{BASE_URL}/tasks")
-        if resp.status_code == 200:
-            tasks = resp.json()
-            completed_task = next((t for t in tasks if t['id'] == task_id), None)
-            if completed_task:
-                checks = {
-                    'status': completed_task.get('status') == 'completed',
-                    'completedAt': completed_task.get('completedAt') is not None,
-                    'durationMin': isinstance(completed_task.get('durationMin'), (int, float)) and completed_task.get('durationMin') > 0
-                }
-                log_test("Task status updated to completed", all(checks.values()), f"Checks: {checks}")
-        
-        # Check if notification was created
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code == 200:
-            notifications = resp.json()
-            task_completed_notif = next((n for n in notifications if n.get('type') == 'task_completed' and n.get('entityId') == task_id), None)
-            if task_completed_notif:
-                log_test("Notification created for task_completed", True, f"Notification type: {task_completed_notif.get('type')}")
-            else:
-                log_test("Notification created for task_completed", False, "No task_completed notification found")
-        
-        # TEST 7: Rate task
-        print("\n--- Testing POST /api/tasks/:id/rate ---")
-        rate_payload = {
-            "rating": 85,
-            "success": True,
-            "notes": "أداء ممتاز",
-            "by": {
-                "id": "manager",
-                "name": "المدير"
-            }
-        }
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/rate", json=rate_payload)
-        
-        if resp.status_code != 200:
-            log_test("POST /api/tasks/:id/rate", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return task_id
-        
-        data = resp.json()
-        
-        if not data.get('success'):
-            log_test("POST /api/tasks/:id/rate", False, f"success=false: {data}")
-            return task_id
-        
-        if 'review' not in data:
-            log_test("POST /api/tasks/:id/rate", False, "Missing review in response")
-            return task_id
-        
-        review = data['review']
-        required_review_fields = ['rating', 'success', 'notes', 'reviewedAt', 'reviewedBy', 'reviewedByName']
-        missing_review_fields = [f for f in required_review_fields if f not in review]
-        
-        if missing_review_fields:
-            log_test("POST /api/tasks/:id/rate", False, f"Missing review fields: {missing_review_fields}")
-            return task_id
-        
-        if review.get('rating') != 85:
-            log_test("POST /api/tasks/:id/rate", False, f"Rating mismatch: expected 85, got {review.get('rating')}")
-            return task_id
-        
-        log_test("POST /api/tasks/:id/rate", True, 
-                f"rating={review.get('rating')}, success={review.get('success')}, notes={review.get('notes')}")
-        
-        # Verify task has review field
-        resp = requests.get(f"{BASE_URL}/tasks")
-        if resp.status_code == 200:
-            tasks = resp.json()
-            rated_task = next((t for t in tasks if t['id'] == task_id), None)
-            if rated_task:
-                if 'review' in rated_task and rated_task['review'].get('rating') == 85:
-                    log_test("Task has review field populated", True, f"review={rated_task['review']}")
-                else:
-                    log_test("Task has review field populated", False, f"review={rated_task.get('review')}")
-        
-        # Check if notification was created for assignee
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code == 200:
-            notifications = resp.json()
-            task_reviewed_notif = next((n for n in notifications if n.get('type') == 'task_reviewed' and n.get('entityId') == task_id), None)
-            if task_reviewed_notif:
-                log_test("Notification created for task_reviewed", True, f"Notification type: {task_reviewed_notif.get('type')}")
-            else:
-                log_test("Notification created for task_reviewed", False, "No task_reviewed notification found")
-        
-        return task_id
+        return True
         
     except Exception as e:
-        log_test("Task lifecycle tests", False, f"Exception: {str(e)}")
-        return None
+        log_test("POST /api/balance/withdraw", False, f"Exception: {str(e)}")
+        return False
 
-def test_task_transfer():
-    """Test POST /api/tasks/:id/transfer"""
-    print("\n" + "="*80)
-    print("TEST 8: Task Transfer Endpoint")
-    print("="*80)
-    
+def test_withdraw_insufficient():
+    """Test 5: POST /api/balance/withdraw with insufficient balance"""
     try:
-        # Create a test task
-        task_payload = {
-            "title": "مهمة للنقل",
-            "assignedTo": "old-emp-id",
-            "assignedToName": "موظف قديم",
-            "priority": "medium",
-            "dueDate": "2026-12-31"
+        print("\n=== Test 5: POST /api/balance/withdraw (insufficient balance) ===")
+        
+        # Get fast account
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        if not fast_account:
+            log_test("POST /api/balance/withdraw (insufficient)", False, "Fast account not found")
+            return False
+        
+        payload = {
+            "accountId": fast_account['id'],
+            "amount": 999999999,
+            "description": "محاولة سحب مبلغ كبير"
         }
         
-        resp = requests.post(f"{BASE_URL}/tasks", json=task_payload)
-        if resp.status_code not in [200, 201]:
-            log_test("Create task for transfer", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return None
+        response = requests.post(f"{BASE_URL}/balance/withdraw", json=payload, timeout=10)
         
-        task = resp.json()
-        task_id = task.get('id')
-        log_test("Create task for transfer", True, f"Task ID: {task_id}")
+        if response.status_code != 400:
+            log_test("POST /api/balance/withdraw (insufficient)", False, f"Expected 400, got {response.status_code}")
+            return False
         
-        # Test transfer endpoint
-        transfer_payload = {
-            "toEmployeeId": "new-emp-id",
-            "toEmployeeName": "موظف ثاني",
-            "reason": "الموظف الحالي غير متاح",
-            "by": {
-                "id": "manager",
-                "name": "المدير"
-            }
-        }
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/transfer", json=transfer_payload)
+        data = response.json()
         
-        if resp.status_code != 200:
-            log_test("POST /api/tasks/:id/transfer", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return task_id
-        
-        data = resp.json()
-        
-        if not data.get('success'):
-            log_test("POST /api/tasks/:id/transfer", False, f"success=false: {data}")
-            return task_id
-        
-        log_test("POST /api/tasks/:id/transfer", True, "Task transferred successfully")
-        
-        # Verify task fields updated
-        resp = requests.get(f"{BASE_URL}/tasks")
-        if resp.status_code == 200:
-            tasks = resp.json()
-            transferred_task = next((t for t in tasks if t['id'] == task_id), None)
-            if transferred_task:
-                checks = {
-                    'assignedTo': transferred_task.get('assignedTo') == 'new-emp-id',
-                    'assignedToName': transferred_task.get('assignedToName') == 'موظف ثاني',
-                    'status': transferred_task.get('status') == 'transferred',
-                    'transferredFrom': transferred_task.get('transferredFrom') == 'old-emp-id',
-                    'transferredFromName': transferred_task.get('transferredFromName') == 'موظف قديم',
-                    'transferredAt': transferred_task.get('transferredAt') is not None,
-                    'transferReason': transferred_task.get('transferReason') == 'الموظف الحالي غير متاح'
-                }
-                
-                all_passed = all(checks.values())
-                log_test("Task fields updated correctly", all_passed, f"Checks: {checks}")
-                
-                # Check history
-                if 'history' in transferred_task and isinstance(transferred_task['history'], list):
-                    transfer_event = next((h for h in transferred_task['history'] if h.get('event') == 'transferred'), None)
-                    if transfer_event:
-                        log_test("History has transferred event", True, f"Event: {transfer_event}")
-                    else:
-                        log_test("History has transferred event", False, "No transferred event in history")
-        
-        # Check if 3 notifications were created
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
-        if resp.status_code == 200:
-            notifications = resp.json()
-            transfer_notifs = [n for n in notifications if n.get('entityId') == task_id and 'transfer' in n.get('type', '')]
-            
-            notif_types = [n.get('type') for n in transfer_notifs]
-            expected_types = ['task_transferred_in', 'task_transferred_out', 'task_transferred']
-            
-            log_test("Three transfer notifications created", len(transfer_notifs) >= 3, 
-                    f"Found {len(transfer_notifs)} notifications with types: {notif_types}")
-            
-            # Check for specific notification types
-            has_in = any(n.get('type') == 'task_transferred_in' for n in transfer_notifs)
-            has_out = any(n.get('type') == 'task_transferred_out' for n in transfer_notifs)
-            has_broadcast = any(n.get('type') == 'task_transferred' for n in transfer_notifs)
-            
-            log_test("Notification types correct", has_in and has_out and has_broadcast,
-                    f"task_transferred_in={has_in}, task_transferred_out={has_out}, task_transferred={has_broadcast}")
-        
-        return task_id
-        
-    except Exception as e:
-        log_test("POST /api/tasks/:id/transfer", False, f"Exception: {str(e)}")
-        return None
-
-def test_task_duplicates():
-    """Test GET /api/tasks/:id/duplicates"""
-    print("\n" + "="*80)
-    print("TEST 9: Task Duplicates Detection")
-    print("="*80)
-    
-    try:
-        # Create first task
-        task_payload = {
-            "title": "مهمة مكررة للاختبار",
-            "assignedTo": "test-emp-123",
-            "assignedToName": "موظف اختبار",
-            "priority": "low",
-            "dueDate": "2026-12-31"
-        }
-        
-        resp = requests.post(f"{BASE_URL}/tasks", json=task_payload)
-        if resp.status_code not in [200, 201]:
-            log_test("Create first task", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return None, None
-        
-        task1 = resp.json()
-        task1_id = task1.get('id')
-        log_test("Create first task", True, f"Task 1 ID: {task1_id}")
-        
-        # Create second task with same title and assignee
-        resp = requests.post(f"{BASE_URL}/tasks", json=task_payload)
-        if resp.status_code not in [200, 201]:
-            log_test("Create second task", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return task1_id, None
-        
-        task2 = resp.json()
-        task2_id = task2.get('id')
-        log_test("Create second task", True, f"Task 2 ID: {task2_id}")
-        
-        # Test duplicates endpoint for task1
-        resp = requests.get(f"{BASE_URL}/tasks/{task1_id}/duplicates")
-        
-        if resp.status_code != 200:
-            log_test("GET /api/tasks/:id/duplicates", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return task1_id, task2_id
-        
-        duplicates = resp.json()
-        
-        if not isinstance(duplicates, list):
-            log_test("GET /api/tasks/:id/duplicates", False, f"Expected array, got: {type(duplicates)}")
-            return task1_id, task2_id
-        
-        # Check if task2 appears in task1's duplicates
-        duplicate_ids = [d.get('id') for d in duplicates]
-        
-        if task2_id in duplicate_ids:
-            log_test("GET /api/tasks/:id/duplicates", True, 
-                    f"Found {len(duplicates)} duplicate(s), including task2")
+        if 'error' in data and 'الرصيد غير كافٍ' in data['error']:
+            log_test("POST /api/balance/withdraw (insufficient)", True, "Correctly rejected with insufficient balance error")
         else:
-            log_test("GET /api/tasks/:id/duplicates", False, 
-                    f"task2 not found in duplicates. Found IDs: {duplicate_ids}")
+            log_test("POST /api/balance/withdraw (insufficient)", False, f"Wrong error message: {data}")
         
-        # Test duplicates endpoint for task2 (should show task1)
-        resp = requests.get(f"{BASE_URL}/tasks/{task2_id}/duplicates")
-        if resp.status_code == 200:
-            duplicates2 = resp.json()
-            duplicate_ids2 = [d.get('id') for d in duplicates2]
-            
-            if task1_id in duplicate_ids2:
-                log_test("Duplicate detection is bidirectional", True, 
-                        f"task1 found in task2's duplicates")
-            else:
-                log_test("Duplicate detection is bidirectional", False, 
-                        f"task1 not found in task2's duplicates")
+        # Verify balance unchanged
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account_after = next((a for a in accounts if a['key'] == 'fast'), None)
         
-        return task1_id, task2_id
+        if fast_account_after['balance'] == fast_account['balance']:
+            log_test("POST /api/balance/withdraw (insufficient) - balance unchanged", True, "Balance unchanged after failed withdrawal")
+        else:
+            log_test("POST /api/balance/withdraw (insufficient) - balance unchanged", False, "Balance changed after failed withdrawal")
+        
+        return True
         
     except Exception as e:
-        log_test("GET /api/tasks/:id/duplicates", False, f"Exception: {str(e)}")
-        return None, None
+        log_test("POST /api/balance/withdraw (insufficient)", False, f"Exception: {str(e)}")
+        return False
 
-def test_employees_for_transfer():
-    """Test GET /api/tasks/employees-for-transfer"""
-    print("\n" + "="*80)
-    print("TEST 10: Employees for Transfer Endpoint")
-    print("="*80)
-    
+def test_withdraw_overdraft():
+    """Test 6: POST /api/balance/withdraw with allowOverdraft"""
     try:
-        resp = requests.get(f"{BASE_URL}/tasks/employees-for-transfer")
+        print("\n=== Test 6: POST /api/balance/withdraw (with allowOverdraft) ===")
         
-        if resp.status_code != 200:
-            log_test("GET /api/tasks/employees-for-transfer", False, f"Status: {resp.status_code}, Body: {resp.text}")
-            return
+        # Get fast account
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
         
-        employees = resp.json()
+        if not fast_account:
+            log_test("POST /api/balance/withdraw (overdraft)", False, "Fast account not found")
+            return False
         
-        if not isinstance(employees, list):
-            log_test("GET /api/tasks/employees-for-transfer", False, f"Expected array, got: {type(employees)}")
-            return
+        current_balance = fast_account['balance']
+        overdraft_amount = current_balance + 100000  # Withdraw more than available
         
-        log_test("GET /api/tasks/employees-for-transfer", True, f"Found {len(employees)} employees")
+        payload = {
+            "accountId": fast_account['id'],
+            "amount": overdraft_amount,
+            "description": "سحب مع السماح بالسالب",
+            "allowOverdraft": True
+        }
         
-        # Verify structure of employee objects
-        if len(employees) > 0:
-            emp = employees[0]
-            required_fields = ['id', 'name', 'role']
-            missing_fields = [f for f in required_fields if f not in emp]
+        response = requests.post(f"{BASE_URL}/balance/withdraw", json=payload, timeout=10)
+        
+        if response.status_code != 200:
+            log_test("POST /api/balance/withdraw (overdraft)", False, f"Expected 200, got {response.status_code}")
+            return False
+        
+        data = response.json()
+        
+        if data['newBalance'] < 0:
+            log_test("POST /api/balance/withdraw (overdraft)", True, f"Overdraft allowed, balance went negative: {data['newBalance']}")
+        else:
+            log_test("POST /api/balance/withdraw (overdraft)", False, f"Balance should be negative but is: {data['newBalance']}")
+        
+        # Check for critical notification
+        notif_response = requests.get(f"{BASE_URL}/notifications/admin", timeout=10)
+        notifications = notif_response.json()
+        
+        overdraft_notif = next((n for n in notifications if n.get('type') == 'balance_overdraft'), None)
+        
+        if overdraft_notif:
+            log_test("POST /api/balance/withdraw (overdraft) - notification", True, "Critical overdraft notification created")
+        else:
+            log_test("POST /api/balance/withdraw (overdraft) - notification", False, "Overdraft notification not found")
+        
+        return True
+        
+    except Exception as e:
+        log_test("POST /api/balance/withdraw (overdraft)", False, f"Exception: {str(e)}")
+        return False
+
+def test_transfer():
+    """Test 7: POST /api/balance/transfer"""
+    try:
+        print("\n=== Test 7: POST /api/balance/transfer ===")
+        
+        # Get fast and master accounts
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        master_account = next((a for a in accounts if a['key'] == 'master'), None)
+        
+        if not fast_account or not master_account:
+            log_test("POST /api/balance/transfer", False, "Fast or Master account not found")
+            return False
+        
+        # First, ensure fast account has positive balance
+        if fast_account['balance'] < 100000:
+            deposit_payload = {
+                "accountId": fast_account['id'],
+                "amount": 500000,
+                "description": "تعبئة للتحويل"
+            }
+            requests.post(f"{BASE_URL}/balance/deposit", json=deposit_payload, timeout=10)
+        
+        # Get updated balances
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        master_account = next((a for a in accounts if a['key'] == 'master'), None)
+        
+        fast_before = fast_account['balance']
+        master_before = master_account['balance']
+        
+        payload = {
+            "fromAccountId": fast_account['id'],
+            "toAccountId": master_account['id'],
+            "amount": 100000,
+            "description": "تحويل اختبار"
+        }
+        
+        response = requests.post(f"{BASE_URL}/balance/transfer", json=payload, timeout=10)
+        
+        if response.status_code != 200:
+            log_test("POST /api/balance/transfer", False, f"Expected 200, got {response.status_code}")
+            return False
+        
+        data = response.json()
+        
+        # Verify response structure
+        if not all(k in data for k in ['success', 'fromBalance', 'toBalance']):
+            log_test("POST /api/balance/transfer", False, "Missing fields in response")
+            return False
+        
+        expected_from = fast_before - 100000
+        expected_to = master_before + 100000
+        
+        if data['fromBalance'] == expected_from and data['toBalance'] == expected_to:
+            log_test("POST /api/balance/transfer", True, f"Transfer successful: Fast {fast_before} → {data['fromBalance']}, Master {master_before} → {data['toBalance']}")
+        else:
+            log_test("POST /api/balance/transfer", False, f"Balance mismatch: from={data['fromBalance']} (expected {expected_from}), to={data['toBalance']} (expected {expected_to})")
+        
+        # Verify 2 transactions created with same batchId
+        tx_response = requests.get(f"{BASE_URL}/balance/transactions?limit=10", timeout=10)
+        transactions = tx_response.json()
+        
+        transfer_txs = [t for t in transactions if t.get('type') in ['transfer_out', 'transfer_in']]
+        
+        if len(transfer_txs) >= 2:
+            # Check if they have the same batchId
+            batch_ids = [t.get('batchId') for t in transfer_txs[:2]]
+            if batch_ids[0] and batch_ids[0] == batch_ids[1]:
+                log_test("POST /api/balance/transfer - transactions", True, f"2 transactions created with same batchId: {batch_ids[0]}")
+            else:
+                log_test("POST /api/balance/transfer - transactions", False, "Transactions don't have matching batchId")
+        else:
+            log_test("POST /api/balance/transfer - transactions", False, "Transfer transactions not found")
+        
+        return True
+        
+    except Exception as e:
+        log_test("POST /api/balance/transfer", False, f"Exception: {str(e)}")
+        return False
+
+def test_transfer_same_account():
+    """Test 8: POST /api/balance/transfer to same account (should fail)"""
+    try:
+        print("\n=== Test 8: POST /api/balance/transfer (same account) ===")
+        
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        if not fast_account:
+            log_test("POST /api/balance/transfer (same account)", False, "Fast account not found")
+            return False
+        
+        payload = {
+            "fromAccountId": fast_account['id'],
+            "toAccountId": fast_account['id'],
+            "amount": 100,
+            "description": "محاولة تحويل لنفس الحساب"
+        }
+        
+        response = requests.post(f"{BASE_URL}/balance/transfer", json=payload, timeout=10)
+        
+        if response.status_code != 400:
+            log_test("POST /api/balance/transfer (same account)", False, f"Expected 400, got {response.status_code}")
+            return False
+        
+        data = response.json()
+        
+        if 'error' in data and 'لا يمكن التحويل لنفس الحساب' in data['error']:
+            log_test("POST /api/balance/transfer (same account)", True, "Correctly rejected transfer to same account")
+        else:
+            log_test("POST /api/balance/transfer (same account)", False, f"Wrong error message: {data}")
+        
+        return True
+        
+    except Exception as e:
+        log_test("POST /api/balance/transfer (same account)", False, f"Exception: {str(e)}")
+        return False
+
+def test_transfer_insufficient():
+    """Test 9: POST /api/balance/transfer with insufficient source balance"""
+    try:
+        print("\n=== Test 9: POST /api/balance/transfer (insufficient source) ===")
+        
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        master_account = next((a for a in accounts if a['key'] == 'master'), None)
+        
+        if not fast_account or not master_account:
+            log_test("POST /api/balance/transfer (insufficient)", False, "Accounts not found")
+            return False
+        
+        payload = {
+            "fromAccountId": fast_account['id'],
+            "toAccountId": master_account['id'],
+            "amount": fast_account['balance'] + 1000000,
+            "description": "محاولة تحويل مبلغ أكبر من الرصيد"
+        }
+        
+        response = requests.post(f"{BASE_URL}/balance/transfer", json=payload, timeout=10)
+        
+        if response.status_code != 400:
+            log_test("POST /api/balance/transfer (insufficient)", False, f"Expected 400, got {response.status_code}")
+            return False
+        
+        data = response.json()
+        
+        if 'error' in data and 'رصيد المصدر غير كافٍ' in data['error']:
+            log_test("POST /api/balance/transfer (insufficient)", True, "Correctly rejected transfer with insufficient source balance")
+        else:
+            log_test("POST /api/balance/transfer (insufficient)", False, f"Wrong error message: {data}")
+        
+        return True
+        
+    except Exception as e:
+        log_test("POST /api/balance/transfer (insufficient)", False, f"Exception: {str(e)}")
+        return False
+
+def test_get_transactions():
+    """Test 10: GET /api/balance/transactions with filters"""
+    try:
+        print("\n=== Test 10: GET /api/balance/transactions ===")
+        
+        # Get fast account
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        if not fast_account:
+            log_test("GET /api/balance/transactions", False, "Fast account not found")
+            return False
+        
+        # Test with accountId filter
+        response = requests.get(f"{BASE_URL}/balance/transactions?accountId={fast_account['id']}&limit=20", timeout=10)
+        
+        if response.status_code != 200:
+            log_test("GET /api/balance/transactions", False, f"Expected 200, got {response.status_code}")
+            return False
+        
+        data = response.json()
+        
+        if not isinstance(data, list):
+            log_test("GET /api/balance/transactions", False, "Response is not an array")
+            return False
+        
+        # Verify structure if transactions exist
+        if len(data) > 0:
+            tx = data[0]
+            required_fields = ['id', 'accountId', 'accountName', 'type', 'amount', 'balanceBefore', 'balanceAfter', 'description', 'createdBy', 'createdByName', 'createdAt']
+            missing_fields = [f for f in required_fields if f not in tx]
             
             if missing_fields:
-                log_test("Employee object structure", False, f"Missing fields: {missing_fields}")
+                log_test("GET /api/balance/transactions", False, f"Missing fields: {missing_fields}")
+                return False
+            
+            log_test("GET /api/balance/transactions", True, f"Found {len(data)} transactions with correct structure")
+        else:
+            log_test("GET /api/balance/transactions", True, "No transactions found (empty array)")
+        
+        # Test with type filter
+        response = requests.get(f"{BASE_URL}/balance/transactions?type=deposit", timeout=10)
+        
+        if response.status_code == 200:
+            deposits = response.json()
+            deposit_types = [t['type'] for t in deposits if 'type' in t]
+            if all(t == 'deposit' for t in deposit_types):
+                log_test("GET /api/balance/transactions (type filter)", True, f"Type filter working: found {len(deposits)} deposit transactions")
             else:
-                log_test("Employee object structure", True, f"All required fields present: {required_fields}")
+                log_test("GET /api/balance/transactions (type filter)", False, "Type filter not working correctly")
+        else:
+            log_test("GET /api/balance/transactions (type filter)", False, f"Expected 200, got {response.status_code}")
+        
+        return True
         
     except Exception as e:
-        log_test("GET /api/tasks/employees-for-transfer", False, f"Exception: {str(e)}")
+        log_test("GET /api/balance/transactions", False, f"Exception: {str(e)}")
+        return False
 
-def test_notification_structure():
-    """Test notification structure after task lifecycle"""
-    print("\n" + "="*80)
-    print("TEST 11: Notification Structure Check")
-    print("="*80)
-    
+def test_get_summary():
+    """Test 11: GET /api/balance/summary"""
     try:
-        resp = requests.get(f"{BASE_URL}/notifications/admin")
+        print("\n=== Test 11: GET /api/balance/summary ===")
         
-        if resp.status_code != 200:
-            log_test("GET /api/notifications/admin", False, f"Status: {resp.status_code}")
-            return
+        response = requests.get(f"{BASE_URL}/balance/summary", timeout=10)
         
-        notifications = resp.json()
+        if response.status_code != 200:
+            log_test("GET /api/balance/summary", False, f"Expected 200, got {response.status_code}")
+            return False
         
-        if not isinstance(notifications, list):
-            log_test("Notifications is array", False, f"Expected array, got: {type(notifications)}")
-            return
+        data = response.json()
         
-        log_test("GET /api/notifications/admin", True, f"Found {len(notifications)} notifications")
+        if not isinstance(data, list):
+            log_test("GET /api/balance/summary", False, "Response is not an array")
+            return False
         
-        # Find task-related notifications
-        task_notifs = [n for n in notifications if n.get('entityType') == 'task']
-        
-        if len(task_notifs) == 0:
-            log_test("Task notifications found", False, "No task notifications found")
-            return
-        
-        log_test("Task notifications found", True, f"Found {len(task_notifs)} task notifications")
-        
-        # Check structure of task notifications
-        sample_notif = task_notifs[0]
-        required_fields = ['entityType', 'entityId', 'actionUrl', 'type', 'title', 'message']
-        missing_fields = [f for f in required_fields if f not in sample_notif]
-        
-        if missing_fields:
-            log_test("Notification structure", False, f"Missing fields: {missing_fields}")
-        else:
-            log_test("Notification structure", True, 
-                    f"All required fields present. entityType={sample_notif.get('entityType')}, actionUrl={sample_notif.get('actionUrl')}")
-        
-        # Verify actionUrl format
-        if sample_notif.get('actionUrl'):
-            if 'tasks?id=' in sample_notif.get('actionUrl'):
-                log_test("actionUrl format", True, f"actionUrl={sample_notif.get('actionUrl')}")
+        # Verify structure
+        if len(data) > 0:
+            summary = data[0]
+            required_fields = ['todayDeposit', 'todayWithdraw', 'monthDeposit', 'monthWithdraw', 'yearDeposit', 'yearWithdraw']
+            missing_fields = [f for f in required_fields if f not in summary]
+            
+            if missing_fields:
+                log_test("GET /api/balance/summary", False, f"Missing fields: {missing_fields}")
+                return False
+            
+            # Verify all values are numbers
+            all_numbers = all(isinstance(summary[f], (int, float)) for f in required_fields)
+            
+            if all_numbers:
+                log_test("GET /api/balance/summary", True, f"Summary returned for {len(data)} accounts with all numeric fields")
             else:
-                log_test("actionUrl format", False, f"Unexpected format: {sample_notif.get('actionUrl')}")
+                log_test("GET /api/balance/summary", False, "Some fields are not numbers")
+        else:
+            log_test("GET /api/balance/summary", True, "No accounts found (empty array)")
         
-        # Check for Arabic content
-        has_arabic = any(ord(c) > 127 for c in sample_notif.get('title', '') + sample_notif.get('message', ''))
-        log_test("Arabic content in notifications", has_arabic, 
-                f"title={sample_notif.get('title')}, message={sample_notif.get('message')[:50]}...")
+        return True
         
     except Exception as e:
-        log_test("Notification structure check", False, f"Exception: {str(e)}")
+        log_test("GET /api/balance/summary", False, f"Exception: {str(e)}")
+        return False
 
-def test_backward_compatibility():
-    """Test backward compatibility - old endpoints still work"""
-    print("\n" + "="*80)
-    print("TEST 12: Backward Compatibility")
-    print("="*80)
-    
+def test_update_account():
+    """Test 12: PUT /api/balance/accounts/:id"""
     try:
-        # Create a test task for backward compatibility tests
-        task_payload = {
-            "title": "مهمة للتوافق الخلفي",
-            "assignedTo": "test-emp-backward",
-            "assignedToName": "موظف اختبار",
-            "priority": "medium",
-            "dueDate": "2026-12-31"
+        print("\n=== Test 12: PUT /api/balance/accounts/:id ===")
+        
+        # Get fast account
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        if not fast_account:
+            log_test("PUT /api/balance/accounts/:id", False, "Fast account not found")
+            return False
+        
+        original_name = fast_account['name']
+        original_icon = fast_account['icon']
+        
+        payload = {
+            "name": "رصيد Fast - معدل",
+            "icon": "⚡⚡"
         }
         
-        resp = requests.post(f"{BASE_URL}/tasks", json=task_payload)
-        if resp.status_code not in [200, 201]:
-            log_test("Create task for backward compatibility", False, f"Status: {resp.status_code}")
-            return
+        response = requests.put(f"{BASE_URL}/balance/accounts/{fast_account['id']}", json=payload, timeout=10)
         
-        task = resp.json()
-        task_id = task.get('id')
-        log_test("Create task for backward compatibility", True, f"Task ID: {task_id}")
+        if response.status_code != 200:
+            log_test("PUT /api/balance/accounts/:id", False, f"Expected 200, got {response.status_code}")
+            return False
         
-        # Test old employee accept endpoint (should return 403 since employeeId doesn't match)
-        print("\n--- Testing POST /api/tasks/:id/accept (old endpoint) ---")
-        accept_payload = {"employeeId": "wrong-id"}
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/accept", json=accept_payload)
+        data = response.json()
         
-        if resp.status_code == 403:
-            log_test("POST /api/tasks/:id/accept (old endpoint)", True, 
-                    "Correctly returns 403 for mismatched employeeId (endpoint still wired)")
+        if not data.get('success'):
+            log_test("PUT /api/balance/accounts/:id", False, "Success field not true")
+            return False
+        
+        # Verify changes persisted
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        updated_account = next((a for a in accounts if a['id'] == fast_account['id']), None)
+        
+        if updated_account and updated_account['name'] == "رصيد Fast - معدل" and updated_account['icon'] == "⚡⚡":
+            log_test("PUT /api/balance/accounts/:id", True, "Account updated successfully, changes persisted")
         else:
-            log_test("POST /api/tasks/:id/accept (old endpoint)", False, 
-                    f"Expected 403, got {resp.status_code}")
+            log_test("PUT /api/balance/accounts/:id", False, "Changes not persisted correctly")
         
-        # Test old manager review endpoint (should still work)
-        print("\n--- Testing POST /api/tasks/:id/review (old endpoint) ---")
-        review_payload = {
-            "action": "approve",
-            "rating": {
-                "quality": 4,
-                "timeliness": 5,
-                "communication": 4
-            },
-            "reviewerName": "المدير"
+        # Restore original values
+        restore_payload = {
+            "name": original_name,
+            "icon": original_icon
         }
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/review", json=review_payload)
+        requests.put(f"{BASE_URL}/balance/accounts/{fast_account['id']}", json=restore_payload, timeout=10)
         
-        if resp.status_code == 200:
-            log_test("POST /api/tasks/:id/review (old endpoint)", True, 
-                    "Old review endpoint still works")
-        else:
-            log_test("POST /api/tasks/:id/review (old endpoint)", False, 
-                    f"Status: {resp.status_code}, Body: {resp.text}")
-        
-        # Test old employee complete endpoint (should return 403 since employeeId doesn't match)
-        print("\n--- Testing POST /api/tasks/:id/complete (old endpoint) ---")
-        complete_payload = {
-            "employeeId": "wrong-id",
-            "summary": "تم الإنجاز",
-            "notes": "ملاحظات"
-        }
-        resp = requests.post(f"{BASE_URL}/tasks/{task_id}/complete", json=complete_payload)
-        
-        if resp.status_code == 403:
-            log_test("POST /api/tasks/:id/complete (old endpoint)", True, 
-                    "Correctly returns 403 for mismatched employeeId (endpoint still wired)")
-        else:
-            log_test("POST /api/tasks/:id/complete (old endpoint)", False, 
-                    f"Expected 403, got {resp.status_code}")
-        
-        # Clean up
-        requests.delete(f"{BASE_URL}/tasks/{task_id}")
+        return True
         
     except Exception as e:
-        log_test("Backward compatibility tests", False, f"Exception: {str(e)}")
+        log_test("PUT /api/balance/accounts/:id", False, f"Exception: {str(e)}")
+        return False
+
+def test_auto_deduct():
+    """Test 13: AUTO-DEDUCT on subscriber activation (CRITICAL)"""
+    try:
+        print("\n=== Test 13: AUTO-DEDUCT on subscriber activation (CRITICAL) ===")
+        
+        # Get fast account current balance
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        if not fast_account:
+            log_test("AUTO-DEDUCT test", False, "Fast account not found")
+            return False
+        
+        fast_balance_before = fast_account['balance']
+        print(f"   Fast account balance before activation: {fast_balance_before}")
+        
+        # Get a subscriber to activate
+        subscribers_response = requests.get(f"{BASE_URL}/subscribers", timeout=10)
+        subscribers = subscribers_response.json()
+        
+        # Find an inactive subscriber or create one
+        test_subscriber = next((s for s in subscribers if s.get('status') != 'active'), None)
+        
+        if not test_subscriber:
+            # Create a test subscriber
+            print("   Creating test subscriber...")
+            create_payload = {
+                "name": "مشترك اختبار تسقيط",
+                "phone": "07700000999",
+                "address": "بغداد - الكرادة",
+                "zoneId": subscribers[0]['zoneId'] if len(subscribers) > 0 else None,
+                "status": "inactive"
+            }
+            create_response = requests.post(f"{BASE_URL}/subscribers", json=create_payload, timeout=10)
+            if create_response.status_code == 200 or create_response.status_code == 201:
+                test_subscriber = create_response.json()
+            else:
+                log_test("AUTO-DEDUCT test", False, "Failed to create test subscriber")
+                return False
+        
+        print(f"   Using subscriber: {test_subscriber['name']} (ID: {test_subscriber['id']})")
+        
+        # Get packages
+        packages_response = requests.get(f"{BASE_URL}/packages", timeout=10)
+        packages = packages_response.json()
+        
+        if len(packages) == 0:
+            log_test("AUTO-DEDUCT test", False, "No packages found")
+            return False
+        
+        test_package = packages[0]
+        print(f"   Using package: {test_package['name']}")
+        
+        # Get agents
+        agents_response = requests.get(f"{BASE_URL}/agents", timeout=10)
+        agents = agents_response.json()
+        
+        if len(agents) == 0:
+            log_test("AUTO-DEDUCT test", False, "No agents found")
+            return False
+        
+        test_agent = agents[0]
+        
+        # Activate subscriber with fastpay payment method
+        activation_amount = 25000
+        activation_payload = {
+            "packageId": test_package['id'],
+            "speed": test_package['speed'],
+            "amount": activation_amount,
+            "paymentMethod": "fastpay",
+            "durationMonths": 1,
+            "agentId": test_agent['id'],
+            "notes": "تفعيل اختبار للتسقيط التلقائي"
+        }
+        
+        print(f"   Activating subscriber with amount: {activation_amount} IQD via fastpay...")
+        activation_response = requests.post(f"{BASE_URL}/subscribers/{test_subscriber['id']}/activate", json=activation_payload, timeout=10)
+        
+        if activation_response.status_code not in [200, 201]:
+            log_test("AUTO-DEDUCT test", False, f"Activation failed with status {activation_response.status_code}")
+            return False
+        
+        activation_data = activation_response.json()
+        print(f"   Activation successful")
+        
+        # Get fast account balance after activation
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account_after = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        fast_balance_after = fast_account_after['balance']
+        print(f"   Fast account balance after activation: {fast_balance_after}")
+        
+        expected_balance = fast_balance_before - activation_amount
+        
+        if fast_balance_after == expected_balance:
+            log_test("AUTO-DEDUCT test - balance deduction", True, f"Fast account balance decreased by exactly {activation_amount} IQD ({fast_balance_before} → {fast_balance_after})")
+        else:
+            log_test("AUTO-DEDUCT test - balance deduction", False, f"Balance mismatch: expected {expected_balance}, got {fast_balance_after}")
+        
+        # Verify transaction created
+        tx_response = requests.get(f"{BASE_URL}/balance/transactions?accountId={fast_account['id']}&limit=5", timeout=10)
+        transactions = tx_response.json()
+        
+        auto_deduct_tx = next((t for t in transactions if t.get('type') == 'auto_deduct' and t.get('subscriberId') == test_subscriber['id']), None)
+        
+        if auto_deduct_tx:
+            # Verify transaction details
+            checks = []
+            checks.append(auto_deduct_tx['type'] == 'auto_deduct')
+            checks.append(auto_deduct_tx['linkedEntity'] == 'activation')
+            checks.append(auto_deduct_tx['subscriberId'] == test_subscriber['id'])
+            checks.append(auto_deduct_tx['subscriberName'] == test_subscriber['name'])
+            checks.append(auto_deduct_tx['amount'] == activation_amount)
+            
+            if all(checks):
+                log_test("AUTO-DEDUCT test - transaction", True, f"Auto-deduct transaction created with correct details (type=auto_deduct, linkedEntity=activation, amount={activation_amount})")
+            else:
+                log_test("AUTO-DEDUCT test - transaction", False, f"Transaction details incorrect: {auto_deduct_tx}")
+        else:
+            log_test("AUTO-DEDUCT test - transaction", False, "Auto-deduct transaction not found")
+        
+        # Cleanup: delete test subscriber
+        print(f"   Cleaning up test subscriber...")
+        requests.delete(f"{BASE_URL}/subscribers/{test_subscriber['id']}", timeout=10)
+        
+        return True
+        
+    except Exception as e:
+        log_test("AUTO-DEDUCT test", False, f"Exception: {str(e)}")
+        return False
+
+def test_delete_transaction():
+    """Test 14: DELETE /api/balance/transactions/:id"""
+    try:
+        print("\n=== Test 14: DELETE /api/balance/transactions/:id ===")
+        
+        # Get fast account
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        if not fast_account:
+            log_test("DELETE /api/balance/transactions/:id", False, "Fast account not found")
+            return False
+        
+        balance_before = fast_account['balance']
+        
+        # Create a test deposit
+        deposit_payload = {
+            "accountId": fast_account['id'],
+            "amount": 50000,
+            "description": "إيداع اختبار للحذف"
+        }
+        
+        deposit_response = requests.post(f"{BASE_URL}/balance/deposit", json=deposit_payload, timeout=10)
+        
+        if deposit_response.status_code != 200:
+            log_test("DELETE /api/balance/transactions/:id", False, "Failed to create test deposit")
+            return False
+        
+        deposit_data = deposit_response.json()
+        transaction_id = deposit_data['transaction']['id']
+        
+        # Get balance after deposit
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account_after_deposit = next((a for a in accounts if a['key'] == 'fast'), None)
+        balance_after_deposit = fast_account_after_deposit['balance']
+        
+        print(f"   Created test deposit: {transaction_id}, balance: {balance_before} → {balance_after_deposit}")
+        
+        # Delete the transaction
+        delete_response = requests.delete(f"{BASE_URL}/balance/transactions/{transaction_id}", timeout=10)
+        
+        if delete_response.status_code != 200:
+            log_test("DELETE /api/balance/transactions/:id", False, f"Expected 200, got {delete_response.status_code}")
+            return False
+        
+        # Verify balance reverted
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account_after_delete = next((a for a in accounts if a['key'] == 'fast'), None)
+        balance_after_delete = fast_account_after_delete['balance']
+        
+        if balance_after_delete == balance_before:
+            log_test("DELETE /api/balance/transactions/:id", True, f"Transaction deleted, balance reverted: {balance_after_deposit} → {balance_after_delete}")
+        else:
+            log_test("DELETE /api/balance/transactions/:id", False, f"Balance not reverted correctly: expected {balance_before}, got {balance_after_delete}")
+        
+        return True
+        
+    except Exception as e:
+        log_test("DELETE /api/balance/transactions/:id", False, f"Exception: {str(e)}")
+        return False
+
+def test_delete_account():
+    """Test 15: DELETE /api/balance/accounts/:id"""
+    try:
+        print("\n=== Test 15: DELETE /api/balance/accounts/:id ===")
+        
+        # Create a test account
+        create_payload = {
+            "name": "حساب للحذف",
+            "type": "other",
+            "icon": "🗑️",
+            "color": "#999999"
+        }
+        
+        create_response = requests.post(f"{BASE_URL}/balance/accounts", json=create_payload, timeout=10)
+        
+        if create_response.status_code != 200:
+            log_test("DELETE /api/balance/accounts/:id", False, "Failed to create test account")
+            return False
+        
+        test_account = create_response.json()
+        account_id = test_account['id']
+        
+        print(f"   Created test account: {account_id}")
+        
+        # Try to delete (should succeed - no transactions, zero balance)
+        delete_response = requests.delete(f"{BASE_URL}/balance/accounts/{account_id}", timeout=10)
+        
+        if delete_response.status_code != 200:
+            log_test("DELETE /api/balance/accounts/:id (empty account)", False, f"Expected 200, got {delete_response.status_code}")
+            return False
+        
+        log_test("DELETE /api/balance/accounts/:id (empty account)", True, "Successfully deleted account with no transactions and zero balance")
+        
+        # Test deleting account with transactions
+        # Get fast account (has transactions)
+        accounts_response = requests.get(f"{BASE_URL}/balance/accounts", timeout=10)
+        accounts = accounts_response.json()
+        fast_account = next((a for a in accounts if a['key'] == 'fast'), None)
+        
+        if fast_account:
+            delete_response = requests.delete(f"{BASE_URL}/balance/accounts/{fast_account['id']}", timeout=10)
+            
+            if delete_response.status_code == 400:
+                data = delete_response.json()
+                if 'error' in data and ('يوجد رصيد أو معاملات' in data['error'] or 'لا يمكن الحذف' in data['error']):
+                    log_test("DELETE /api/balance/accounts/:id (with transactions)", True, "Correctly rejected deletion of account with transactions")
+                else:
+                    log_test("DELETE /api/balance/accounts/:id (with transactions)", False, f"Wrong error message: {data}")
+            else:
+                log_test("DELETE /api/balance/accounts/:id (with transactions)", False, f"Expected 400, got {delete_response.status_code}")
+        
+        return True
+        
+    except Exception as e:
+        log_test("DELETE /api/balance/accounts/:id", False, f"Exception: {str(e)}")
+        return False
 
 def test_regression():
-    """Test regression - existing endpoints still work"""
-    print("\n" + "="*80)
-    print("TEST 13: Regression Tests")
-    print("="*80)
-    
-    endpoints = [
-        ("GET /api/dashboard/stats", f"{BASE_URL}/dashboard/stats"),
-        ("GET /api/isp-sync/logs", f"{BASE_URL}/isp-sync/logs"),
-        ("GET /api/whatsapp/status", f"{BASE_URL}/whatsapp/status"),
-        ("GET /api/health", f"{BASE_URL}/health")
-    ]
-    
-    for name, url in endpoints:
-        try:
-            resp = requests.get(url)
-            if resp.status_code == 200:
-                log_test(name, True, f"Status: 200")
-                
-                # Additional checks for specific endpoints
-                if "health" in url:
-                    data = resp.json()
-                    if data.get('dbConnected'):
-                        log_test(f"{name} - dbConnected", True, "Database connected")
-                    else:
-                        log_test(f"{name} - dbConnected", False, f"dbConnected={data.get('dbConnected')}")
-            else:
-                log_test(name, False, f"Status: {resp.status_code}")
-        except Exception as e:
-            log_test(name, False, f"Exception: {str(e)}")
-
-def cleanup_test_tasks(task_ids):
-    """Clean up test tasks"""
-    print("\n" + "="*80)
-    print("CLEANUP: Deleting Test Tasks")
-    print("="*80)
-    
-    deleted_count = 0
-    for task_id in task_ids:
-        if task_id:
+    """Test 16: Regression checks"""
+    try:
+        print("\n=== Test 16: Regression checks ===")
+        
+        endpoints = [
+            ("/dashboard/stats", "Dashboard stats"),
+            ("/whatsapp/status", "WhatsApp status"),
+            ("/isp-sync/logs", "ISP sync logs"),
+            ("/notifications/admin", "Admin notifications"),
+            ("/tasks", "Tasks"),
+            ("/health", "Health check")
+        ]
+        
+        all_passed = True
+        
+        for endpoint, name in endpoints:
             try:
-                resp = requests.delete(f"{BASE_URL}/tasks/{task_id}")
-                if resp.status_code == 200:
-                    deleted_count += 1
-                    print(f"✅ Deleted task: {task_id}")
+                response = requests.get(f"{BASE_URL}{endpoint}", timeout=10)
+                if response.status_code == 200:
+                    print(f"   ✅ {name}: 200")
                 else:
-                    print(f"⚠️  Failed to delete task {task_id}: Status {resp.status_code}")
+                    print(f"   ❌ {name}: {response.status_code}")
+                    all_passed = False
             except Exception as e:
-                print(f"⚠️  Exception deleting task {task_id}: {str(e)}")
-    
-    print(f"\nDeleted {deleted_count} test tasks")
+                print(f"   ❌ {name}: Exception - {str(e)}")
+                all_passed = False
+        
+        # Special check for health endpoint
+        try:
+            health_response = requests.get(f"{BASE_URL}/health", timeout=10)
+            if health_response.status_code == 200:
+                health_data = health_response.json()
+                if health_data.get('dbConnected') == True:
+                    print(f"   ✅ Database connected: true")
+                else:
+                    print(f"   ⚠️  Database connected: {health_data.get('dbConnected')}")
+                    all_passed = False
+        except:
+            pass
+        
+        if all_passed:
+            log_test("Regression checks", True, "All regression endpoints working")
+        else:
+            log_test("Regression checks", False, "Some regression endpoints failed")
+        
+        return all_passed
+        
+    except Exception as e:
+        log_test("Regression checks", False, f"Exception: {str(e)}")
+        return False
 
 def main():
-    """Main test runner"""
-    print("\n" + "="*80)
-    print("SMART NOTIFICATIONS + ADVANCED TASKS VERIFICATION")
-    print("Backend URL:", BASE_URL)
-    print("="*80)
+    """Run all balance management tests"""
+    print("=" * 80)
+    print("BALANCE MANAGEMENT BACKEND TESTING")
+    print("=" * 80)
+    print(f"Backend URL: {BASE_URL}")
+    print(f"Started at: {datetime.now().isoformat()}")
+    print("=" * 80)
     
-    task_ids_to_cleanup = []
+    # Test 1: Get balance accounts (auto-seeds 5 defaults)
+    accounts_data = test_get_balance_accounts()
     
-    # Test notifications
-    notif_id = test_notifications_click()
-    notif_id = test_notifications_resolve(notif_id)
-    test_notifications_reopen(notif_id)
-    test_notifications_delete(notif_id)
+    if not accounts_data:
+        print("\n❌ CRITICAL: Failed to get balance accounts. Stopping tests.")
+        sys.exit(1)
     
-    # Test task lifecycle
-    task_id = test_task_lifecycle()
-    if task_id:
-        task_ids_to_cleanup.append(task_id)
+    fast_account = accounts_data['fast']
+    master_account = accounts_data['master']
     
-    # Test task transfer
-    task_id = test_task_transfer()
-    if task_id:
-        task_ids_to_cleanup.append(task_id)
+    # Test 2: Create new account
+    new_account = test_create_account()
     
-    # Test task duplicates
-    task1_id, task2_id = test_task_duplicates()
-    if task1_id:
-        task_ids_to_cleanup.append(task1_id)
-    if task2_id:
-        task_ids_to_cleanup.append(task2_id)
+    # Test 3: Deposit to fast account
+    if fast_account:
+        test_deposit(fast_account['id'], fast_account['name'])
     
-    # Test employees for transfer
-    test_employees_for_transfer()
+    # Test 4: Withdraw from fast account
+    if fast_account:
+        test_withdraw(fast_account['id'], fast_account['name'])
     
-    # Test notification structure
-    test_notification_structure()
+    # Test 5: Withdraw with insufficient balance
+    test_withdraw_insufficient()
     
-    # Test backward compatibility
-    test_backward_compatibility()
+    # Test 6: Withdraw with overdraft
+    test_withdraw_overdraft()
     
-    # Test regression
+    # Test 7: Transfer between accounts
+    test_transfer()
+    
+    # Test 8: Transfer to same account (should fail)
+    test_transfer_same_account()
+    
+    # Test 9: Transfer with insufficient source balance
+    test_transfer_insufficient()
+    
+    # Test 10: Get transactions with filters
+    test_get_transactions()
+    
+    # Test 11: Get summary
+    test_get_summary()
+    
+    # Test 12: Update account
+    test_update_account()
+    
+    # Test 13: AUTO-DEDUCT on activation (CRITICAL)
+    test_auto_deduct()
+    
+    # Test 14: Delete transaction
+    test_delete_transaction()
+    
+    # Test 15: Delete account
+    test_delete_account()
+    
+    # Test 16: Regression checks
     test_regression()
     
-    # Cleanup
-    cleanup_test_tasks(task_ids_to_cleanup)
+    # Print summary
+    print("\n" + "=" * 80)
+    print("TEST SUMMARY")
+    print("=" * 80)
+    print(f"Total tests: {tests_passed + tests_failed}")
+    print(f"✅ Passed: {tests_passed}")
+    print(f"❌ Failed: {tests_failed}")
+    print(f"Success rate: {(tests_passed / (tests_passed + tests_failed) * 100):.1f}%")
+    print("=" * 80)
     
-    print("\n" + "="*80)
-    print("TESTING COMPLETE")
-    print("="*80)
+    if tests_failed > 0:
+        print("\n❌ FAILED TESTS:")
+        for result in test_results:
+            if not result['passed']:
+                print(f"  - {result['name']}")
+                if result['details']:
+                    print(f"    {result['details']}")
+    
+    print(f"\nCompleted at: {datetime.now().isoformat()}")
+    
+    # Exit with appropriate code
+    sys.exit(0 if tests_failed == 0 else 1)
 
 if __name__ == "__main__":
     main()

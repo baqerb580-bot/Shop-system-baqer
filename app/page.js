@@ -5,6 +5,7 @@ import { GPSMap, Barcode } from '@/components/maps-barcode';
 import { CustomFieldsGrid, CustomFieldsDisplay } from '@/components/custom-fields';
 import WhatsAppManager from '@/components/whatsapp-manager';
 import IspSyncCenter from '@/components/isp-sync-center';
+import BalanceManagement from '@/components/balance-management';
 import { sounds, getSoundSettings, setSoundSettings, browserNotify, requestNotificationPermission } from '@/lib/sounds';
 import { useRealtimeEvents } from '@/lib/useRealtime';
 import { whatsappLink, telegramLink, defaultWhatsAppTemplates, fillTemplate } from '@/lib/messaging';
@@ -27,7 +28,7 @@ import {
   Send, Bot, Menu, Bell, ChevronLeft, ChevronRight, Box, CreditCard, FileText, X,
   CheckCircle2, Clock, AlertCircle, Globe, Smartphone, Headphones,
   HardDrive, Plug, Battery, ScanLine, Receipt, ShoppingBag, UserCheck,
-  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer, ListTodo, Check, XCircle, LogOut, MessageSquare, QrCode, Power, RefreshCw
+  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer, ListTodo, Check, XCircle, LogOut, MessageSquare, QrCode, Power, RefreshCw, Wallet
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, BarChart as RBarChart, Bar,
@@ -115,6 +116,7 @@ const MENU = [
   { id: 'orders', label: 'المتجر والطلبات', icon: ShoppingCart, color: 'gold' },
   { id: 'location-requests', label: 'طلبات تعديل المواقع', icon: MapPin, color: 'neon' },
   { id: 'accounting', label: 'المحاسبة المالية', icon: CreditCard, color: 'gold' },
+  { id: 'balance', label: 'إدارة الرصيد (Fast/Master)', icon: Wallet, color: 'gold' },
   { id: 'activity', label: 'سجل النشاطات والجلسات', icon: Activity, color: 'rose' },
   { id: 'settings', label: 'الإعدادات', icon: Settings, color: 'neon' },
 ];
@@ -214,6 +216,7 @@ function App() {
           {active === 'orders' && <OrdersAdminPage />}
           {active === 'location-requests' && <LocationRequestsPage />}
           {active === 'accounting' && <AccountingPage />}
+          {active === 'balance' && <BalanceManagement api={api} />}
           {active === 'activity' && <ActivityLogsPage />}
           {active === 'settings' && <SettingsPage />}
         </main>
