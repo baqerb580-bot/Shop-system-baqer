@@ -239,6 +239,8 @@ async function getDb() {
       __globalAny.__mongoState.seeded = true;
       // Don't await — let it run in the background to avoid cold-start timeouts on Vercel
       seedDefaults(db).catch((e) => console.warn('[Mongo] seed warn:', e?.message));
+      // ============ Start auto-backup scheduler (runs once per process) ============
+      try { startBackupScheduler(getDb); } catch (e) { console.warn('[backup] scheduler start failed:', e?.message); }
     }
     return db;
   } catch (e) {
@@ -662,6 +664,7 @@ import { tgSend, tgEdit, tgAnswerCallback, buildHome, buildReports, buildEmploye
 import bcrypt from 'bcryptjs';
 import { isConfigured as waIsConfigured, waStatus, waHealth, waQr, waConnect, waDisconnect, waSend, waSendBulk } from '@/lib/whatsapp-client';
 import { runSync as runIspSync } from '@/lib/isp-sync';
+import { runBackup as runBackupLib, listBackups as listBackupsLib, getBackupFile, deleteBackup as deleteBackupLib, startScheduler as startBackupScheduler } from '@/lib/backup';
 import { createNotification, buildActionUrl } from '@/lib/notifications';
 
 // ============ WHATSAPP TEMPLATES (with variable substitution) ============
@@ -4366,25 +4369,48 @@ async function handle(request, params) {
     }
   }
 
-  // Manual backup trigger (logs the action)
+  // ============ BACKUP (Excel — تلقائي + يدوي) ============
+  // Manual backup trigger — generates a real XLSX and saves to disk
   if (path === 'settings/backup/run' && method === 'POST') {
-    const collections = await db.listCollections().toArray();
-    const stats = {};
-    for (const c of collections) {
-      stats[c.name] = await db.collection(c.name).countDocuments();
+    try {
+      const meta = await runBackupLib(db, { triggeredBy: 'manual' });
+      return ok({ success: true, ...meta, timestamp: meta.createdAt });
+    } catch (e) {
+      console.error('[backup/run] error:', e);
+      return err('فشل النسخ الاحتياطي: ' + (e?.message || ''), 500);
     }
-    const backupId = uuidv4();
-    await db.collection('settings').updateOne(
-      { id: 'system' },
-      { $set: { 'backup.lastBackup': new Date().toISOString(), 'backup.lastBackupId': backupId } }
-    );
-    await db.collection('activity_logs').insertOne({
-      id: uuidv4(), user: 'admin', action: 'manual_backup',
-      entity: 'backup', entityId: backupId,
-      details: `نسخة احتياطية يدوية: ${Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(', ')}`,
-      timestamp: new Date().toISOString(),
+  }
+
+  // List all backups (sorted newest first)
+  if (path === 'settings/backup/list' && method === 'GET') {
+    try {
+      const items = await listBackupsLib(db, 100);
+      return ok(items);
+    } catch (e) {
+      return ok([]);
+    }
+  }
+
+  // Download a specific backup as XLSX
+  if (path.match(/^settings\/backup\/download\/[^/]+$/) && method === 'GET') {
+    const id = path.split('/')[3];
+    const data = await getBackupFile(db, id);
+    if (!data) return err('النسخة الاحتياطية غير موجودة', 404);
+    return new Response(data.buffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="${data.meta.filename}"`,
+        'Content-Length': String(data.buffer.length),
+      },
     });
-    return ok({ success: true, backupId, stats, timestamp: new Date().toISOString() });
+  }
+
+  // Delete a backup
+  if (path.match(/^settings\/backup\/[^/]+$/) && method === 'DELETE') {
+    const id = path.split('/')[2];
+    const ok2 = await deleteBackupLib(db, id);
+    return ok2 ? ok({ success: true }) : err('النسخة غير موجودة', 404);
   }
 
   if (path === 'ai/chat' && method === 'POST') {
