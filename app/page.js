@@ -387,7 +387,7 @@ function TopBar({ setActive, sidebarOpen, setSidebarOpen }) {
           <Sparkles className="w-5 h-5 text-gold" />
         </Button>
         <ThemeToggle />
-        <AdminNotificationsBell />
+        <AdminNotificationsBell setActive={setActive} />
       </div>
     </header>
   );
@@ -426,9 +426,10 @@ function ThemeToggle() {
 }
 
 // ============ ADMIN NOTIFICATIONS BELL ============
-function AdminNotificationsBell() {
+function AdminNotificationsBell({ setActive }) {
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState('unread'); // unread | all | resolved
   const lastCountRef = useRef(0);
 
   const playBeep = () => {
@@ -450,16 +451,63 @@ function AdminNotificationsBell() {
     const data = await api('notifications/admin');
     if (Array.isArray(data)) {
       setItems(data);
-      const unread = data.filter(n => !n.read).length;
+      const unread = data.filter(n => !n.read && !n.resolved).length;
       if (unread > lastCountRef.current && lastCountRef.current > 0) playBeep();
       lastCountRef.current = unread;
     }
   };
   useEffect(() => { load(); const i = setInterval(load, 15000); return () => clearInterval(i); }, []);
 
-  const unread = items.filter(n => !n.read).length;
-  const markRead = async (id) => { await api(`notifications/${id}/read`, { method: 'POST' }); load(); };
-  const markAllRead = async () => { await api('notifications/admin/read-all', { method: 'POST' }); load(); };
+  const unread = items.filter(n => !n.read && !n.resolved).length;
+  const markAllRead = async (e) => { e?.stopPropagation(); await api('notifications/admin/read-all', { method: 'POST' }); load(); };
+
+  // ============ Click navigates to entity ============
+  const handleClick = async (n) => {
+    try {
+      const r = await api(`notifications/${n.id}/click`, { method: 'POST' });
+      // Navigate to entity if there's an actionUrl/entityType
+      if (r?.entityType) {
+        const routeMap = {
+          task: 'tasks',
+          subscriber: 'subscribers',
+          order: 'ecommerce',
+          repair: 'repairs',
+          activation: 'subscribers',
+          agent: 'agents',
+          employee: 'employees',
+          whatsapp: 'whatsapp-manager',
+          location_request: 'location-requests',
+        };
+        const route = routeMap[r.entityType];
+        if (route && setActive) {
+          setActive(route);
+          setOpen(false);
+        }
+      }
+    } catch {}
+    load();
+  };
+
+  // ============ Resolve / Reopen / Delete ============
+  const resolveNotif = async (e, n) => {
+    e.stopPropagation();
+    const note = prompt('ملاحظة المعالجة (اختيارية):') || '';
+    const r = await api(`notifications/${n.id}/resolve`, { method: 'POST', body: JSON.stringify({ note, resolvedBy: 'المدير' }) });
+    if (r?.success) toast.success('✅ تمت معالجة الإشعار');
+    load();
+  };
+  const reopenNotif = async (e, n) => {
+    e.stopPropagation();
+    await api(`notifications/${n.id}/reopen`, { method: 'POST' });
+    toast.info('🔁 تم إعادة فتح الإشعار');
+    load();
+  };
+  const deleteNotif = async (e, n) => {
+    e.stopPropagation();
+    if (!confirm('حذف هذا الإشعار؟')) return;
+    await api(`notifications/${n.id}`, { method: 'DELETE' });
+    load();
+  };
 
   const NOTIF_COLOR = {
     attendance_late: 'border-orange-500/40 bg-orange-500/5',
@@ -467,10 +515,24 @@ function AdminNotificationsBell() {
     attendance_checkout: 'border-purple-500/40 bg-purple-500/5',
     leave_request: 'border-amber-500/40 bg-amber-500/5',
     advance_request: 'border-yellow-500/40 bg-yellow-500/5',
+    task_new: 'border-gold/40 bg-gold/5',
+    task_started: 'border-cyan-500/40 bg-cyan-500/5',
+    task_completed: 'border-emerald-500/40 bg-emerald-500/5',
+    task_transferred: 'border-violet-500/40 bg-violet-500/5',
+    task_transferred_in: 'border-violet-500/40 bg-violet-500/5',
+    task_transferred_out: 'border-zinc-500/40 bg-zinc-500/5',
+    task_reviewed: 'border-amber-500/40 bg-amber-500/5',
     task_submitted: 'border-purple-500/40 bg-purple-500/5',
     task_accepted: 'border-emerald-500/40 bg-emerald-500/5',
     task_rejected: 'border-red-500/40 bg-red-500/5',
   };
+
+  const filtered = items.filter(n => {
+    if (n.deleted) return false;
+    if (tab === 'unread') return !n.read && !n.resolved;
+    if (tab === 'resolved') return n.resolved;
+    return true;
+  });
 
   return (
     <div className="relative">
@@ -481,29 +543,68 @@ function AdminNotificationsBell() {
         )}
       </Button>
       {open && (
-        <div className="absolute left-0 top-12 w-96 max-h-[500px] overflow-y-auto glass-strong border border-gold/30 rounded-xl shadow-2xl z-50">
-          <div className="p-3 border-b border-gold-soft flex justify-between items-center sticky top-0 bg-background">
-            <p className="text-sm font-bold gold-text flex items-center gap-2"><Bell className="w-4 h-4" /> الإشعارات ({unread})</p>
-            {unread > 0 && <button onClick={markAllRead} className="text-[10px] text-cyan-400 hover:underline">قراءة الكل</button>}
-          </div>
-          {items.length === 0 ? (
-            <p className="p-6 text-xs text-center text-muted-foreground">لا توجد إشعارات</p>
-          ) : items.map(n => {
-            const c = NOTIF_COLOR[n.type] || 'border-gold-soft/30';
-            return (
-              <div key={n.id} onClick={() => markRead(n.id)} className={`p-3 border-l-4 border-b border-gold-soft/30 cursor-pointer hover:bg-input/20 ${c} ${!n.read ? 'font-semibold' : ''}`}>
-                <div className="flex items-start gap-2">
-                  {!n.read && <span className="mt-1 w-2 h-2 rounded-full bg-cyan-400 flex-shrink-0 animate-pulse" />}
-                  <div className="flex-1">
-                    <p className="text-xs font-bold">{n.title}</p>
-                    <p className="text-[10px] text-muted-foreground mt-0.5 whitespace-pre-line">{n.message}</p>
-                    <p className="text-[9px] text-muted-foreground mt-1">{new Date(n.createdAt).toLocaleString('ar-IQ')}</p>
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-12 w-[420px] max-h-[560px] overflow-y-auto glass-strong border border-gold/30 rounded-xl shadow-2xl z-50">
+            <div className="p-3 border-b border-gold-soft sticky top-0 bg-background z-10">
+              <div className="flex justify-between items-center mb-2">
+                <p className="text-sm font-bold gold-text flex items-center gap-2"><Bell className="w-4 h-4" /> الإشعارات ({unread} غير مقروء)</p>
+                {unread > 0 && <button onClick={markAllRead} className="text-[10px] text-cyan-400 hover:underline">قراءة الكل</button>}
+              </div>
+              <div className="flex gap-1 text-[10px]">
+                <button onClick={(e) => { e.stopPropagation(); setTab('unread'); }} className={`px-2 py-1 rounded ${tab === 'unread' ? 'bg-gold/20 text-gold' : 'hover:bg-input/30'}`}>غير مقروء ({items.filter(n => !n.read && !n.resolved && !n.deleted).length})</button>
+                <button onClick={(e) => { e.stopPropagation(); setTab('all'); }} className={`px-2 py-1 rounded ${tab === 'all' ? 'bg-gold/20 text-gold' : 'hover:bg-input/30'}`}>الكل</button>
+                <button onClick={(e) => { e.stopPropagation(); setTab('resolved'); }} className={`px-2 py-1 rounded ${tab === 'resolved' ? 'bg-gold/20 text-gold' : 'hover:bg-input/30'}`}>تمت المعالجة ({items.filter(n => n.resolved).length})</button>
+              </div>
+            </div>
+            {filtered.length === 0 ? (
+              <p className="p-6 text-xs text-center text-muted-foreground">لا توجد إشعارات</p>
+            ) : filtered.map(n => {
+              const c = NOTIF_COLOR[n.type] || 'border-gold-soft/30';
+              const canClick = !!n.entityType && n.entityType !== 'generic';
+              return (
+                <div key={n.id}
+                  onClick={() => canClick && handleClick(n)}
+                  className={`p-3 border-l-4 border-b border-gold-soft/30 ${canClick ? 'cursor-pointer hover:bg-input/30' : 'cursor-default'} ${c} ${!n.read && !n.resolved ? 'font-semibold' : ''} ${n.resolved ? 'opacity-60' : ''} transition-all group`}
+                >
+                  <div className="flex items-start gap-2">
+                    {!n.read && !n.resolved && <span className="mt-1 w-2 h-2 rounded-full bg-cyan-400 flex-shrink-0 animate-pulse" />}
+                    {n.resolved && <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0 mt-1" />}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-bold">{n.icon || ''} {n.title}</p>
+                        {n.priority === 'high' && <Badge className="bg-red-500/15 text-red-400 border-red-500/40 text-[8px]">عاجل</Badge>}
+                        {n.priority === 'critical' && <Badge className="bg-red-500/20 text-red-400 border-red-500/50 text-[8px] animate-pulse">حرج</Badge>}
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-0.5 whitespace-pre-line">{n.message}</p>
+                      <div className="flex items-center justify-between mt-1">
+                        <p className="text-[9px] text-muted-foreground">{new Date(n.createdAt).toLocaleString('ar-IQ')}</p>
+                        {n.resolved && (
+                          <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/40 text-[8px]">
+                            <CheckCircle2 className="w-2.5 h-2.5 ml-1" /> تمت المعالجة {n.resolvedBy ? `بواسطة ${n.resolvedBy}` : ''}
+                          </Badge>
+                        )}
+                      </div>
+                      {canClick && !n.resolved && (
+                        <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={(e) => { e.stopPropagation(); handleClick(n); }} className="text-[9px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/40 hover:bg-cyan-500/25">↗ فتح</button>
+                          <button onClick={(e) => resolveNotif(e, n)} className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/25">✅ معالجة</button>
+                          <button onClick={(e) => deleteNotif(e, n)} className="text-[9px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/40 hover:bg-red-500/25">🗑️</button>
+                        </div>
+                      )}
+                      {n.resolved && (
+                        <button onClick={(e) => reopenNotif(e, n)} className="mt-2 text-[9px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/40 hover:bg-amber-500/25 opacity-0 group-hover:opacity-100 transition-opacity">🔁 إعادة فتح</button>
+                      )}
+                      {n.resolutionNote && (
+                        <p className="text-[9px] text-emerald-400 mt-1 italic">📝 {n.resolutionNote}</p>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
@@ -2694,6 +2795,168 @@ function AttendanceView() {
   );
 }
 
+// ============ ADVANCED TASK ACTIONS (Start/Complete/Transfer/Review/Duplicates) ============
+function TaskAdvancedActions({ task, employees, onRefresh }) {
+  const [busy, setBusy] = useState(null);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [dupsOpen, setDupsOpen] = useState(false);
+  const [duplicates, setDuplicates] = useState([]);
+  const [transferTo, setTransferTo] = useState('');
+  const [transferReason, setTransferReason] = useState('');
+  const [reviewForm, setReviewForm] = useState({ rating: 80, success: true, notes: '' });
+
+  const canStart = !task.startedAt && task.status !== 'completed' && task.status !== 'pending_review';
+  const canComplete = task.startedAt && !task.completedAt && task.status !== 'completed';
+  const canTransfer = task.status !== 'completed' && task.status !== 'pending_review';
+  const canReview = (task.status === 'completed' || task.status === 'pending_review' || task.completedAt);
+
+  const doStart = async () => {
+    setBusy('start');
+    try {
+      const r = await api(`tasks/${task.id}/start`, { method: 'POST', body: JSON.stringify({ userName: 'المدير' }) });
+      if (r?.success) toast.success('▶️ بدأت المهمة'); else toast.error(r?.error || 'فشل');
+      onRefresh && onRefresh();
+    } finally { setBusy(null); }
+  };
+  const doComplete = async () => {
+    const note = prompt('ملاحظة إكمال (اختيارية):') || '';
+    setBusy('complete');
+    try {
+      const r = await api(`tasks/${task.id}/admin-complete`, { method: 'POST', body: JSON.stringify({ note, userName: 'المدير' }) });
+      if (r?.success) toast.success(`✅ تم الإكمال (${r.durationMin} دقيقة)`);
+      onRefresh && onRefresh();
+    } finally { setBusy(null); }
+  };
+  const doTransfer = async () => {
+    if (!transferTo) { toast.error('اختر موظفاً'); return; }
+    setBusy('transfer');
+    try {
+      const emp = employees.find(e => e.id === transferTo);
+      const r = await api(`tasks/${task.id}/transfer`, {
+        method: 'POST',
+        body: JSON.stringify({ toEmployeeId: transferTo, toEmployeeName: emp?.name, reason: transferReason, by: { id: 'manager', name: 'المدير' } }),
+      });
+      if (r?.success) { toast.success('🔄 تم التحويل'); setTransferOpen(false); setTransferTo(''); setTransferReason(''); }
+      onRefresh && onRefresh();
+    } finally { setBusy(null); }
+  };
+  const doReview = async () => {
+    setBusy('review');
+    try {
+      const r = await api(`tasks/${task.id}/rate`, {
+        method: 'POST',
+        body: JSON.stringify({ rating: Number(reviewForm.rating), success: reviewForm.success, notes: reviewForm.notes, by: { id: 'manager', name: 'المدير' } }),
+      });
+      if (r?.success) { toast.success('🏆 تم التقييم'); setReviewOpen(false); }
+      onRefresh && onRefresh();
+    } finally { setBusy(null); }
+  };
+  const loadDups = async () => {
+    const d = await api(`tasks/${task.id}/duplicates`);
+    setDuplicates(Array.isArray(d) ? d : []);
+    setDupsOpen(true);
+  };
+
+  return (
+    <>
+      {canStart && (
+        <Button size="sm" variant="outline" className="h-7 text-[10px] border-cyan-500/40 text-cyan-400 hover:bg-cyan-500/10" onClick={doStart} disabled={busy === 'start'}>
+          ▶️ بدء
+        </Button>
+      )}
+      {canComplete && (
+        <Button size="sm" variant="outline" className="h-7 text-[10px] border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10" onClick={doComplete} disabled={busy === 'complete'}>
+          ✅ إنهاء
+        </Button>
+      )}
+      {canTransfer && (
+        <Button size="sm" variant="outline" className="h-7 text-[10px] border-violet-500/40 text-violet-400 hover:bg-violet-500/10" onClick={() => setTransferOpen(true)}>
+          🔄 تحويل
+        </Button>
+      )}
+      {canReview && (
+        <Button size="sm" variant="outline" className="h-7 text-[10px] border-amber-500/40 text-amber-400 hover:bg-amber-500/10" onClick={() => setReviewOpen(true)}>
+          🏆 تقييم
+        </Button>
+      )}
+      <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-orange-400" onClick={loadDups} title="مهام مكررة">
+        <span className="text-sm">🔁</span>
+      </Button>
+
+      {/* Transfer dialog */}
+      <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
+        <DialogContent className="glass-strong border-violet-500/30">
+          <DialogHeader><DialogTitle className="text-violet-400">🔄 تحويل المهمة</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">إلى موظف</Label>
+            <Select value={transferTo} onValueChange={setTransferTo}>
+              <SelectTrigger className="bg-input/30 border-gold/20"><SelectValue placeholder="اختر..." /></SelectTrigger>
+              <SelectContent>
+                {employees.filter(e => e.id !== task.assignedTo).map(e => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Label className="text-xs">سبب التحويل</Label>
+            <Textarea value={transferReason} onChange={e => setTransferReason(e.target.value)} rows={3} className="bg-input/30 border-gold/20" placeholder="مثلاً: الموظف الحالي غير متاح" />
+          </div>
+          <DialogFooter>
+            <Button onClick={doTransfer} disabled={busy === 'transfer'} className="btn-gold">تأكيد التحويل</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Review dialog */}
+      <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
+        <DialogContent className="glass-strong border-amber-500/30">
+          <DialogHeader><DialogTitle className="text-amber-400">🏆 تقييم المهمة</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">نسبة النجاح: {reviewForm.rating}%</Label>
+            <input type="range" min="0" max="100" value={reviewForm.rating} onChange={e => setReviewForm(f => ({ ...f, rating: e.target.value }))} className="w-full" />
+            <div className="flex gap-2">
+              <Button size="sm" variant={reviewForm.success ? 'default' : 'outline'} onClick={() => setReviewForm(f => ({ ...f, success: true }))} className={reviewForm.success ? 'btn-gold' : ''}>✅ ناجحة</Button>
+              <Button size="sm" variant={!reviewForm.success ? 'default' : 'outline'} onClick={() => setReviewForm(f => ({ ...f, success: false }))} className={!reviewForm.success ? 'bg-red-500/20 text-red-400' : ''}>❌ فاشلة</Button>
+            </div>
+            <Label className="text-xs">ملاحظات المدير</Label>
+            <Textarea value={reviewForm.notes} onChange={e => setReviewForm(f => ({ ...f, notes: e.target.value }))} rows={3} className="bg-input/30 border-gold/20" />
+          </div>
+          <DialogFooter>
+            <Button onClick={doReview} disabled={busy === 'review'} className="btn-gold">حفظ التقييم</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Duplicates dialog */}
+      <Dialog open={dupsOpen} onOpenChange={setDupsOpen}>
+        <DialogContent className="glass-strong border-orange-500/30 max-w-2xl">
+          <DialogHeader><DialogTitle className="text-orange-400">🔁 مهام مكررة لـ "{task.title}"</DialogTitle></DialogHeader>
+          {duplicates.length === 0 ? (
+            <p className="text-center text-muted-foreground py-6">لا توجد مهام مكررة في آخر 180 يوماً</p>
+          ) : (
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              {duplicates.map(d => (
+                <div key={d.id} className="glass-card rounded-lg p-3 border border-orange-500/30">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs font-bold">{d.title}</p>
+                    <Badge variant="outline" className="text-[9px]">{d.status}</Badge>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">📅 {new Date(d.createdAt).toLocaleString('ar-IQ')}</p>
+                  <p className="text-[10px] text-muted-foreground">👤 {d.assignedToName}</p>
+                  {d.review && (
+                    <div className="mt-1 p-2 bg-amber-500/5 rounded border border-amber-500/30">
+                      <p className="text-[10px] text-amber-400">🏆 تقييم المدير السابق: {d.review.rating}%</p>
+                      {d.review.notes && <p className="text-[10px] italic mt-0.5">📝 {d.review.notes}</p>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function TasksManager() {
   const [items, setItems] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -2885,6 +3148,7 @@ function TasksManager() {
                       {t.status === 'pending_review' ? 'مراجعة الآن' : 'عرض المراجعة'}
                     </Button>
                   )}
+                  <TaskAdvancedActions task={t} employees={employees} onRefresh={load} />
                   <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-red-500" onClick={() => remove(t.id)}><Trash2 className="w-3 h-3" /></Button>
                 </div>
               </div>

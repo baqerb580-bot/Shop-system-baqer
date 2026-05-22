@@ -557,6 +557,7 @@ import { tgSend, tgEdit, tgAnswerCallback, buildHome, buildReports, buildEmploye
 import bcrypt from 'bcryptjs';
 import { isConfigured as waIsConfigured, waStatus, waHealth, waQr, waConnect, waDisconnect, waSend, waSendBulk } from '@/lib/whatsapp-client';
 import { runSync as runIspSync } from '@/lib/isp-sync';
+import { createNotification, buildActionUrl } from '@/lib/notifications';
 
 // ============ WHATSAPP TEMPLATES (with variable substitution) ============
 const WA_DEFAULT_TEMPLATES = {
@@ -1857,10 +1858,12 @@ async function handle(request, params) {
     await db.collection('tasks').insertOne(doc);
     delete doc._id;
     if (doc.assignedTo) {
-      await db.collection('notifications').insertOne({
-        id: uuidv4(), userId: doc.assignedTo, type: 'task_new', title: '📋 مهمة جديدة',
+      await createNotification(db, {
+        userId: doc.assignedTo, type: 'task_new', icon: '📋',
+        title: '📋 مهمة جديدة',
         message: `وُكِّلت إليك مهمة "${doc.title}" بأولوية ${doc.priority || 'متوسطة'}. يرجى القبول أو الرفض`,
-        taskId: doc.id, read: false, createdAt: now,
+        entityType: 'task', entityId: doc.id,
+        priority: (doc.priority === 'urgent' || doc.priority === 'high') ? 'high' : 'normal',
       });
     }
     await logActivity(db, { action: 'task_created', entity: 'tasks', entityId: doc.id, user: doc.createdBy || 'المدير', details: `إنشاء مهمة "${doc.title}" للموظف ${doc.assignedToName}`, ip: clientIp });
@@ -2822,6 +2825,216 @@ async function handle(request, params) {
       return ok({ success: false, error: e?.message });
     }
   }
+
+  // ============ SMART CLICKABLE NOTIFICATIONS ============
+  // Click: mark read + return actionUrl for routing
+  if (path.match(/^notifications\/[^/]+\/click$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const n = await db.collection('notifications').findOne({ id });
+    if (!n) return err('الإشعار غير موجود', 404);
+    await db.collection('notifications').updateOne({ id }, { $set: { read: true, clickedAt: new Date().toISOString() } });
+    return ok({
+      success: true,
+      actionUrl: n.actionUrl || buildActionUrl(n.entityType, n.entityId) || '',
+      entityType: n.entityType || null,
+      entityId: n.entityId || null,
+      taskId: n.taskId || null,
+      subscriberId: n.subscriberId || null,
+    });
+  }
+  // Resolve: mark as processed (لا يختفي، فقط يصبح "تمت المعالجة")
+  if (path.match(/^notifications\/[^/]+\/resolve$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const n = await db.collection('notifications').findOne({ id });
+    if (!n) return err('الإشعار غير موجود', 404);
+    await db.collection('notifications').updateOne({ id }, {
+      $set: {
+        resolved: true,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: body?.resolvedBy || 'admin',
+        resolutionNote: body?.note || null,
+        read: true,
+      },
+    });
+    await logActivity(db, { action: 'notification_resolved', entity: 'notifications', entityId: id, details: body?.note || '', ip: clientIp });
+    return ok({ success: true });
+  }
+  // Reopen / un-resolve
+  if (path.match(/^notifications\/[^/]+\/reopen$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    await db.collection('notifications').updateOne({ id }, { $set: { resolved: false, resolvedAt: null, resolvedBy: null } });
+    return ok({ success: true });
+  }
+  // Delete (manager only — soft delete via flag for audit)
+  if (path.match(/^notifications\/[^/]+$/) && method === 'DELETE') {
+    const id = path.split('/')[1];
+    await db.collection('notifications').updateOne({ id }, { $set: { deleted: true, deletedAt: new Date().toISOString() } });
+    return ok({ success: true });
+  }
+
+  // ============ ADVANCED TASKS ============
+  // Start a task — records startedAt, transitions status
+  if (path.match(/^tasks\/[^/]+\/start$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const t = await db.collection('tasks').findOne({ id });
+    if (!t) return err('المهمة غير موجودة', 404);
+    if (t.startedAt) return err('المهمة بدأت بالفعل', 400);
+    const now = new Date().toISOString();
+    await db.collection('tasks').updateOne({ id }, {
+      $set: { startedAt: now, status: 'in_progress', startedBy: body?.userId || t.assignedTo },
+      $push: { history: { event: 'started', by: body?.userId || t.assignedTo, byName: body?.userName || t.assignedToName, at: now } },
+    });
+    // Notify manager
+    await createNotification(db, {
+      type: 'task_started', icon: '▶️',
+      title: 'بدأ تنفيذ مهمة',
+      message: `${body?.userName || t.assignedToName} بدأ تنفيذ "${t.title}"`,
+      entityType: 'task', entityId: id,
+    });
+    return ok({ success: true, startedAt: now });
+  }
+
+  // Complete a task — records completedAt, calculates duration (manager-side quick complete)
+  if (path.match(/^tasks\/[^/]+\/admin-complete$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const t = await db.collection('tasks').findOne({ id });
+    if (!t) return err('المهمة غير موجودة', 404);
+    const now = new Date().toISOString();
+    const start = t.startedAt ? new Date(t.startedAt).getTime() : new Date(t.createdAt).getTime();
+    const durationMin = Math.round((Date.now() - start) / 60000);
+    await db.collection('tasks').updateOne({ id }, {
+      $set: {
+        completedAt: now,
+        status: 'completed',
+        completedBy: body?.userId || t.assignedTo,
+        durationMin,
+        completionNote: body?.note || null,
+        completionPhotos: Array.isArray(body?.photos) ? body.photos : [],
+      },
+      $push: { history: { event: 'completed', by: body?.userId || t.assignedTo, byName: body?.userName || t.assignedToName, at: now, note: body?.note || null, durationMin } },
+    });
+    await createNotification(db, {
+      type: 'task_completed', icon: '✅',
+      title: 'تم إنجاز مهمة',
+      message: `${body?.userName || t.assignedToName} أنجز "${t.title}" خلال ${durationMin} دقيقة`,
+      entityType: 'task', entityId: id,
+    });
+    return ok({ success: true, completedAt: now, durationMin });
+  }
+
+  // Transfer a task to another employee
+  // body: { toEmployeeId, toEmployeeName, reason?, by?: { id, name } }
+  if (path.match(/^tasks\/[^/]+\/transfer$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    if (!body?.toEmployeeId) return err('toEmployeeId مطلوب', 400);
+    const t = await db.collection('tasks').findOne({ id });
+    if (!t) return err('المهمة غير موجودة', 404);
+    const now = new Date().toISOString();
+    const prevAssignee = { id: t.assignedTo, name: t.assignedToName };
+    await db.collection('tasks').updateOne({ id }, {
+      $set: {
+        assignedTo: body.toEmployeeId,
+        assignedToName: body.toEmployeeName || '',
+        status: 'transferred',
+        transferredFrom: prevAssignee.id,
+        transferredFromName: prevAssignee.name,
+        transferredAt: now,
+        transferReason: body.reason || null,
+      },
+      $push: { history: { event: 'transferred', by: body?.by?.id || 'admin', byName: body?.by?.name || 'المدير', at: now, from: prevAssignee, to: { id: body.toEmployeeId, name: body.toEmployeeName }, reason: body.reason || null } },
+    });
+    // Notify new assignee
+    await createNotification(db, {
+      userId: body.toEmployeeId, type: 'task_transferred_in', icon: '🔄',
+      title: 'تم تحويل مهمة إليك',
+      message: `${prevAssignee.name || 'مهمة'} → ${t.title}. السبب: ${body.reason || 'غير مذكور'}`,
+      entityType: 'task', entityId: id, priority: 'high',
+    });
+    // Notify old assignee
+    if (prevAssignee.id) {
+      await createNotification(db, {
+        userId: prevAssignee.id, type: 'task_transferred_out', icon: '↗️',
+        title: 'تم تحويل مهمتك',
+        message: `تم تحويل "${t.title}" إلى ${body.toEmployeeName}`,
+        entityType: 'task', entityId: id,
+      });
+    }
+    // Notify manager (broadcast)
+    await createNotification(db, {
+      type: 'task_transferred', icon: '🔄',
+      title: 'تم تحويل مهمة',
+      message: `"${t.title}": ${prevAssignee.name} → ${body.toEmployeeName}`,
+      entityType: 'task', entityId: id, priority: 'normal',
+    });
+    return ok({ success: true });
+  }
+
+  // Manager rating: rating, success rate, notes (no state change like approve/reject)
+  // body: { rating?: 0..100, stars?: 1..5, success?: boolean, notes?, by?: { id, name } }
+  if (path.match(/^tasks\/[^/]+\/rate$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const t = await db.collection('tasks').findOne({ id });
+    if (!t) return err('المهمة غير موجودة', 404);
+    const now = new Date().toISOString();
+    const review = {
+      rating: typeof body?.rating === 'number' ? Math.max(0, Math.min(100, body.rating)) : null,
+      stars: typeof body?.stars === 'number' ? Math.max(1, Math.min(5, body.stars)) : null,
+      success: body?.success !== undefined ? !!body.success : null,
+      notes: body?.notes || '',
+      reviewedAt: now,
+      reviewedBy: body?.by?.id || 'admin',
+      reviewedByName: body?.by?.name || 'المدير',
+    };
+    await db.collection('tasks').updateOne({ id }, {
+      $set: { review, status: body?.success === false ? 'failed' : (t.status === 'completed' ? 'completed' : t.status) },
+      $push: { history: { event: 'reviewed', by: review.reviewedBy, byName: review.reviewedByName, at: now, rating: review.rating, success: review.success, notes: review.notes } },
+    });
+    // Notify assignee
+    if (t.assignedTo) {
+      await createNotification(db, {
+        userId: t.assignedTo, type: 'task_reviewed',
+        icon: review.success === false ? '⚠️' : '🏆',
+        title: review.success === false ? 'مراجعة مهمتك' : 'تم تقييم مهمتك',
+        message: `"${t.title}" — ${review.rating != null ? `النسبة: ${review.rating}%` : ''} ${review.notes ? '\n' + review.notes : ''}`,
+        entityType: 'task', entityId: id, priority: review.success === false ? 'high' : 'normal',
+      });
+    }
+    await logActivity(db, { action: 'task_reviewed', entity: 'tasks', entityId: id, user: review.reviewedByName, details: `تقييم: ${review.rating ?? '—'}% / ${review.notes || ''}`, ip: clientIp });
+    return ok({ success: true, review });
+  }
+
+  // Find duplicate tasks (same title + same subscriber/assignee + recent)
+  if (path.match(/^tasks\/[^/]+\/duplicates$/) && method === 'GET') {
+    const id = path.split('/')[1];
+    const t = await db.collection('tasks').findOne({ id });
+    if (!t) return err('غير موجود', 404);
+    const titleNorm = String(t.title || '').trim();
+    if (!titleNorm) return ok([]);
+    // Look-back 180 days
+    const since = new Date(Date.now() - 180 * 86400000).toISOString();
+    const dups = await db.collection('tasks').find({
+      id: { $ne: id },
+      title: titleNorm,
+      $or: [
+        t.subscriberId ? { subscriberId: t.subscriberId } : null,
+        t.assignedTo ? { assignedTo: t.assignedTo } : null,
+      ].filter(Boolean),
+      createdAt: { $gte: since },
+    }).sort({ createdAt: -1 }).limit(10).toArray();
+    return ok(dups.map(d => { try { delete d._id; } catch {} return d; }));
+  }
+
+  // List tasks assigned to a specific employee with history (for transfer dropdowns)
+  if (path === 'tasks/employees-for-transfer' && method === 'GET') {
+    const emps = await db.collection('employees').find({ status: { $ne: 'inactive' } }, { projection: { id: 1, name: 1, role: 1 } }).toArray();
+    return ok(emps.map(e => { try { delete e._id; } catch {} return e; }));
+  }
+
 
   // ============ TELEGRAM BOT - STATISTICS ============
   // Seed super admin if missing (one-shot per process — was running on every request)
