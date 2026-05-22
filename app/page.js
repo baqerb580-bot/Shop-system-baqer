@@ -8,6 +8,7 @@ import WhatsAppManager from '@/components/whatsapp-manager';
 import IspSyncCenter from '@/components/isp-sync-center';
 import BalanceManagement from '@/components/balance-management';
 import SeparatedReports from '@/components/separated-reports';
+import BarcodeScanner from '@/components/barcode-scanner';
 import { sounds, getSoundSettings, setSoundSettings, browserNotify, requestNotificationPermission } from '@/lib/sounds';
 import { useRealtimeEvents } from '@/lib/useRealtime';
 import { whatsappLink, telegramLink, defaultWhatsAppTemplates, fillTemplate } from '@/lib/messaging';
@@ -1075,6 +1076,7 @@ function POS() {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [customer, setCustomer] = useState('');
   const [showInvoice, setShowInvoice] = useState(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
   const barcodeRef = useRef(null);
 
   useEffect(() => { api('products').then(setArr(setProducts)); }, []);
@@ -1114,6 +1116,19 @@ function POS() {
     else { addToCart(p); barcodeRef.current.value = ''; }
   };
 
+  // ============ CAMERA SCANNER → ADD TO CART ============
+  const handleScannerDetected = async (code) => {
+    setScannerOpen(false);
+    const p = await api(`products/barcode/${encodeURIComponent(code)}`);
+    if (p?.error || !p?.id) {
+      toast.error(`❌ المنتج بالباركود ${code} غير موجود`);
+      return;
+    }
+    addToCart(p);
+    toast.success(`✅ تمت إضافة "${p.name}" للسلة`);
+    try { sounds.success(); } catch {}
+  };
+
   return (
     <div className="max-w-[1600px] mx-auto grid lg:grid-cols-3 gap-4 h-full">
       {/* Products */}
@@ -1125,6 +1140,9 @@ function POS() {
                 <ScanLine className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-gold" />
                 <Input ref={barcodeRef} placeholder="امسح الباركود أو أدخله..." className="pr-10 bg-input/30 border-gold/20" autoFocus />
               </div>
+              <Button type="button" onClick={() => setScannerOpen(true)} className="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/40" title="مسح بالكاميرا">
+                <Camera className="w-4 h-4" />
+              </Button>
               <Button type="submit" className="btn-neon">إضافة</Button>
             </form>
             <div className="relative">
@@ -1248,6 +1266,14 @@ function POS() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ============ BARCODE SCANNER ============ */}
+      <BarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={handleScannerDetected}
+        title="📷 مسح المنتج للسلة"
+      />
     </div>
   );
 }
@@ -1374,6 +1400,7 @@ function Products() {
   const [searchResults, setSearchResults] = useState(null);
   const [searchQuery, setSearchQuery] = useState({ q: '', device: '', origin: '', type: '', brand: '', inStock: false });
   const [allDevices, setAllDevices] = useState([]);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   const blankForm = {
     name: '', sku: '', barcode: '', category: 'accessories', price: 0, cost: 0, stock: 0, lowStockAlert: 5, image: '📦',
@@ -1441,6 +1468,29 @@ function Products() {
     Object.entries(searchQuery).forEach(([k, v]) => { if (v && v !== false) params.set(k, v); });
     const r = await api(`products/search?${params.toString()}`);
     setSearchResults(r);
+  };
+
+  // ============ BARCODE SCANNER HANDLER ============
+  const handleBarcodeDetected = async (code) => {
+    setScannerOpen(false);
+    toast.success(`📷 تم مسح: ${code}`);
+    // Search by barcode first (exact match)
+    const r = await api(`products/barcode/${encodeURIComponent(code)}`);
+    if (r && !r.error && r.id) {
+      // Found exact product → show in compatibility dialog
+      setSearchOpen(true);
+      setSearchQuery({ q: code, device: '', origin: '', type: '', brand: '', inStock: false });
+      setSearchResults({ exact: [r], compatible: [], alternatives: [], total: 1 });
+    } else {
+      // Not found → run general smart search by code
+      setSearchOpen(true);
+      setSearchQuery({ q: code, device: '', origin: '', type: '', brand: '', inStock: false });
+      const sr = await api(`products/search?q=${encodeURIComponent(code)}`);
+      setSearchResults(sr);
+      if (sr.total === 0) {
+        toast.warning(`⚠️ المنتج بالباركود ${code} غير موجود في النظام. يمكنك إضافته يدوياً.`);
+      }
+    }
   };
 
   const originBadge = (o) => {
@@ -1518,6 +1568,9 @@ function Products() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold gold-text">المنتجات والمخزون</h1>
         <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" onClick={() => setScannerOpen(true)} className="border-emerald-500/40 hover:bg-emerald-500/10 text-emerald-400">
+            <Camera className="w-4 h-4 ml-1" /> 📷 مسح باركود
+          </Button>
           <Button variant="outline" onClick={() => setSearchOpen(true)} className="border-cyan-500/40 hover:bg-cyan-500/10 text-cyan-400">
             <Search className="w-4 h-4 ml-1" /> بحث ذكي بالتوافقية
           </Button>
@@ -1754,6 +1807,14 @@ function Products() {
           <DialogFooter><Button onClick={save} className="btn-gold w-full">💾 حفظ المنتج</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ============ BARCODE SCANNER ============ */}
+      <BarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={handleBarcodeDetected}
+        title="📷 مسح باركود المنتج"
+      />
     </div>
   );
 }
