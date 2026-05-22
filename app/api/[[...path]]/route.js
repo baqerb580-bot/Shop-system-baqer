@@ -2282,7 +2282,7 @@ async function handle(request, params) {
   if (path.match(/^subscribers\/[^/]+\/activate$/) && method === 'POST') {
     const subId = path.split('/')[1];
     const body = await getJsonBody(request);
-    const { packageId, speed, amount, paymentMethod = 'cash', durationMonths = 1, agentId, notes = '', processedBy = 'النظام' } = body;
+    const { packageId, speed, amount, paymentMethod = 'cash', durationMonths = 1, agentId, notes = '', processedBy = 'النظام', skipApprovalCheck = false } = body;
     const subscriber = await db.collection('subscribers').findOne({ id: subId });
     if (!subscriber) return err('المشترك غير موجود', 404);
     const pkg = packageId ? await db.collection('packages').findOne({ id: packageId }) : null;
@@ -2291,10 +2291,68 @@ async function handle(request, params) {
     const endDate = new Date(startDate.getTime() + durationMonths * 30 * 86400000);
     const finalSpeed = speed || pkg?.speed || subscriber.package || '50 Mbps';
     const finalAmount = Number(amount || pkg?.monthlyFee * durationMonths || 0);
-    // Profit calc
-    const commissionRate = agent?.commission || 0;
-    const agentProfit = Math.floor(finalAmount * commissionRate / 100);
+
+    // ============ AGENT PROFIT CALC (3 modes: percentage / fixed_per_activation / fixed_per_package) ============
+    let agentProfit = 0;
+    if (agent) {
+      const mode = agent.profitMode || 'percentage';
+      if (mode === 'fixed_per_activation') {
+        agentProfit = Math.floor(Number(agent.fixedProfitPerActivation || 0));
+      } else if (mode === 'fixed_per_package') {
+        const map = agent.fixedProfitsByPackage || {};
+        // Try by package ID first, fallback to speed key, fallback to default
+        agentProfit = Math.floor(Number(map[pkg?.id] ?? map[finalSpeed] ?? agent.fixedProfitPerActivation ?? 0));
+      } else {
+        // legacy percentage mode
+        const commissionRate = Number(agent.commission || 0);
+        agentProfit = Math.floor(finalAmount * commissionRate / 100);
+      }
+    }
     const companyProfit = finalAmount - agentProfit;
+
+    // ============ ADMIN APPROVAL CHECK ============
+    // If agent has requireAdminApproval=true and this isn't an admin override, queue as pending
+    if (agent && agent.permissions?.requireAdminApproval && !skipApprovalCheck) {
+      const pendingDoc = {
+        id: uuidv4(),
+        type: 'agent_activation',
+        subscriberId: subId,
+        subscriberName: subscriber.name,
+        subscriberPhone: subscriber.phone,
+        username: subscriber.username || '',
+        packageId: pkg?.id || null,
+        packageName: pkg?.name || finalSpeed,
+        speed: finalSpeed,
+        amount: finalAmount,
+        paymentMethod,
+        durationMonths,
+        agentId: agent.id,
+        agentName: agent.name,
+        agentProfit,
+        companyProfit,
+        notes,
+        status: 'pending',
+        requestedBy: processedBy,
+        requestedAt: new Date().toISOString(),
+        approvedBy: null,
+        approvedAt: null,
+        rejectionReason: null,
+      };
+      await db.collection('pending_activations').insertOne({ ...pendingDoc });
+      delete pendingDoc._id;
+      // Notify admin
+      await notifyManager(db, {
+        type: 'pending_activation',
+        title: `⏳ طلب تفعيل بانتظار موافقتك`,
+        message: `الوكيل: ${agent.name}\nالمشترك: ${subscriber.name}\nالباقة: ${pendingDoc.packageName}\nالمبلغ: ${finalAmount.toLocaleString('en-US')} د.ع`,
+        entityType: 'pending_activation',
+        entityId: pendingDoc.id,
+        priority: 'high',
+        icon: '⏳',
+      });
+      await logActivity(db, { action: 'pending_activation_created', entity: 'pending_activations', entityId: pendingDoc.id, user: agent.name, userId: agent.id, details: `طلب تفعيل ${subscriber.name} - ${pendingDoc.packageName}`, ip: clientIp });
+      return ok({ pending: true, request: pendingDoc, message: 'تم إرسال طلب التفعيل للمدير للموافقة' }, 202);
+    }
 
     // Create activation record
     const activation = {
@@ -3881,6 +3939,96 @@ async function handle(request, params) {
       topPerformers: [...empStats].sort((a, b) => b.kpi - a.kpi).slice(0, 5),
       mostAbsent: [...empStats].sort((a, b) => b.lateDays - a.lateDays).slice(0, 5),
     });
+  }
+
+  // ============ PENDING ACTIVATIONS (طلبات تفعيل بانتظار موافقة المدير) ============
+  if (path === 'pending-activations' && method === 'GET') {
+    const url = new URL(request.url);
+    const status = url.searchParams.get('status') || 'pending';
+    const q = status === 'all' ? {} : { status };
+    const items = await db.collection('pending_activations').find(q).sort({ requestedAt: -1 }).limit(200).toArray();
+    return ok(items.map(x => { delete x._id; return x; }));
+  }
+
+  if (path.match(/^pending-activations\/[^/]+\/approve$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const pending = await db.collection('pending_activations').findOne({ id });
+    if (!pending) return err('الطلب غير موجود', 404);
+    if (pending.status !== 'pending') return err('تمت معالجة هذا الطلب مسبقاً', 400);
+
+    // Re-execute the activation by calling the activate endpoint internally with skipApprovalCheck=true
+    const subscriber = await db.collection('subscribers').findOne({ id: pending.subscriberId });
+    if (!subscriber) return err('المشترك غير موجود', 404);
+
+    const startDate = new Date();
+    const endDate = new Date(startDate.getTime() + (pending.durationMonths || 1) * 30 * 86400000);
+    const activation = {
+      id: uuidv4(),
+      subscriberId: pending.subscriberId,
+      subscriberName: pending.subscriberName,
+      subscriberPhone: pending.subscriberPhone,
+      username: pending.username,
+      packageId: pending.packageId,
+      packageName: pending.packageName,
+      speed: pending.speed,
+      amount: pending.amount,
+      paymentMethod: pending.paymentMethod,
+      durationMonths: pending.durationMonths,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      agentId: pending.agentId,
+      agentName: pending.agentName,
+      agentProfit: pending.agentProfit,
+      companyProfit: pending.companyProfit,
+      processedBy: body.approvedBy || 'المدير',
+      notes: pending.notes,
+      status: 'completed',
+      approvedFromPendingId: id,
+      createdAt: new Date().toISOString(),
+    };
+    await db.collection('activations').insertOne({ ...activation });
+    delete activation._id;
+
+    // Update subscriber
+    await db.collection('subscribers').updateOne({ id: pending.subscriberId }, {
+      $set: {
+        status: 'active', package: pending.speed, fee: pending.amount, debt: 0,
+        dueDate: endDate.toISOString().slice(0, 10),
+        agentId: pending.agentId, agentName: pending.agentName,
+        lastActivationAt: new Date().toISOString(),
+      }
+    });
+
+    // Update agent stats
+    if (pending.agentId) {
+      await db.collection('agents').updateOne({ id: pending.agentId }, {
+        $inc: { totalActivations: 1, totalProfit: pending.agentProfit, balance: pending.agentProfit },
+      });
+    }
+
+    // Mark pending as approved
+    const now = new Date().toISOString();
+    await db.collection('pending_activations').updateOne({ id }, {
+      $set: { status: 'approved', approvedBy: body.approvedBy || 'المدير', approvedAt: now, activationId: activation.id }
+    });
+
+    await logActivity(db, { action: 'pending_activation_approved', entity: 'pending_activations', entityId: id, user: body.approvedBy || 'المدير', details: `موافقة على تفعيل ${pending.subscriberName}`, ip: clientIp });
+    return ok({ success: true, activation });
+  }
+
+  if (path.match(/^pending-activations\/[^/]+\/reject$/) && method === 'POST') {
+    const id = path.split('/')[1];
+    const body = await getJsonBody(request);
+    const pending = await db.collection('pending_activations').findOne({ id });
+    if (!pending) return err('الطلب غير موجود', 404);
+    if (pending.status !== 'pending') return err('تمت معالجة هذا الطلب مسبقاً', 400);
+    const now = new Date().toISOString();
+    await db.collection('pending_activations').updateOne({ id }, {
+      $set: { status: 'rejected', approvedBy: body.approvedBy || 'المدير', approvedAt: now, rejectionReason: body.reason || '' }
+    });
+    await logActivity(db, { action: 'pending_activation_rejected', entity: 'pending_activations', entityId: id, user: body.approvedBy || 'المدير', details: `رفض تفعيل ${pending.subscriberName}: ${body.reason || ''}`, ip: clientIp });
+    return ok({ success: true });
   }
 
   // Agent stats
