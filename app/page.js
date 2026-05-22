@@ -4652,12 +4652,46 @@ function UsersSection({ draft, update }) {
 function AgentsSection({ draft, update }) {
   const a = draft.agents || {};
   return (
-    <div className="grid md:grid-cols-2 gap-4">
-      <Field label="نسبة العمولة الافتراضية %" hint="للوكلاء الجدد"><Input type="number" value={a.defaultCommission || 0} onChange={e => update('agents', 'defaultCommission', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
-      <Field label="الحد الأقصى للدين" hint="بالدينار العراقي"><Input type="number" value={a.maxDebt || 0} onChange={e => update('agents', 'maxDebt', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
-      <Field label="رابط لوحة الوكيل"><Input value={a.portalUrl || ''} onChange={e => update('agents', 'portalUrl', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
-      <Field label="مدة الجلسة (دقيقة)"><Input type="number" value={a.sessionTimeout || 30} onChange={e => update('agents', 'sessionTimeout', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
-      <div className="md:col-span-2 space-y-2">
+    <div className="space-y-4">
+      <div className="grid md:grid-cols-2 gap-4">
+        <Field label="نسبة العمولة الافتراضية %" hint="للوكلاء الجدد"><Input type="number" value={a.defaultCommission || 0} onChange={e => update('agents', 'defaultCommission', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        <Field label="الحد الأقصى للدين" hint="بالدينار العراقي"><Input type="number" value={a.maxDebt || 0} onChange={e => update('agents', 'maxDebt', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+        <Field label="رابط لوحة الوكيل"><Input value={a.portalUrl || ''} onChange={e => update('agents', 'portalUrl', e.target.value)} className="bg-input/30 border-gold/20 font-mono" dir="ltr" /></Field>
+        <Field label="مدة الجلسة (دقيقة)"><Input type="number" value={a.sessionTimeout || 30} onChange={e => update('agents', 'sessionTimeout', Number(e.target.value))} className="bg-input/30 border-gold/20" /></Field>
+      </div>
+
+      {/* ============ NEW (Module B) — أنماط الأرباح الافتراضية ============ */}
+      <div className="p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/30 space-y-3">
+        <p className="font-bold text-cyan-400 text-sm flex items-center gap-2">💰 نمط الأرباح الافتراضي للوكيل الجديد</p>
+        <div className="grid md:grid-cols-2 gap-3">
+          <Field label="نمط الأرباح">
+            <Select value={a.defaultProfitMode || 'percentage'} onValueChange={v => update('agents', 'defaultProfitMode', v)}>
+              <SelectTrigger className="bg-input/30 border-cyan-500/30"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="percentage">📊 نسبة مئوية</SelectItem>
+                <SelectItem value="fixed_per_activation">💵 مبلغ ثابت لكل تفعيل</SelectItem>
+                <SelectItem value="fixed_per_package">📦 مبلغ مخصص لكل باقة</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="المبلغ الثابت الافتراضي (د.ع)" hint="عند اختيار مبلغ ثابت"><Input type="number" value={a.defaultFixedProfit || 5000} onChange={e => update('agents', 'defaultFixedProfit', Number(e.target.value))} className="bg-input/30 border-cyan-500/30" /></Field>
+        </div>
+      </div>
+
+      {/* ============ NEW (Module B) — صلاحيات افتراضية ============ */}
+      <div className="p-3 rounded-lg bg-violet-500/5 border border-violet-500/30 space-y-2">
+        <p className="font-bold text-violet-400 text-sm flex items-center gap-2">🔒 صلاحيات افتراضية للوكيل الجديد</p>
+        <div className="grid md:grid-cols-2 gap-2">
+          <Switch checked={a.defaultPermCanActivate !== false} onChange={v => update('agents', 'defaultPermCanActivate', v)} label="✅ تفعيل المشتركين (افتراضي)" />
+          <Switch checked={!!a.defaultPermRequireApproval} onChange={v => update('agents', 'defaultPermRequireApproval', v)} label="⏳ يحتاج موافقة المدير على التفعيل" />
+          <Switch checked={!!a.defaultPermCanViewAll} onChange={v => update('agents', 'defaultPermCanViewAll', v)} label="👁️ عرض جميع المشتركين" />
+          <Switch checked={!!a.defaultPermCanEdit} onChange={v => update('agents', 'defaultPermCanEdit', v)} label="✏️ تعديل بيانات المشتركين" />
+          <Switch checked={a.defaultPermCanViewProfits !== false} onChange={v => update('agents', 'defaultPermCanViewProfits', v)} label="💰 عرض الأرباح والرصيد" />
+          <Switch checked={a.defaultPermCanSendWhatsapp !== false} onChange={v => update('agents', 'defaultPermCanSendWhatsapp', v)} label="📱 إرسال رسائل واتساب" />
+        </div>
+      </div>
+
+      <div className="space-y-2">
         <Switch checked={a.allowSelfActivation} onChange={v => update('agents', 'allowSelfActivation', v)} label="✅ السماح للوكلاء بتفعيل المشتركين بأنفسهم" />
         <Switch checked={a.autoDisableOnDebt} onChange={v => update('agents', 'autoDisableOnDebt', v)} label="🚫 إيقاف الوكيل تلقائياً عند تجاوز حد الدين" />
         <Switch checked={a.requireQRLogin} onChange={v => update('agents', 'requireQRLogin', v)} label="📱 تفعيل تسجيل دخول QR للوكلاء" />
@@ -4952,12 +4986,27 @@ function TelegramSection({ draft, update, testTelegram }) {
 function NotificationsSection({ draft, updateNested }) {
   const n = draft.notifications || {};
   const events = [
-    { key: 'activation', label: '🎉 تفعيل اشتراك جديد' },
-    { key: 'expiry', label: '⏰ انتهاء الاشتراك' },
-    { key: 'debt', label: '💰 ديون مستحقة' },
-    { key: 'lowStock', label: '📦 نفاد المخزون' },
-    { key: 'networkAlert', label: '🚨 تنبيهات الشبكة' },
-    { key: 'newSubscriber', label: '👤 مشترك جديد' },
+    { key: 'activation', label: '🎉 تفعيل اشتراك جديد', section: 'الاشتراكات' },
+    { key: 'expiry', label: '⏰ انتهاء الاشتراك', section: 'الاشتراكات' },
+    { key: 'debt', label: '💰 ديون مستحقة', section: 'الاشتراكات' },
+    { key: 'lowStock', label: '📦 نفاد المخزون', section: 'المخزون' },
+    { key: 'networkAlert', label: '🚨 تنبيهات الشبكة', section: 'الشبكة' },
+    { key: 'newSubscriber', label: '👤 مشترك جديد', section: 'الاشتراكات' },
+    // ============ NEW (Module A) ============
+    { key: 'leave_request', label: '📅 طلب إجازة من موظف', section: 'الموظفون' },
+    { key: 'advance_request', label: '💸 طلب سلفة من موظف', section: 'الموظفون' },
+    { key: 'task_submitted', label: '📋 تقرير مهمة قيد المراجعة', section: 'المهام' },
+    { key: 'task_completed', label: '✅ تم إنجاز مهمة', section: 'المهام' },
+    { key: 'task_rejected', label: '❌ رُفض إنجاز مهمة', section: 'المهام' },
+    { key: 'task_recurring', label: '🔁 مهمة متكررة جديدة', section: 'المهام' },
+    // ============ NEW (Module B) ============
+    { key: 'pending_activation', label: '⏳ طلب تفعيل بانتظار موافقة المدير', section: 'الوكلاء' },
+    // ============ NEW (Module C — Balances) ============
+    { key: 'balance_overdraft', label: '⚠️ رصيد في السالب', section: 'الأرصدة' },
+    { key: 'balance_low', label: '🟡 رصيد تحت الحد الأدنى', section: 'الأرصدة' },
+    { key: 'balance_deposit', label: '💰 تعبئة رصيد', section: 'الأرصدة' },
+    // ============ NEW (Module E — Backups) ============
+    { key: 'backup_done', label: '💾 اكتمال النسخة الاحتياطية', section: 'النظام' },
   ];
   const channels = [
     { key: 'whatsapp', label: '📱 واتساب' },
@@ -4966,37 +5015,47 @@ function NotificationsSection({ draft, updateNested }) {
     { key: 'sms', label: '💬 SMS' },
     { key: 'push', label: '🔔 Push' },
   ];
+  // Group events by section for clarity
+  const grouped = events.reduce((acc, e) => { (acc[e.section] = acc[e.section] || []).push(e); return acc; }, {});
   return (
     <div className="space-y-4">
       <SoundSettingsCard />
+      <p className="text-xs text-muted-foreground">حدد قنوات الإرسال لكل نوع إشعار. النقر على الخلية يبدّل التشغيل.</p>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gold-soft">
-              <th className="p-2 text-right text-xs text-muted-foreground">الحدث</th>
-              {channels.map(c => <th key={c.key} className="p-2 text-center text-xs text-muted-foreground">{c.label}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {events.map(e => (
-              <tr key={e.key} className="border-b border-gold-soft/30 hover:bg-gold/5">
-                <td className="p-2 text-xs font-semibold">{e.label}</td>
-                {channels.map(c => {
-                  const checked = !!n[e.key]?.[c.key];
-                  return (
-                    <td key={c.key} className="p-2 text-center">
-                      <button onClick={() => updateNested('notifications', e.key, c.key, !checked)} className={`w-6 h-6 rounded transition-all ${checked ? 'bg-gold text-background' : 'bg-input/30 border border-gold-soft'}`}>
-                        {checked && '✓'}
-                      </button>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {Object.entries(grouped).map(([section, items]) => (
+        <div key={section} className="border border-gold-soft rounded-lg overflow-hidden">
+          <div className="bg-gold/5 px-3 py-2 border-b border-gold-soft">
+            <h3 className="text-sm font-bold gold-text">{section}</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-input/20">
+                <tr className="border-b border-gold-soft">
+                  <th className="p-2 text-right text-xs text-muted-foreground">الحدث</th>
+                  {channels.map(c => <th key={c.key} className="p-2 text-center text-xs text-muted-foreground">{c.label}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map(e => (
+                  <tr key={e.key} className="border-b border-gold-soft/30 hover:bg-gold/5">
+                    <td className="p-2 text-xs font-semibold">{e.label}</td>
+                    {channels.map(c => {
+                      const checked = !!n[e.key]?.[c.key];
+                      return (
+                        <td key={c.key} className="p-2 text-center">
+                          <button onClick={() => updateNested('notifications', e.key, c.key, !checked)} className={`w-6 h-6 rounded transition-all ${checked ? 'bg-gold text-background' : 'bg-input/30 border border-gold-soft'}`}>
+                            {checked && '✓'}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
