@@ -556,6 +556,7 @@ async function notifyManager(db, { title, message, type, taskId, employeeId }) {
 import { tgSend, tgEdit, tgAnswerCallback, buildHome, buildReports, buildEmployees, buildSubscribers, buildFinance, buildMaintenance, buildNetwork, buildMe, buildLogs, buildAdmin, ROLE_DEFAULT_PERMS, PERMS_ALL } from '@/lib/telegram-bot';
 import bcrypt from 'bcryptjs';
 import { isConfigured as waIsConfigured, waStatus, waHealth, waQr, waConnect, waDisconnect, waSend, waSendBulk } from '@/lib/whatsapp-client';
+import { runSync as runIspSync } from '@/lib/isp-sync';
 
 // ============ WHATSAPP TEMPLATES (with variable substitution) ============
 const WA_DEFAULT_TEMPLATES = {
@@ -1096,6 +1097,216 @@ async function handle(request, params) {
     const weekSent = await db.collection('whatsapp_messages').countDocuments({ status: 'sent', createdAt: { $gte: weekAgo.toISOString() } });
     return ok({ totalSent, totalFailed, totalQueued, todaySent, weekSent });
   }
+
+  // ============ ISP SUBSCRIBER SYNC CENTER ============
+  // Get sync config (URL, credentials, source type, field mappings, auto-sync settings)
+  if (path === 'isp-sync/config' && method === 'GET') {
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const cfg = settings?.ispSync || {
+      enabled: false, sourceType: 'custom', sourceUrl: '', username: '', password: '',
+      fetchMethod: 'manual', autoDaily: false, autoUpdateMatching: false, blockOnConflict: true,
+      fieldMap: {}, lastRunAt: null,
+    };
+    // Mask password
+    return ok({ ...cfg, password: cfg.password ? '****' : '' });
+  }
+  if (path === 'isp-sync/config' && method === 'PUT') {
+    const body = await getJsonBody(request);
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const existing = settings?.ispSync || {};
+    // Preserve password if user sent "****" (means unchanged)
+    const password = (body.password && body.password !== '****') ? body.password : (existing.password || '');
+    const cfg = {
+      enabled: !!body.enabled,
+      sourceType: body.sourceType || 'custom',  // mynet | halasat | custom
+      sourceUrl: body.sourceUrl || '',
+      username: body.username || '',
+      password,
+      fetchMethod: body.fetchMethod || 'manual',  // api | excel | scraping | manual
+      autoDaily: !!body.autoDaily,
+      autoUpdateMatching: !!body.autoUpdateMatching,
+      blockOnConflict: body.blockOnConflict !== false,
+      fieldMap: body.fieldMap || {},
+      lastRunAt: existing.lastRunAt || null,
+    };
+    await db.collection('settings').updateOne({}, { $set: { ispSync: cfg, updatedAt: new Date().toISOString() } }, { upsert: true });
+    await logActivity(db, { action: 'isp_sync_config_update', entity: 'settings', details: `نوع: ${cfg.sourceType} / طريقة: ${cfg.fetchMethod}`, ip: clientIp });
+    return ok({ success: true, ...cfg, password: cfg.password ? '****' : '' });
+  }
+
+  // Run a comparison scan
+  // body: { externalSubs: [...], source?: 'mynet'|'halasat'|'excel'|'custom' }
+  // External subs can come from: user-pasted JSON, parsed Excel (client-side), or fetched API
+  if (path === 'isp-sync/scan' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const externalSubs = Array.isArray(body?.externalSubs) ? body.externalSubs : [];
+    if (externalSubs.length === 0) return err('externalSubs مطلوبة (مصفوفة من المشتركين من صفحة الإنترنت)', 400);
+
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const cfg = settings?.ispSync || {};
+    const platformSubs = await db.collection('subscribers').find({}).toArray();
+
+    const report = runIspSync(externalSubs, platformSubs, {
+      fieldMap: cfg.fieldMap || {},
+      source: body.source || cfg.sourceType || 'unknown',
+    });
+
+    // Sanitize platform refs (drop _id mongo blobs)
+    const cleanRows = report.rows.map(r => {
+      const cleanPlatform = r.platform ? { ...r.platform } : null;
+      if (cleanPlatform) delete cleanPlatform._id;
+      return { ...r, platform: cleanPlatform };
+    });
+
+    // Persist this scan (without applying)
+    const scanDoc = {
+      id: uuidv4(),
+      runId: report.runId,
+      source: report.source,
+      ranAt: report.ranAt,
+      ranBy: body?.ranBy || 'admin',
+      counts: report.counts,
+      rows: cleanRows,
+      applied: false,
+      ip: clientIp,
+    };
+    await db.collection('isp_sync_runs').insertOne({ ...scanDoc });
+    await db.collection('settings').updateOne({}, { $set: { 'ispSync.lastRunAt': report.ranAt } }, { upsert: true });
+    return ok({ ...scanDoc });
+  }
+
+  // Apply user-selected actions from a scan
+  // body: { runId, actions: [{rowId, action: 'create'|'update'|'merge'|'ignore', target?: subscriberId, fields?: {} }] }
+  if (path === 'isp-sync/apply' && method === 'POST') {
+    const body = await getJsonBody(request);
+    const { runId, actions = [] } = body || {};
+    if (!runId || !Array.isArray(actions) || actions.length === 0) return err('runId و actions مطلوبة', 400);
+
+    const run = await db.collection('isp_sync_runs').findOne({ runId });
+    if (!run) return err('عملية المزامنة غير موجودة', 404);
+
+    const results = { created: 0, updated: 0, merged: 0, ignored: 0, errors: [] };
+    const settings = (await db.collection('settings').findOne({})) || {};
+    const blockOnConflict = settings?.ispSync?.blockOnConflict !== false;
+
+    for (const act of actions) {
+      try {
+        const row = (run.rows || []).find(r => r.rowId === act.rowId);
+        if (!row) { results.errors.push({ rowId: act.rowId, error: 'row_not_found' }); continue; }
+
+        if (act.action === 'ignore') { results.ignored++; continue; }
+
+        if (act.action === 'create' && row.external) {
+          // Prevent duplicate by username/phone/externalId
+          const ext = row.external;
+          const dup = await db.collection('subscribers').findOne({
+            $or: [
+              ext.username ? { username: ext.username } : null,
+              ext.phone ? { phone: ext.phone } : null,
+              ext.externalId ? { externalId: ext.externalId } : null,
+            ].filter(Boolean),
+          });
+          if (dup) { results.errors.push({ rowId: act.rowId, error: 'duplicate_exists' }); continue; }
+
+          const newSub = {
+            id: uuidv4(),
+            externalId: ext.externalId || null,
+            username: ext.username || '',
+            name: ext.name || '',
+            phone: ext.phone || '',
+            package: ext.package || '',
+            speed: ext.speed || '',
+            status: ext.status || 'active',
+            startDate: ext.startDate || null,
+            endDate: ext.endDate || null,
+            fee: Number(ext.fee || 0),
+            debt: Number(ext.debt || 0),
+            paid: Number(ext.paid || 0),
+            agentName: ext.agentName || '',
+            source: 'isp_sync',
+            sourceRunId: runId,
+            createdAt: new Date().toISOString(),
+          };
+          await db.collection('subscribers').insertOne(newSub);
+          results.created++;
+        }
+        else if (act.action === 'update' && row.platform && row.external) {
+          // If conflict + blockOnConflict, require explicit field-by-field acceptance via act.fields
+          if (row.severity === 'critical' && blockOnConflict && !act.fields) {
+            results.errors.push({ rowId: act.rowId, error: 'conflict_requires_explicit_fields' });
+            continue;
+          }
+          const updates = {};
+          if (act.fields && typeof act.fields === 'object') {
+            // Update only fields explicitly chosen by user
+            for (const [k, v] of Object.entries(act.fields)) updates[k] = v;
+          } else {
+            // Auto-apply all changes
+            for (const c of row.changes) updates[c.field] = c.external;
+          }
+          updates.updatedAt = new Date().toISOString();
+          updates.lastSyncedAt = new Date().toISOString();
+          await db.collection('subscribers').updateOne({ id: row.platform.id }, { $set: updates });
+          results.updated++;
+        }
+        else if (act.action === 'merge' && row.external && act.target) {
+          // Merge external data into the chosen target subscriber
+          const ext = row.external;
+          const updates = {
+            externalId: ext.externalId || null,
+            lastSyncedAt: new Date().toISOString(),
+          };
+          // Only fill empty fields; never overwrite existing data
+          const target = await db.collection('subscribers').findOne({ id: act.target });
+          if (!target) { results.errors.push({ rowId: act.rowId, error: 'merge_target_not_found' }); continue; }
+          for (const key of ['username', 'name', 'phone', 'package', 'speed', 'endDate', 'agentName']) {
+            if (!target[key] && ext[key]) updates[key] = ext[key];
+          }
+          await db.collection('subscribers').updateOne({ id: act.target }, { $set: updates });
+          results.merged++;
+        }
+      } catch (e) {
+        results.errors.push({ rowId: act.rowId, error: e?.message || 'unknown' });
+      }
+    }
+
+    await db.collection('isp_sync_runs').updateOne({ runId }, {
+      $set: { applied: true, appliedAt: new Date().toISOString(), appliedResults: results, appliedBy: body?.appliedBy || 'admin' },
+    });
+    await logActivity(db, {
+      action: 'isp_sync_apply', entity: 'subscribers',
+      details: `مزامنة ${runId}: ${results.created} جديد، ${results.updated} محدث، ${results.merged} مدمج`,
+      ip: clientIp,
+    });
+    return ok({ success: true, runId, results });
+  }
+
+  // List recent sync runs (most recent first)
+  if (path === 'isp-sync/logs' && method === 'GET') {
+    const items = await db.collection('isp_sync_runs').find({}).sort({ ranAt: -1 }).limit(50).toArray();
+    return ok(items.map(x => {
+      try { delete x._id; } catch {}
+      // Drop the heavy rows array from list view (keep only counts)
+      const { rows, ...rest } = x;
+      return rest;
+    }));
+  }
+  // Get a single run with full rows
+  if (path.match(/^isp-sync\/logs\/[^/]+$/) && method === 'GET') {
+    const runId = path.split('/')[2];
+    const run = await db.collection('isp_sync_runs').findOne({ runId });
+    if (!run) return err('غير موجود', 404);
+    try { delete run._id; } catch {}
+    return ok(run);
+  }
+  // Delete a run (audit log)
+  if (path.match(/^isp-sync\/logs\/[^/]+$/) && method === 'DELETE') {
+    const runId = path.split('/')[2];
+    await db.collection('isp_sync_runs').deleteOne({ runId });
+    await logActivity(db, { action: 'isp_sync_delete_run', entity: 'isp_sync_runs', details: runId, ip: clientIp });
+    return ok({ success: true });
+  }
+
 
 
   if (path === 'dashboard/stats' && method === 'GET') {

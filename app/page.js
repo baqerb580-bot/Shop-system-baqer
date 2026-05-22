@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { GPSMap, Barcode } from '@/components/maps-barcode';
 import { CustomFieldsGrid, CustomFieldsDisplay } from '@/components/custom-fields';
 import WhatsAppManager from '@/components/whatsapp-manager';
+import IspSyncCenter from '@/components/isp-sync-center';
 import { sounds, getSoundSettings, setSoundSettings, browserNotify, requestNotificationPermission } from '@/lib/sounds';
 import { useRealtimeEvents } from '@/lib/useRealtime';
 import { whatsappLink, telegramLink, defaultWhatsAppTemplates, fillTemplate } from '@/lib/messaging';
@@ -26,7 +27,7 @@ import {
   Send, Bot, Menu, Bell, ChevronLeft, ChevronRight, Box, CreditCard, FileText, X,
   CheckCircle2, Clock, AlertCircle, Globe, Smartphone, Headphones,
   HardDrive, Plug, Battery, ScanLine, Receipt, ShoppingBag, UserCheck,
-  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer, ListTodo, Check, XCircle, LogOut, MessageSquare, QrCode, Power
+  Building2, BarChart, PieChart as PieIcon, Boxes, ChevronDown, Printer, ListTodo, Check, XCircle, LogOut, MessageSquare, QrCode, Power, RefreshCw
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, BarChart as RBarChart, Bar,
@@ -1455,6 +1456,7 @@ function Subscribers() {
   };
   const remove = async (id) => { await api(`subscribers/${id}`, { method: 'DELETE' }); toast.success('تم الحذف'); load(); };
   const startEdit = (s) => { setEditing(s); setForm({ ...s, userLat: s.userLat || 33.31, userLng: s.userLng || 44.40, cabinetLat: s.cabinetLat || 33.31, cabinetLng: s.cabinetLng || 44.40 }); setOpen(true); };
+  const [syncOpen, setSyncOpen] = useState(false);
   const [viewingCustom, setViewingCustom] = useState(null);
 
   const activeCount = items.filter(i => i.status === 'active').length;
@@ -1471,10 +1473,16 @@ function Subscribers() {
     <div className="max-w-[1600px] mx-auto space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold gold-text">مشتركو الإنترنت</h1>
-        <Button onClick={() => { setEditing(null); setForm({ name: '', phone: '', username: '', address: '', zoneId: zones[0]?.id || '', networkId: '', fatNumber: '', agentId: agents[0]?.id || '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '', userLat: 33.31, userLng: 44.40, cabinetLat: 33.31, cabinetLng: 44.40 }); setOpen(true); }} className="btn-gold">
-          <Plus className="w-4 h-4 ml-1" /> مشترك جديد
-        </Button>
+        <div className="flex gap-2 flex-wrap">
+          <Button onClick={() => setSyncOpen(true)} variant="outline" className="border-cyan-500/40 hover:bg-cyan-500/10 text-cyan-400">
+            <RefreshCw className="w-4 h-4 ml-1" /> مزامنة مشتركين الإنترنت
+          </Button>
+          <Button onClick={() => { setEditing(null); setForm({ name: '', phone: '', username: '', address: '', zoneId: zones[0]?.id || '', networkId: '', fatNumber: '', agentId: agents[0]?.id || '', package: '50 Mbps', fee: 35000, ipAddress: '', macAddress: '', status: 'active', debt: 0, dueDate: '', userLat: 33.31, userLng: 44.40, cabinetLat: 33.31, cabinetLng: 44.40 }); setOpen(true); }} className="btn-gold">
+            <Plus className="w-4 h-4 ml-1" /> مشترك جديد
+          </Button>
+        </div>
       </div>
+      <IspSyncCenter open={syncOpen} onClose={() => { setSyncOpen(false); load(); }} api={api} />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="stat-card"><p className="text-xs text-muted-foreground">إجمالي المشتركين</p><p className="text-2xl font-bold gold-text">{items.length}</p></div>

@@ -3296,3 +3296,339 @@ agent_communication:
       All 7 test groups passed successfully. Ready for production use.
 
 
+
+
+  - task: "ISP Subscriber Sync Center - Config Management"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW: ISP Subscriber Sync Center backend with smart comparison engine.
+            GET /api/isp-sync/config - returns config with masked password
+            PUT /api/isp-sync/config - saves config, preserves password when sent as '****'
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Config management endpoints fully functional (3/3 tests passed).
+            
+            Test Results:
+            1. GET /api/isp-sync/config (default values):
+               - Returns 200 with all 11 required fields: enabled, sourceType, sourceUrl, username, 
+                 password, fetchMethod, autoDaily, autoUpdateMatching, blockOnConflict, fieldMap, lastRunAt
+               - Default values correct: enabled=false, sourceType='custom', blockOnConflict=true
+            
+            2. PUT /api/isp-sync/config:
+               - Successfully saves config with all fields
+               - Password correctly masked as '****' in response
+               - Returns {success: true, ...config}
+            
+            3. Config persistence verification:
+               - Subsequent GET returns all saved values
+               - Password remains masked as '****'
+               - All fields persisted correctly (sourceType='mynet', blockOnConflict=true)
+            
+            4. Password preservation test:
+               - Sending password='****' preserves existing password (does NOT overwrite with literal '****')
+               - Password masking working correctly
+            
+            NO CRITICAL ISSUES FOUND. Config management is production-ready.
+
+  - task: "ISP Subscriber Sync Center - Scan Engine"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/isp-sync/scan - body {source, externalSubs: [...]}
+            Smart comparison engine matches by username → externalId → phone (priority order)
+            Computes field-level diffs with severity (ok/info/warning/critical)
+            Returns {runId, source, ranAt, counts, rows} with status (synced/new/needs_update/conflict/missing_in_isp)
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Scan engine fully functional (2/2 tests passed).
+            
+            Test Results:
+            1. Basic scan with NEW subscribers:
+               - POST /api/isp-sync/scan with 2 new external subscribers
+               - Returns 200 with correct shape: {runId, source, ranAt, counts, rows}
+               - counts object has all 8 required keys: total, synced, new, needs_update, conflict, 
+                 missing_in_isp, externals, platforms
+               - Found 2 new subscribers (status='new') in rows array
+               - Total rows: 12 (2 new + 10 missing_in_isp from existing platform subscribers)
+               - Each row has: rowId, status, severity, matchedBy, suggestedAction, external, platform, changes
+            
+            2. Diff detection with existing subscriber (conflict scenario):
+               - Used existing subscriber with phone=07733946839, package='200 Mbps'
+               - Scanned with modified data: different username, package='999Mb', endDate='2030-01-01', name='Modified Name'
+               - Successfully matched by phone ✅
+               - Status: 'conflict' (correct - username changed, which is critical) ✅
+               - Severity: 'critical' (correct) ✅
+               - Changes detected: 6 fields (name, username, package, endDate, etc.) ✅
+               - matchedBy: 'phone' ✅
+            
+            DIFF ENGINE VERIFICATION:
+            ✅ Matching priority working: username → externalId → phone
+            ✅ Field-level diff detection working (6 changes detected)
+            ✅ Severity classification correct (critical for username change)
+            ✅ Status classification correct (conflict for critical changes)
+            ✅ missing_in_isp detection working (platform subs not in external list)
+            ✅ new subscriber detection working (external subs not in platform)
+            
+            NO CRITICAL ISSUES FOUND. Scan engine is production-ready.
+
+  - task: "ISP Subscriber Sync Center - Apply Actions"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /api/isp-sync/apply - body {runId, actions: [{rowId, action, fields?}]}
+            Actions: create, update, merge, ignore
+            Safety: blockOnConflict=true requires explicit fields for conflict rows
+            Returns {success, runId, results: {created, updated, merged, ignored, errors}}
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Apply actions fully functional (5/5 tests passed).
+            
+            Test Results:
+            1. Ignore action:
+               - Applied ignore action to new subscriber row
+               - Returns 200 with {success: true, results: {ignored: 1, created: 0}}
+               - Correctly increments ignored counter
+            
+            2. Create action:
+               - Created new subscriber via scan + apply create
+               - Returns 200 with {results: {created: 1}}
+               - Subscriber successfully created in database ✅
+               - Verified via GET /api/subscribers (subscriber appears with correct username)
+               - Subscriber ID: 464d8777-632e-4ad2-babb-a6d450aa6c6c
+            
+            3. Update action with conflict blocking (CRITICAL SAFETY FEATURE):
+               - Attempted update on conflict row WITHOUT explicit fields
+               - blockOnConflict=true (from config)
+               - Returns 200 with error: 'conflict_requires_explicit_fields' ✅
+               - This is a FEATURE, not a bug - verifies safety guard working correctly
+               - Prevents accidental overwrites of critical fields
+            
+            4. Update action with explicit fields:
+               - Applied update with explicit fields: {package: "100Mb_explicit"}
+               - Returns 200 with {results: {updated: 1}}
+               - Verified ONLY package field changed ✅
+               - Other fields (name, username, etc.) remained unchanged ✅
+               - Selective field update working correctly
+               - Restored original package value after test
+            
+            5. Duplicate prevention:
+               - Created subscriber via scan + apply create
+               - Attempted second create with same username/phone
+               - Returns error: 'duplicate_exists' ✅
+               - Duplicate prevention working correctly
+            
+            SAFETY FEATURES VERIFIED:
+            ✅ blockOnConflict safety guard working (requires explicit fields for conflicts)
+            ✅ Duplicate prevention working (checks username, phone, externalId)
+            ✅ Selective field updates working (only specified fields changed)
+            ✅ Error handling working (errors array with rowId and error message)
+            
+            NO CRITICAL ISSUES FOUND. Apply actions are production-ready with proper safety guards.
+
+  - task: "ISP Subscriber Sync Center - Logs Management"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            GET /api/isp-sync/logs - returns recent runs (max 50), lightweight (no rows array)
+            GET /api/isp-sync/logs/:runId - returns full run details with rows array
+            DELETE /api/isp-sync/logs/:runId - deletes run, returns {success: true}
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - Logs management fully functional (3/3 tests passed).
+            
+            Test Results:
+            1. GET /api/isp-sync/logs (list view):
+               - Returns 200 with array of runs
+               - Found 5 runs in database
+               - Each entry has: runId, source, ranAt, counts, applied
+               - CRITICAL: rows array NOT included (lightweight list view) ✅
+               - Verified no 'rows' key in response objects
+            
+            2. GET /api/isp-sync/logs/:runId (detail view):
+               - Returns 200 with full run details
+               - INCLUDES rows array with all comparison data ✅
+               - Has all required fields: runId, source, ranAt, counts, rows
+               - Rows count: 12 (matches scan result)
+               - Full detail view working correctly
+            
+            3. DELETE /api/isp-sync/logs/:runId:
+               - Returns 200 with {success: true}
+               - Verified deletion: subsequent GET returns 404 ✅
+               - Run successfully removed from database
+            
+            PERFORMANCE OPTIMIZATION VERIFIED:
+            ✅ List view is lightweight (no heavy rows array)
+            ✅ Detail view includes full data (rows array present)
+            ✅ Deletion working correctly (404 after delete)
+            
+            NO CRITICAL ISSUES FOUND. Logs management is production-ready.
+
+  - task: "ISP Subscriber Sync Center - Regression Tests"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Regression tests to ensure ISP Sync feature doesn't break existing functionality:
+            GET /api/dashboard/stats, GET /api/subscribers, GET /api/whatsapp/status, GET /api/health
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASSED - All regression tests passed (4/4).
+            
+            Test Results:
+            1. GET /api/dashboard/stats: 200 ✅
+            2. GET /api/subscribers: 200, returned 12 subscribers (includes 2 created by ISP sync tests) ✅
+            3. GET /api/whatsapp/status: 200 ✅
+            4. GET /api/health: 200, dbConnected=true ✅
+            
+            NO REGRESSION DETECTED. All existing endpoints working correctly after ISP Sync feature addition.
+
+test_plan:
+  current_focus:
+    - "ISP Subscriber Sync Center Backend Verification (NEW FEATURE)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      🆕 NEW FEATURE: ISP Subscriber Sync Center Backend
+      
+      Implemented complete ISP Subscriber Sync Center with smart comparison engine.
+      Compares external ISP subscribers (from MyNet/Halasat/Custom systems via Excel upload or JSON paste)
+      with platform's subscribers collection, then applies user-chosen actions (create/update/merge/ignore).
+      
+      NEW ENDPOINTS:
+      1. GET /api/isp-sync/config - returns config with masked password
+      2. PUT /api/isp-sync/config - saves config, preserves password when sent as '****'
+      3. POST /api/isp-sync/scan - body {source, externalSubs: [...]} - runs comparison, returns diff report
+      4. POST /api/isp-sync/apply - body {runId, actions: [{rowId, action, fields?}]} - applies actions
+      5. GET /api/isp-sync/logs - returns recent runs (lightweight, no rows array)
+      6. GET /api/isp-sync/logs/:runId - returns full run details with rows array
+      7. DELETE /api/isp-sync/logs/:runId - deletes run
+      
+      SMART COMPARISON ENGINE (/app/lib/isp-sync.js):
+      - Matches by priority: username → externalId → phone (normalized)
+      - Computes field-level diffs with severity (ok/info/warning/critical)
+      - Status classification: synced, new, needs_update, conflict, missing_in_isp
+      - Supports field mapping for different ISP system formats
+      
+      SAFETY FEATURES:
+      - blockOnConflict=true requires explicit field-by-field acceptance for conflicts
+      - Duplicate prevention (checks username, phone, externalId)
+      - Password masking in config responses
+      - Activity logging for all sync operations
+      
+      Please test all 13 scenarios as specified in review_request.
+  
+  - agent: "testing"
+    message: |
+      🎉 ISP SUBSCRIBER SYNC CENTER TESTING COMPLETE - ALL TESTS PASSED (13/13)
+      
+      Tested all NEW ISP Sync endpoints at https://isp-noc-hub.preview.emergentagent.com/api:
+      
+      ✅ CONFIG MANAGEMENT (3/3 tests passed):
+         - GET /api/isp-sync/config: Returns all 11 required fields with defaults
+         - PUT /api/isp-sync/config: Saves config, password masked as '****'
+         - Password preservation: Sending '****' preserves existing password (not overwritten)
+      
+      ✅ SCAN ENGINE (2/2 tests passed):
+         - Basic scan: Found 2 new subscribers, 10 missing_in_isp, total 12 rows
+         - Diff detection: Matched by phone, detected 6 changes, status='conflict', severity='critical'
+         - Matching priority working: username → externalId → phone
+         - Field-level diff detection working correctly
+      
+      ✅ APPLY ACTIONS (5/5 tests passed):
+         - Ignore action: ignored=1, created=0 ✅
+         - Create action: Subscriber created successfully, verified in DB ✅
+         - Update with conflict blocking: Error 'conflict_requires_explicit_fields' (SAFETY FEATURE) ✅
+         - Update with explicit fields: Only package changed, other fields unchanged ✅
+         - Duplicate prevention: Error 'duplicate_exists' on second create ✅
+      
+      ✅ LOGS MANAGEMENT (3/3 tests passed):
+         - GET /api/isp-sync/logs: Returns 5 runs, lightweight (no rows array) ✅
+         - GET /api/isp-sync/logs/:runId: Returns full details with rows array (12 rows) ✅
+         - DELETE /api/isp-sync/logs/:runId: Deleted successfully, GET returns 404 ✅
+      
+      ✅ REGRESSION TESTS (4/4 passed):
+         - GET /api/dashboard/stats: 200 ✅
+         - GET /api/subscribers: 200, 12 subscribers ✅
+         - GET /api/whatsapp/status: 200 ✅
+         - GET /api/health: 200, dbConnected=true ✅
+      
+      CRITICAL VERIFICATIONS:
+      ✅ All endpoints return HTTP 200 (never 500)
+      ✅ Response shapes are correct (all required fields present)
+      ✅ Diff engine working correctly (matches by priority, detects changes, classifies severity)
+      ✅ Safety features working (blockOnConflict, duplicate prevention, password masking)
+      ✅ Selective field updates working (only specified fields changed)
+      ✅ Performance optimization working (list view lightweight, detail view full)
+      ✅ No regression from new feature
+      
+      DIFF ENGINE ACCURACY VERIFIED:
+      - Matching by phone: ✅ (matched existing subscriber by phone)
+      - Change detection: ✅ (detected 6 field changes)
+      - Severity classification: ✅ (critical for username change)
+      - Status classification: ✅ (conflict for critical changes)
+      - missing_in_isp detection: ✅ (10 platform subs not in external list)
+      - new subscriber detection: ✅ (2 external subs not in platform)
+      
+      SAFETY FEATURES VERIFIED:
+      - blockOnConflict safety guard: ✅ (requires explicit fields for conflicts)
+      - Duplicate prevention: ✅ (checks username, phone, externalId)
+      - Password masking: ✅ (always returns '****', preserves on update)
+      - Selective updates: ✅ (only specified fields changed)
+      
+      DATA INTEGRITY VERIFIED:
+      - All endpoints use UUIDs (not MongoDB ObjectIds)
+      - Activity logs created for all sync operations
+      - Cleanup successful (test subscribers and runs deleted)
+      - All numeric fields are numbers
+      - All boolean fields are booleans
+      - All arrays are always arrays (never undefined)
+      
+      NO CRITICAL ISSUES FOUND. ISP Subscriber Sync Center is production-ready.
+      All 13 test scenarios passed successfully. Smart comparison engine working correctly.
+      Safety features (conflict blocking, duplicate prevention) verified and working.
+      Ready for production use.
+
